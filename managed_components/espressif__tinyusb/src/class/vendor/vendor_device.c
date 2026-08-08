@@ -60,6 +60,10 @@ typedef struct {
 
 static vendord_interface_t _vendord_itf[CFG_TUD_VENDOR];
 
+TU_ATTR_WEAK void tud_vendor_stage_cb(const char* stage) {
+  (void) stage;
+}
+
 typedef struct {
   TUD_EPBUF_DEF(epout, CFG_TUD_VENDOR_EPSIZE);
   TUD_EPBUF_DEF(epin, CFG_TUD_VENDOR_EPSIZE);
@@ -255,13 +259,18 @@ bool vendord_xfer_cb(uint8_t rhport, uint8_t ep_addr, xfer_result_t result, uint
 
   if ( ep_addr == p_vendor->rx.stream.ep_addr ) {
     // Received new data: put into stream's fifo
+    tud_vendor_stage_cb("tiny:rx");
     tu_edpt_stream_read_xfer_complete(&p_vendor->rx.stream, xferred_bytes);
+    tud_vendor_stage_cb("tiny:rx_done");
 
     // Invoked callback if any
     if (tud_vendor_rx_cb) {
+      tud_vendor_stage_cb("tiny:app_cb");
       tud_vendor_rx_cb(itf, p_epbuf->epout, (uint16_t) xferred_bytes);
+      tud_vendor_stage_cb("tiny:app_done");
     }
 
+    tud_vendor_stage_cb("tiny:rx_arm");
     tu_edpt_stream_read_xfer(rhport, &p_vendor->rx.stream);
   } else if ( ep_addr == p_vendor->tx.stream.ep_addr ) {
     // Send complete

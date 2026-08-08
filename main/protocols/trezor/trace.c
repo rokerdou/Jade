@@ -72,7 +72,12 @@ void trezor_trace_set_stage(const char* const stage)
 
     trezor_trace_diag_init_once();
     TREZOR_TRACE_LOCK();
-    (void)snprintf(s_trace_diag.last_stage, sizeof(s_trace_diag.last_stage), "%s", stage);
+    size_t i = 0;
+    while (stage[i] != '\0' && i + 1 < sizeof(s_trace_diag.last_stage)) {
+        s_trace_diag.last_stage[i] = stage[i];
+        ++i;
+    }
+    s_trace_diag.last_stage[i] = '\0';
     TREZOR_TRACE_UNLOCK();
 }
 

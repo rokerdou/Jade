@@ -202,6 +202,11 @@ void tud_vendor_rx_cb(const uint8_t instance, const uint8_t* const buffer, const
     trezor_trace_set_stage("usb:rx_done");
 }
 
+void tud_vendor_stage_cb(const char* const stage)
+{
+    trezor_trace_set_stage(stage);
+}
+
 static bool trezor_usb_hid_expected_wire_len(const uint8_t chunk[TREZOR_WIRE_CHUNK_SIZE], size_t* const output_len)
 {
     if (!chunk || !output_len || chunk[0] != TREZOR_WIRE_MARKER || chunk[1] != TREZOR_WIRE_MAGIC
