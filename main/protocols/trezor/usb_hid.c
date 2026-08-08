@@ -277,31 +277,40 @@ static bool trezor_usb_hid_get_eth_address(
     void* ctx, const trezor_ethereum_get_address_t* const request, char* const address, const size_t address_len)
 {
     (void)ctx;
+    trezor_trace_set_stage("eth:req");
     if (!request || !address || address_len != ETHEREUM_CHECKSUM_ADDRESS_STRING_LEN
         || !trezor_usb_hid_ensure_wallet_ready()
         || !ethereum_path_is_supported(request->address_n, request->address_n_len)) {
+        trezor_trace_set_stage("eth:reject");
         return false;
     }
 
+    trezor_trace_set_stage("eth:path");
     wallet_core_path_t path;
     memset(&path, 0, sizeof(path));
     path.len = request->address_n_len;
     memcpy(path.parts, request->address_n, request->address_n_len * sizeof(request->address_n[0]));
 
+    trezor_trace_set_stage("eth:derive");
     uint8_t raw_address[ETHEREUM_ADDRESS_LEN];
-    bool ok = ethereum_wallet_address_from_path(&path, raw_address, sizeof(raw_address))
-        && ethereum_address_to_checksum_string(raw_address, sizeof(raw_address), address, address_len);
+    bool ok = ethereum_wallet_address_from_path(&path, raw_address, sizeof(raw_address));
+    trezor_trace_set_stage(ok ? "eth:checksum" : "eth:derive_fail");
+    ok = ok && ethereum_address_to_checksum_string(raw_address, sizeof(raw_address), address, address_len);
     wally_bzero(&path, sizeof(path));
     wally_bzero(raw_address, sizeof(raw_address));
     if (!ok) {
+        trezor_trace_set_stage("eth:fail");
         return false;
     }
 
+    trezor_trace_set_stage("eth:display");
     if (request->has_show_display && request->show_display && !show_confirm_address_activity(address, false)) {
         wally_bzero(address, address_len);
+        trezor_trace_set_stage("eth:cancel");
         return false;
     }
 
+    trezor_trace_set_stage("eth:done");
     return true;
 }
 
@@ -441,6 +450,7 @@ static void trezor_usb_hid_task(void* ignore)
                     uint32_t written = 0;
                     const bool sent = trezor_usb_hid_send_chunks(s_hid_tx_chunks, tx_len, &available, &written);
                     trezor_trace_record_transport_result(sent, tx_len, available, written);
+                    trezor_trace_set_stage(sent ? "usb:idle" : "usb:txfail");
                 }
                 wally_bzero(s_hid_tx_chunks, sizeof(s_hid_tx_chunks));
                 continue;
@@ -468,6 +478,7 @@ static void trezor_usb_hid_task(void* ignore)
                 uint32_t written = 0;
                 const bool sent = trezor_usb_hid_send_chunks(s_hid_tx_chunks, tx_len, &available, &written);
                 trezor_trace_record_transport_result(sent, tx_len, available, written);
+                trezor_trace_set_stage(sent ? "usb:idle" : "usb:txfail");
             }
             wally_bzero(s_hid_rx_chunks, rx_len);
             wally_bzero(s_hid_tx_chunks, sizeof(s_hid_tx_chunks));

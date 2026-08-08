@@ -9,24 +9,84 @@
 #include <string.h>
 
 #ifdef ESP_PLATFORM
+#include <esp_attr.h>
+#include <esp_system.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/portmacro.h>
 #endif
 
 #define TREZOR_TRACE_HARDENED 0x80000000u
 #define TREZOR_TRACE_PENDING_RESPONSE UINT16_MAX
+#define TREZOR_TRACE_DIAG_MAGIC 0x54524447u
+#define TREZOR_TRACE_STAGE_LEN 32
+
+typedef struct {
+    uint32_t magic;
+    uint32_t boot_count;
+    uint32_t reset_reason;
+    char last_stage[TREZOR_TRACE_STAGE_LEN];
+} trezor_trace_diag_t;
 
 #ifdef ESP_PLATFORM
 static portMUX_TYPE s_trace_mux = portMUX_INITIALIZER_UNLOCKED;
 #define TREZOR_TRACE_LOCK() taskENTER_CRITICAL(&s_trace_mux)
 #define TREZOR_TRACE_UNLOCK() taskEXIT_CRITICAL(&s_trace_mux)
+static __NOINIT_ATTR trezor_trace_diag_t s_trace_diag;
+static bool s_trace_diag_checked;
 #else
 #define TREZOR_TRACE_LOCK()
 #define TREZOR_TRACE_UNLOCK()
+static trezor_trace_diag_t s_trace_diag;
+static bool s_trace_diag_checked;
 #endif
 
 static trezor_trace_entry_t s_trace_entries[TREZOR_TRACE_HISTORY_LEN];
 static uint32_t s_trace_total;
+
+static void trezor_trace_append(char* output, size_t output_len, const char* fmt, ...);
+
+static void trezor_trace_diag_init_once(void)
+{
+    if (s_trace_diag_checked) {
+        return;
+    }
+
+    if (s_trace_diag.magic != TREZOR_TRACE_DIAG_MAGIC) {
+        memset(&s_trace_diag, 0, sizeof(s_trace_diag));
+        s_trace_diag.magic = TREZOR_TRACE_DIAG_MAGIC;
+    }
+#ifdef ESP_PLATFORM
+    s_trace_diag.reset_reason = (uint32_t)esp_reset_reason();
+#else
+    s_trace_diag.reset_reason = 0;
+#endif
+    ++s_trace_diag.boot_count;
+    s_trace_diag_checked = true;
+}
+
+void trezor_trace_set_stage(const char* const stage)
+{
+    if (!stage) {
+        return;
+    }
+
+    trezor_trace_diag_init_once();
+    TREZOR_TRACE_LOCK();
+    (void)snprintf(s_trace_diag.last_stage, sizeof(s_trace_diag.last_stage), "%s", stage);
+    TREZOR_TRACE_UNLOCK();
+}
+
+static void trezor_trace_append_diag(char* const output, const size_t output_len)
+{
+    trezor_trace_diag_init_once();
+    if (s_trace_diag.last_stage[0] != '\0') {
+        trezor_trace_append(output, output_len, "boot=%lu rr=%lu last=%s\n", (unsigned long)s_trace_diag.boot_count,
+            (unsigned long)s_trace_diag.reset_reason, s_trace_diag.last_stage);
+    } else {
+        trezor_trace_append(output, output_len, "boot=%lu rr=%lu\n", (unsigned long)s_trace_diag.boot_count,
+            (unsigned long)s_trace_diag.reset_reason);
+    }
+}
 
 const char* trezor_trace_message_name(const uint16_t message_type)
 {
@@ -688,11 +748,13 @@ bool trezor_trace_format_latest(char* const output, const size_t output_len)
 
     trezor_trace_snapshot_t snapshot;
     if (!trezor_trace_snapshot(&snapshot)) {
+        trezor_trace_append_diag(output, output_len);
         trezor_trace_append(output, output_len, "No USB messages yet");
         return false;
     }
 
     const trezor_trace_entry_t* const entry = &snapshot.latest;
+    trezor_trace_append_diag(output, output_len);
     trezor_trace_append(output, output_len, "#%lu total=%lu\nreq=%u %s\n%s\nresp=%u %s\n%s\nfail=%u %s\nwire=%s hdl=%s",
         (unsigned long)entry->seq, (unsigned long)snapshot.total, entry->request_type,
         entry->wire_ok ? trezor_trace_message_name(entry->request_type) : "BadWire", entry->request_detail, entry->response_type,
@@ -716,10 +778,12 @@ bool trezor_trace_format_history(char* const output, const size_t output_len)
 
     trezor_trace_snapshot_t snapshot;
     if (!trezor_trace_snapshot(&snapshot)) {
+        trezor_trace_append_diag(output, output_len);
         trezor_trace_append(output, output_len, "No USB messages yet");
         return false;
     }
 
+    trezor_trace_append_diag(output, output_len);
     trezor_trace_append(output, output_len, "Recent USB messages\n");
     for (size_t i = 0; i < snapshot.count; ++i) {
         const uint32_t seq = snapshot.total - (uint32_t)i;

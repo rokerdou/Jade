@@ -39,6 +39,7 @@ void trezor_trace_record_exchange(uint16_t request_type, const uint8_t* request_
     bool handler_ok);
 void trezor_trace_record_request_start(uint16_t request_type, const uint8_t* request_payload, size_t request_payload_len);
 void trezor_trace_record_transport_result(bool ok, size_t len, uint32_t available, uint32_t written);
+void trezor_trace_set_stage(const char* stage);
 bool trezor_trace_snapshot(trezor_trace_snapshot_t* output);
 bool trezor_trace_format_latest(char* output, size_t output_len);
 bool trezor_trace_format_history(char* output, size_t output_len);
