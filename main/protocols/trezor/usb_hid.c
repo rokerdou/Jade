@@ -332,9 +332,11 @@ static bool trezor_usb_hid_get_public_key(
     void* ctx, const trezor_public_key_request_t* const request, trezor_public_key_response_t* const response)
 {
     (void)ctx;
+    const bool root_fingerprint_probe = trezor_public_key_is_root_fingerprint_probe(request);
+    const bool supported_eth_public_node
+        = request && ethereum_path_is_public_key_export_supported(request->address_n, request->address_n_len);
     if (!request || !response || !trezor_usb_hid_ensure_wallet_ready()
-        || !ethereum_path_is_public_key_export_supported(request->address_n, request->address_n_len)
-        || (request->has_show_display && request->show_display)) {
+        || (!root_fingerprint_probe && !supported_eth_public_node) || (request->has_show_display && request->show_display)) {
         return false;
     }
 

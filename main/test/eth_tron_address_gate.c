@@ -1004,6 +1004,29 @@ int main(void)
     CHECK(memcmp(trezor_public_key_request.address_n, eth_ledger_live_legacy, sizeof(eth_ledger_live_legacy)) == 0);
     const size_t trezor_public_key_payload_len = trezor_public_key_writer.len;
 
+    uint8_t trezor_root_fingerprint_payload[64];
+    trezor_protobuf_writer_t trezor_root_fingerprint_writer;
+    trezor_protobuf_writer_init(
+        &trezor_root_fingerprint_writer, trezor_root_fingerprint_payload, sizeof(trezor_root_fingerprint_payload));
+    CHECK(trezor_protobuf_write_varint_field(&trezor_root_fingerprint_writer, 1, chain_path_harden(0)));
+    CHECK(trezor_protobuf_write_string_field(&trezor_root_fingerprint_writer, 2, "secp256k1"));
+    CHECK(trezor_protobuf_write_bool_field(&trezor_root_fingerprint_writer, 3, false));
+    CHECK(trezor_protobuf_write_bool_field(&trezor_root_fingerprint_writer, 6, true));
+    trezor_public_key_request_t trezor_root_fingerprint_request;
+    CHECK(trezor_public_key_decode_generic(trezor_root_fingerprint_payload, trezor_root_fingerprint_writer.len,
+        &trezor_root_fingerprint_request));
+    CHECK(trezor_public_key_is_root_fingerprint_probe(&trezor_root_fingerprint_request));
+
+    trezor_protobuf_writer_init(
+        &trezor_root_fingerprint_writer, trezor_root_fingerprint_payload, sizeof(trezor_root_fingerprint_payload));
+    CHECK(trezor_protobuf_write_varint_field(&trezor_root_fingerprint_writer, 1, chain_path_harden(1)));
+    CHECK(trezor_protobuf_write_string_field(&trezor_root_fingerprint_writer, 2, "secp256k1"));
+    CHECK(trezor_protobuf_write_bool_field(&trezor_root_fingerprint_writer, 3, false));
+    CHECK(trezor_protobuf_write_bool_field(&trezor_root_fingerprint_writer, 6, true));
+    CHECK(trezor_public_key_decode_generic(trezor_root_fingerprint_payload, trezor_root_fingerprint_writer.len,
+        &trezor_root_fingerprint_request));
+    CHECK(!trezor_public_key_is_root_fingerprint_probe(&trezor_root_fingerprint_request));
+
     uint8_t trezor_eth_public_key_payload[256];
     trezor_protobuf_writer_t trezor_eth_public_key_writer;
     trezor_protobuf_writer_init(

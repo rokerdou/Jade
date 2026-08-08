@@ -35,6 +35,7 @@ bool trezor_public_key_decode_generic(
     const uint8_t* payload, size_t payload_len, trezor_public_key_request_t* output);
 bool trezor_public_key_decode_ethereum(
     const uint8_t* payload, size_t payload_len, trezor_public_key_request_t* output);
+bool trezor_public_key_is_root_fingerprint_probe(const trezor_public_key_request_t* request);
 bool trezor_public_key_encode_generic(
     const trezor_public_key_response_t* response, uint8_t* output, size_t output_len, size_t* written);
 bool trezor_public_key_encode_ethereum(

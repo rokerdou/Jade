@@ -1,6 +1,7 @@
 #ifndef AMALGAMATED_BUILD
 #include "public_key.h"
 
+#include "../../chains/path.h"
 #include "protobuf.h"
 
 #include <string.h>
@@ -110,6 +111,12 @@ bool trezor_public_key_decode_ethereum(
     const uint8_t* const payload, const size_t payload_len, trezor_public_key_request_t* const output)
 {
     return trezor_public_key_decode_common(payload, payload_len, output, TREZOR_PUBLIC_KEY_REQUEST_ETHEREUM);
+}
+
+bool trezor_public_key_is_root_fingerprint_probe(const trezor_public_key_request_t* const request)
+{
+    return request && request->kind == TREZOR_PUBLIC_KEY_REQUEST_GENERIC && request->address_n_len == 1
+        && request->address_n[0] == chain_path_harden(0) && (!request->has_show_display || !request->show_display);
 }
 
 static bool trezor_public_key_encode_node(
