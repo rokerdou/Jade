@@ -24,6 +24,7 @@
 #include "../utils/util.h"
 #include "../utils/wally_ext.h"
 #include "../wallet.h"
+#include "../protocols/trezor/trace.h"
 #ifdef CONFIG_IDF_TARGET_ESP32S3
 #include "usbhmsc/usbhmsc.h"
 #include "usbhmsc/usbmode.h"
@@ -42,6 +43,7 @@ static inline bool awaiting_attestation_data(void) { return false; }
 #endif
 
 #include "../ble/ble.h"
+#include "auth_user.h"
 #include "process/ota_defines.h"
 #include "process_utils.h"
 
@@ -91,7 +93,7 @@ static const home_menu_item_t home_menu_items[HOME_SCREEN_TYPE_NUM_STATES][NUM_H
         { .symbol = "3", .text = "Options", .btn_id = BTN_SETTINGS } },
 
     // Initialised/Locked
-    { { .symbol = "5", .text = "Ready", .btn_id = BTN_CONNECT },
+    { { .symbol = "5", .text = "Unlock", .btn_id = BTN_UNLOCK },
 #ifdef CONFIG_HAS_CAMERA
         { .symbol = "2", .text = "QR Mode", .btn_id = BTN_QR_MODE },
 #endif
@@ -131,6 +133,8 @@ void get_registered_descriptors_process(void* process_ptr);
 void get_registered_descriptor_process(void* process_ptr);
 void register_descriptor_process(void* process_ptr);
 void get_receive_address_process(void* process_ptr);
+void get_eth_address_process(void* process_ptr);
+void get_tron_address_process(void* process_ptr);
 void get_identity_pubkey_process(void* process_ptr);
 void get_identity_shared_key_process(void* process_ptr);
 void sign_identity_process(void* process_ptr);
@@ -573,6 +577,10 @@ static void dispatch_message(jade_process_t* process)
             task_function = register_descriptor_process;
         } else if (IS_METHOD("get_receive_address")) {
             task_function = get_receive_address_process;
+        } else if (IS_METHOD("get_eth_address")) {
+            task_function = get_eth_address_process;
+        } else if (IS_METHOD("get_tron_address")) {
+            task_function = get_tron_address_process;
         } else if (IS_METHOD("get_identity_pubkey")) {
             task_function = get_identity_pubkey_process;
         } else if (IS_METHOD("get_identity_shared_key")) {
@@ -777,6 +785,14 @@ static void select_initial_connection(const bool offer_qr_temporary)
     // If no BLE and no camera/QR-scan (ie. no selection screen created) then assume USB
     initialisation_source = act_select ? SOURCE_NONE : SOURCE_SERIAL;
     show_connect_screen = initialisation_source != SOURCE_NONE;
+#ifdef CONFIG_LOCAL_PIN_AUTH
+    if (!act_select && keychain_get() && !keychain_has_pin() && !keychain_has_temporary()) {
+        if (auth_user_save_wallet_with_pin(SOURCE_SERIAL)) {
+            show_connect_screen = false;
+        }
+        return;
+    }
+#endif
 
     while (initialisation_source == SOURCE_NONE) {
         gui_set_current_activity(act);
@@ -2010,6 +2026,24 @@ static void handle_info_detail_screen(const char* title, const char* detail)
 
 static void handle_display_fwversion(void) { handle_info_detail_screen("Firmware Version", running_app_info.version); }
 
+static void handle_display_usb_trace(void)
+{
+    char trace[TREZOR_TRACE_FORMATTED_LEN];
+    if (!trezor_trace_format_latest(trace, sizeof(trace))) {
+        (void)snprintf(trace, sizeof(trace), "No USB messages yet");
+    }
+    handle_info_detail_screen("USB Trace", trace);
+}
+
+static void handle_display_usb_history(void)
+{
+    char trace[TREZOR_TRACE_FORMATTED_LEN];
+    if (!trezor_trace_format_history(trace, sizeof(trace))) {
+        (void)snprintf(trace, sizeof(trace), "No USB messages yet");
+    }
+    handle_info_detail_screen("USB History", trace);
+}
+
 static void handle_display_mac_address(void)
 {
     char mac[18] = "NO BLE";
@@ -2251,6 +2285,14 @@ static void handle_settings(const bool startup_menu)
         // Screen handling
         case BTN_SETTINGS_INFO_FWVERSION:
             handle_display_fwversion();
+            break;
+
+        case BTN_SETTINGS_INFO_USB_TRACE:
+            handle_display_usb_trace();
+            break;
+
+        case BTN_SETTINGS_INFO_USB_HISTORY:
+            handle_display_usb_history();
             break;
 
         case BTN_SETTINGS_DEVICE_INFO_MAC:
@@ -2530,6 +2572,10 @@ static void handle_btn(const int32_t btn)
 
     case BTN_QR_MODE:
         handle_qr_mode();
+        break;
+
+    case BTN_UNLOCK:
+        auth_user_unlock_wallet_with_pin(SOURCE_SERIAL);
         break;
 
     case BTN_SESSION:

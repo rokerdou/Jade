@@ -119,9 +119,9 @@ gui_activity_t* make_connect_activity(void)
         { .txt = "?", .font = GUI_TITLE_FONT, .ev_id = BTN_CONNECT_HELP } };
 
     const char* message[]
-        = { "Open your wallet app.", "If needed, the app", "will prompt you to", "connect via USB/BLE." };
+        = { "Create or unlock the", "wallet on this device.", "MetaMask only reads", "public account data." };
 
-    return make_show_message_activity(message, 4, "Ready to Pair", hdrbtns, 2, NULL, 0);
+    return make_show_message_activity(message, 4, "USB Wallet", hdrbtns, 2, NULL, 0);
 }
 
 gui_activity_t* make_connect_to_activity(const char* device_name, const jade_msg_source_t initialisation_source)
@@ -142,6 +142,11 @@ gui_activity_t* make_connect_to_activity(const char* device_name, const jade_msg
         message[1] = "the companion app to";
         message[2] = "pair it";
     } else {
+#ifdef CONFIG_TREZOR_USB_HID
+        message[0] = "Set a PIN to save";
+        message[1] = "the wallet before";
+        message[2] = "using USB apps";
+#else
         char connect_device[32];
         const int ret = snprintf(connect_device, sizeof(connect_device), "Connect %s", device_name);
         JADE_ASSERT(ret > 0 && ret < sizeof(connect_device));
@@ -149,6 +154,7 @@ gui_activity_t* make_connect_to_activity(const char* device_name, const jade_msg
         message[0] = connect_device;
         message[1] = "to a compatible wallet";
         message[2] = "app";
+#endif
     }
 
     return make_show_message_activity(message, 3, device_name, hdrbtns, 2, NULL, 0);
@@ -613,6 +619,8 @@ gui_activity_t* make_info_activity(const char* fw_version)
     gui_set_parent(fwver, splitfw);
 
     btn_data_t menubtns[] = { { .content = splitfw, .ev_id = BTN_SETTINGS_INFO_FWVERSION },
+        { .txt = "USB Trace", .font = GUI_DEFAULT_FONT, .ev_id = BTN_SETTINGS_INFO_USB_TRACE },
+        { .txt = "USB History", .font = GUI_DEFAULT_FONT, .ev_id = BTN_SETTINGS_INFO_USB_HISTORY },
         { .txt = "Device Info", .font = GUI_DEFAULT_FONT, .ev_id = BTN_SETTINGS_DEVICE_INFO }
 #ifdef CONFIG_BOARD_TYPE_JADE_ANY
         // Legal screens only apply to official Jade hw

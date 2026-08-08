@@ -1,0 +1,41 @@
+#ifndef TREZOR_SESSION_H_
+#define TREZOR_SESSION_H_
+
+#include "bitcoin.h"
+#include "ethereum.h"
+#include "features.h"
+#include "public_key.h"
+
+#include <stdbool.h>
+#include <stddef.h>
+#include <stdint.h>
+
+#define TREZOR_SESSION_MAX_REQUEST_PAYLOAD_LEN 1024
+#define TREZOR_SESSION_MAX_RESPONSE_PAYLOAD_LEN 1024
+#define TREZOR_SESSION_BITCOIN_ADDRESS_STRING_LEN BITCOIN_P2PKH_ADDRESS_MAX_LEN
+#define TREZOR_SESSION_ETH_ADDRESS_STRING_LEN 43
+
+typedef bool (*trezor_session_bitcoin_address_callback_t)(
+    void* ctx, const trezor_bitcoin_get_address_t* request, char* address, size_t address_len);
+typedef bool (*trezor_session_eth_address_callback_t)(
+    void* ctx, const trezor_ethereum_get_address_t* request, char* address, size_t address_len);
+typedef bool (*trezor_session_public_key_callback_t)(
+    void* ctx, const trezor_public_key_request_t* request, trezor_public_key_response_t* response);
+
+typedef struct {
+    trezor_features_t features;
+    trezor_session_bitcoin_address_callback_t get_bitcoin_address;
+    void* get_bitcoin_address_ctx;
+    trezor_session_eth_address_callback_t get_eth_address;
+    void* get_eth_address_ctx;
+    trezor_session_public_key_callback_t get_public_key;
+    void* get_public_key_ctx;
+} trezor_session_t;
+
+bool trezor_session_handle_payload(const trezor_session_t* session, uint16_t request_type,
+    const uint8_t* request_payload, size_t request_payload_len, uint16_t* response_type, uint8_t* response_payload,
+    size_t response_payload_len, size_t* response_payload_written);
+bool trezor_session_handle_wire(const trezor_session_t* session, const uint8_t* request_chunks,
+    size_t request_chunks_len, uint8_t* response_chunks, size_t response_chunks_len, size_t* response_chunks_written);
+
+#endif /* TREZOR_SESSION_H_ */

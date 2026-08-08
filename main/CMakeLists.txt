@@ -36,10 +36,19 @@ if(CONFIG_LOG_WIFI)
     list(APPEND extra_priv_requires "esp_wifi")
 endif()
 
+find_program(HOST_CC NAMES cc clang gcc)
+
 idf_component_register(SRC_DIRS "."
                                 "attestation"
+                                "chains"
+                                "chains/bitcoin"
+                                "chains/ethereum"
+                                "chains/tron"
+                                "crypto"
                                 "fonts"
                                 "process"
+                                "protocols/trezor"
+                                "wallet_core"
                                 "utils"
                                 "ui"
                                 "${bledir}"
@@ -47,6 +56,7 @@ idf_component_register(SRC_DIRS "."
                                 "${usbdir}"
         PRIV_INCLUDE_DIRS "."
                           "attestation"
+                          "wallet_core"
                           "${bledir}"
                           "${qemudir}"
                           "${usbdir}"
@@ -86,3 +96,123 @@ list(APPEND link_options "-Wl,--wrap=abort")
 idf_build_set_property(LINK_OPTIONS "${link_options}" APPEND)
 
 target_compile_options(${COMPONENT_LIB} PRIVATE -Werror=unused-result)
+
+if(HOST_CC)
+    set(eth_tron_address_gate_bin ${CMAKE_BINARY_DIR}/eth_tron_address_gate)
+    set(eth_tron_address_gate_stamp ${CMAKE_BINARY_DIR}/eth_tron_address_gate.stamp)
+    add_custom_command(OUTPUT ${eth_tron_address_gate_stamp}
+        COMMAND ${HOST_CC} -std=c11 -Wall -Wextra -Werror
+            -I${COMPONENT_DIR}
+            -I${COMPONENT_DIR}/test/host_shims
+            -I${PROJECT_DIR}/components/libwally-core/upstream/include
+            ${COMPONENT_DIR}/test/eth_tron_address_gate.c
+            ${COMPONENT_DIR}/chains/authorization.c
+            ${COMPONENT_DIR}/chains/confirm_summary.c
+            ${COMPONENT_DIR}/chains/evm_abi.c
+            ${COMPONENT_DIR}/crypto/keccak256.c
+            ${COMPONENT_DIR}/chains/bitcoin/address.c
+            ${COMPONENT_DIR}/chains/bitcoin/path.c
+            ${COMPONENT_DIR}/chains/bitcoin/wallet.c
+            ${COMPONENT_DIR}/chains/ethereum/address.c
+            ${COMPONENT_DIR}/chains/ethereum/authorize.c
+            ${COMPONENT_DIR}/chains/ethereum/confirm.c
+            ${COMPONENT_DIR}/chains/ethereum/digest.c
+            ${COMPONENT_DIR}/chains/ethereum/path.c
+            ${COMPONENT_DIR}/chains/ethereum/sign.c
+            ${COMPONENT_DIR}/chains/ethereum/tx.c
+            ${COMPONENT_DIR}/chains/ethereum/tx_request.c
+            ${COMPONENT_DIR}/chains/ethereum/wallet.c
+            ${COMPONENT_DIR}/protocols/trezor/bitcoin.c
+            ${COMPONENT_DIR}/protocols/trezor/dispatcher.c
+            ${COMPONENT_DIR}/protocols/trezor/ethereum.c
+            ${COMPONENT_DIR}/protocols/trezor/failure.c
+            ${COMPONENT_DIR}/protocols/trezor/features.c
+            ${COMPONENT_DIR}/protocols/trezor/protobuf.c
+            ${COMPONENT_DIR}/protocols/trezor/public_key.c
+            ${COMPONENT_DIR}/protocols/trezor/session.c
+            ${COMPONENT_DIR}/protocols/trezor/trace.c
+            ${COMPONENT_DIR}/protocols/trezor/wire.c
+            ${COMPONENT_DIR}/chains/tron/address.c
+            ${COMPONENT_DIR}/chains/tron/authorize.c
+            ${COMPONENT_DIR}/chains/tron/confirm.c
+            ${COMPONENT_DIR}/chains/tron/path.c
+            ${COMPONENT_DIR}/chains/tron/tx.c
+            ${COMPONENT_DIR}/chains/tron/wallet.c
+            -o ${eth_tron_address_gate_bin}
+        COMMAND ${eth_tron_address_gate_bin}
+        COMMAND ${CMAKE_COMMAND} -E touch ${eth_tron_address_gate_stamp}
+        DEPENDS
+            ${COMPONENT_DIR}/test/eth_tron_address_gate.c
+            ${COMPONENT_DIR}/test/host_shims/esp_log.h
+            ${COMPONENT_DIR}/chains/authorization.c
+            ${COMPONENT_DIR}/chains/confirm_summary.c
+            ${COMPONENT_DIR}/chains/confirm_summary.h
+            ${COMPONENT_DIR}/chains/authorization.h
+            ${COMPONENT_DIR}/chains/evm_abi.c
+            ${COMPONENT_DIR}/chains/evm_abi.h
+            ${COMPONENT_DIR}/crypto/keccak256.c
+            ${COMPONENT_DIR}/crypto/keccak256.h
+            ${COMPONENT_DIR}/chains/bitcoin/address.c
+            ${COMPONENT_DIR}/chains/bitcoin/address.h
+            ${COMPONENT_DIR}/chains/bitcoin/path.c
+            ${COMPONENT_DIR}/chains/bitcoin/path.h
+            ${COMPONENT_DIR}/chains/bitcoin/wallet.c
+            ${COMPONENT_DIR}/chains/bitcoin/wallet.h
+            ${COMPONENT_DIR}/chains/ethereum/address.c
+            ${COMPONENT_DIR}/chains/ethereum/address.h
+            ${COMPONENT_DIR}/chains/ethereum/authorize.c
+            ${COMPONENT_DIR}/chains/ethereum/authorize.h
+            ${COMPONENT_DIR}/chains/ethereum/confirm.c
+            ${COMPONENT_DIR}/chains/ethereum/confirm.h
+            ${COMPONENT_DIR}/chains/ethereum/digest.c
+            ${COMPONENT_DIR}/chains/ethereum/digest.h
+            ${COMPONENT_DIR}/chains/ethereum/path.c
+            ${COMPONENT_DIR}/chains/ethereum/path.h
+            ${COMPONENT_DIR}/chains/ethereum/sign.c
+            ${COMPONENT_DIR}/chains/ethereum/sign.h
+            ${COMPONENT_DIR}/chains/ethereum/tx.c
+            ${COMPONENT_DIR}/chains/ethereum/tx.h
+            ${COMPONENT_DIR}/chains/ethereum/tx_request.c
+            ${COMPONENT_DIR}/chains/ethereum/tx_request.h
+            ${COMPONENT_DIR}/chains/ethereum/wallet.c
+            ${COMPONENT_DIR}/chains/ethereum/wallet.h
+            ${COMPONENT_DIR}/protocols/trezor/bitcoin.c
+            ${COMPONENT_DIR}/protocols/trezor/bitcoin.h
+            ${COMPONENT_DIR}/protocols/trezor/dispatcher.c
+            ${COMPONENT_DIR}/protocols/trezor/dispatcher.h
+            ${COMPONENT_DIR}/protocols/trezor/ethereum.c
+            ${COMPONENT_DIR}/protocols/trezor/ethereum.h
+            ${COMPONENT_DIR}/protocols/trezor/failure.c
+            ${COMPONENT_DIR}/protocols/trezor/failure.h
+            ${COMPONENT_DIR}/protocols/trezor/features.c
+            ${COMPONENT_DIR}/protocols/trezor/features.h
+            ${COMPONENT_DIR}/protocols/trezor/messages.h
+            ${COMPONENT_DIR}/protocols/trezor/protobuf.c
+            ${COMPONENT_DIR}/protocols/trezor/protobuf.h
+            ${COMPONENT_DIR}/protocols/trezor/public_key.c
+            ${COMPONENT_DIR}/protocols/trezor/public_key.h
+            ${COMPONENT_DIR}/protocols/trezor/session.c
+            ${COMPONENT_DIR}/protocols/trezor/session.h
+            ${COMPONENT_DIR}/protocols/trezor/trace.c
+            ${COMPONENT_DIR}/protocols/trezor/trace.h
+            ${COMPONENT_DIR}/protocols/trezor/wire.c
+            ${COMPONENT_DIR}/protocols/trezor/wire.h
+            ${COMPONENT_DIR}/chains/tron/address.c
+            ${COMPONENT_DIR}/chains/tron/address.h
+            ${COMPONENT_DIR}/chains/tron/authorize.c
+            ${COMPONENT_DIR}/chains/tron/authorize.h
+            ${COMPONENT_DIR}/chains/tron/confirm.c
+            ${COMPONENT_DIR}/chains/tron/confirm.h
+            ${COMPONENT_DIR}/chains/tron/path.c
+            ${COMPONENT_DIR}/chains/tron/path.h
+            ${COMPONENT_DIR}/chains/tron/tx.c
+            ${COMPONENT_DIR}/chains/tron/tx.h
+            ${COMPONENT_DIR}/chains/tron/wallet.c
+            ${COMPONENT_DIR}/chains/tron/wallet.h
+            ${COMPONENT_DIR}/chains/path.h
+        VERBATIM)
+    add_custom_target(eth_tron_address_gate DEPENDS ${eth_tron_address_gate_stamp})
+    add_dependencies(${COMPONENT_LIB} eth_tron_address_gate)
+else()
+    message(FATAL_ERROR "No host C compiler found for ETH/TRON address gate tests")
+endif()

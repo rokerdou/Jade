@@ -12,6 +12,10 @@
 
 #include <sodium/utils.h>
 
+#include "auth_user.h"
+#ifdef CONFIG_LOCAL_PIN_AUTH
+#include "local_pin.h"
+#endif
 #include "process_utils.h"
 
 // Wallet initialisation functions
@@ -42,7 +46,9 @@ static void check_wallet_erase_pin(jade_process_t* process, const uint8_t* pin_e
         keychain_persist_key_flags();
 
         // Show/return 'Internal Error' message, and shut-down
-        jade_process_reject_message(process, CBOR_RPC_INTERNAL_ERROR, "Internal Error");
+        if (process) {
+            jade_process_reject_message(process, CBOR_RPC_INTERNAL_ERROR, "Internal Error");
+        }
 
         await_error("Internal Error!");
         power_shutdown();
@@ -52,7 +58,9 @@ static void check_wallet_erase_pin(jade_process_t* process, const uint8_t* pin_e
 static bool get_pin_get_aeskey(jade_process_t* process, const char* title, uint8_t* pin, const size_t pin_len,
     uint8_t* aeskey, const size_t aes_len)
 {
+#ifndef CONFIG_LOCAL_PIN_AUTH
     JADE_ASSERT(process);
+#endif
     JADE_ASSERT(title);
     JADE_ASSERT(pin);
     JADE_ASSERT(pin_len == DIGIT_ENTRY_SIZE);
@@ -85,13 +93,15 @@ static bool get_pin_get_aeskey(jade_process_t* process, const char* title, uint8
     SENSITIVE_PUSH(&digit_entry, sizeof(digit_entry_t));
 
     // If getting PIN via QRs, free gui memory before attempting QR roundtrip
-    gui_set_current_activity_ex(digit_entry.activity, process->ctx.source == SOURCE_INTERNAL);
+    gui_set_current_activity_ex(digit_entry.activity, process && process->ctx.source == SOURCE_INTERNAL);
 
     // In a debug unattended ci build, use hardcoded pin after a short delay
 #ifndef CONFIG_DEBUG_UNATTENDED_CI
     if (!run_digit_entry_loop(&digit_entry)) {
         // User abandoned entering pin
-        jade_process_reject_message(process, CBOR_RPC_USER_CANCELLED, "User abandonded pin entry");
+        if (process) {
+            jade_process_reject_message(process, CBOR_RPC_USER_CANCELLED, "User abandonded pin entry");
+        }
         SENSITIVE_POP(&digit_entry);
         return false;
     }
@@ -106,15 +116,21 @@ static bool get_pin_get_aeskey(jade_process_t* process, const char* title, uint8
     const char* message[] = { "Checking..." };
     display_message_activity(message, 1);
 
+#ifdef CONFIG_LOCAL_PIN_AUTH
+    return local_pin_get_aeskey(pin, pin_len, aeskey, aes_len);
+#else
     // Do the pinserver 'getpin' process
     // NOTE: in case of server or networking error, the reply message will be sent
     return pinclient_get(process, pin, pin_len, aeskey, aes_len);
+#endif
 }
 
 static bool set_pin_get_aeskey(jade_process_t* process, const char* title, uint8_t* pin, const size_t pin_len,
     uint8_t* aeskey, const size_t aes_len)
 {
+#ifndef CONFIG_LOCAL_PIN_AUTH
     JADE_ASSERT(process);
+#endif
     JADE_ASSERT(title);
     JADE_ASSERT(pin);
     JADE_ASSERT(pin_len == DIGIT_ENTRY_SIZE);
@@ -133,12 +149,14 @@ static bool set_pin_get_aeskey(jade_process_t* process, const char* title, uint8
         reset_digit_entry(&digit_entry, title);
 
         // If getting PIN via QRs, free gui memory before attempting QR roundtrip
-        gui_set_current_activity_ex(digit_entry.activity, process->ctx.source == SOURCE_INTERNAL);
+        gui_set_current_activity_ex(digit_entry.activity, process && process->ctx.source == SOURCE_INTERNAL);
 
 #ifndef CONFIG_DEBUG_UNATTENDED_CI
         if (!run_digit_entry_loop(&digit_entry)) {
             // User abandoned setting new pin
-            jade_process_reject_message(process, CBOR_RPC_USER_CANCELLED, "User abandoned setting new PIN");
+            if (process) {
+                jade_process_reject_message(process, CBOR_RPC_USER_CANCELLED, "User abandoned setting new PIN");
+            }
             SENSITIVE_POP(&digit_entry);
             return false;
         }
@@ -173,7 +191,9 @@ static bool set_pin_get_aeskey(jade_process_t* process, const char* title, uint8
             const char* message[] = { "Pin mismatch,", "please try again." };
             if (!await_continueback_activity(NULL, message, 2, true, NULL)) {
                 // Abandon setting new pin
-                jade_process_reject_message(process, CBOR_RPC_USER_CANCELLED, "User abandoned setting new PIN");
+                if (process) {
+                    jade_process_reject_message(process, CBOR_RPC_USER_CANCELLED, "User abandoned setting new PIN");
+                }
                 SENSITIVE_POP(&digit_entry);
                 return false;
             }
@@ -184,9 +204,123 @@ static bool set_pin_get_aeskey(jade_process_t* process, const char* title, uint8
     const char* message[] = { "Persisting PIN data..." };
     display_message_activity(message, 1);
 
+#ifdef CONFIG_LOCAL_PIN_AUTH
+    return local_pin_set_aeskey(pin, pin_len, aeskey, aes_len);
+#else
     // Do the pinserver 'setpin' process
     // NOTE: in case of server or networking error, the reply message will be sent
     return pinclient_set(process, pin, pin_len, aeskey, aes_len);
+#endif
+}
+
+static bool set_pin_save_keys_for_source(jade_process_t* const process, const jade_msg_source_t source, const bool reply)
+{
+    // At this point we should have keys in-memory, but should *NOT* have
+    // any encrypted keys persisted in the flash memory - ie. no PIN set.
+    JADE_ASSERT(keychain_get());
+    JADE_ASSERT(!keychain_has_pin());
+    JADE_ASSERT(!keychain_has_temporary());
+    bool rslt = false;
+
+    uint8_t pin[DIGIT_ENTRY_SIZE];
+    SENSITIVE_PUSH(pin, sizeof(pin));
+    uint8_t aeskey[AES_KEY_LEN_256];
+    SENSITIVE_PUSH(aeskey, sizeof(aeskey));
+
+    if (!set_pin_get_aeskey(process, "Enter New PIN", pin, sizeof(pin), aeskey, sizeof(aeskey))) {
+        goto cleanup;
+    }
+
+    // Persist wallet master key (or mnemonic entropy if passphrase-protected) to flash memory
+    if (!keychain_store(aeskey, sizeof(aeskey))) {
+        JADE_LOGE("Failed to store key data encrypted in flash memory!");
+        if (process && reply) {
+            jade_process_reject_message(
+                process, CBOR_RPC_INTERNAL_ERROR, "Failed to store key data encrypted in flash memory");
+        }
+
+        await_error("Failed to persist key data");
+        goto cleanup;
+    }
+
+    // Re-set the (same) keychain in order to confirm the source which we
+    // will accept receiving messages from.
+    keychain_set(keychain_get(), source, false);
+    rslt = true;
+
+    if (process && reply) {
+        jade_process_reply_to_message_ok(process);
+    }
+    JADE_LOGI("Success");
+
+cleanup:
+    SENSITIVE_POP(aeskey);
+    SENSITIVE_POP(pin);
+    return rslt;
+}
+
+bool auth_user_save_wallet_with_pin(const jade_msg_source_t source)
+{
+#ifdef CONFIG_LOCAL_PIN_AUTH
+    return set_pin_save_keys_for_source(NULL, source, false);
+#else
+    (void)source;
+    return false;
+#endif
+}
+
+bool auth_user_unlock_wallet_with_pin(const jade_msg_source_t source)
+{
+#ifndef CONFIG_LOCAL_PIN_AUTH
+    (void)source;
+    return false;
+#else
+    JADE_ASSERT(!keychain_get());
+    JADE_ASSERT(keychain_has_pin());
+    bool rslt = false;
+
+    uint8_t pin[DIGIT_ENTRY_SIZE];
+    SENSITIVE_PUSH(pin, sizeof(pin));
+    uint8_t aeskey[AES_KEY_LEN_256];
+    SENSITIVE_PUSH(aeskey, sizeof(aeskey));
+
+    if (!get_pin_get_aeskey(NULL, "Unlock Jade", pin, sizeof(pin), aeskey, sizeof(aeskey))) {
+        goto cleanup;
+    }
+
+    if (!keychain_load(aeskey, sizeof(aeskey))) {
+        JADE_LOGE("Failed to load keys - Incorrect PIN");
+        check_wallet_erase_pin(NULL, pin, sizeof(pin));
+        await_error("Incorrect PIN!");
+        goto cleanup;
+    }
+
+    if (keychain_requires_passphrase()) {
+        char passphrase[PASSPHRASE_MAX_LEN + 1];
+        SENSITIVE_PUSH(passphrase, sizeof(passphrase));
+        passphrase[0] = '\0';
+
+        get_passphrase(passphrase, sizeof(passphrase));
+        display_processing_message_activity();
+
+        if (!keychain_complete_derivation_with_passphrase(passphrase)) {
+            SENSITIVE_POP(passphrase);
+            JADE_LOGE("Failed to derive wallet");
+            await_error("Failed to derive wallet");
+            goto cleanup;
+        }
+        SENSITIVE_POP(passphrase);
+    }
+
+    keychain_set(keychain_get(), source, false);
+    rslt = true;
+    JADE_LOGI("Success");
+
+cleanup:
+    SENSITIVE_POP(aeskey);
+    SENSITIVE_POP(pin);
+    return rslt;
+#endif
 }
 
 static bool get_pin_load_keys(jade_process_t* process, const bool suppress_pin_change_confirmation)
@@ -263,7 +397,11 @@ static bool get_pin_load_keys(jade_process_t* process, const bool suppress_pin_c
             SENSITIVE_PUSH(aeskey_new, sizeof(aeskey_new));
 
             if (set_pin_get_aeskey(process, "Enter New PIN", pin, sizeof(pin), aeskey_new, sizeof(aeskey_new))) {
+#ifdef CONFIG_LOCAL_PIN_AUTH
+                JADE_LOGI("PIN changed locally");
+#else
                 JADE_LOGI("PIN changed on server");
+#endif
                 if (keychain_reencrypt(aeskey, sizeof(aeskey), aeskey_new, sizeof(aeskey_new))) {
                     await_message("PIN changed");
                 } else {
@@ -293,49 +431,8 @@ cleanup:
 
 static bool set_pin_save_keys(jade_process_t* process)
 {
-    // At this point we should have keys in-memory, but should *NOT* have
-    // any encrypted keys persisted in the flash memory - ie. no PIN set.
-    JADE_ASSERT(keychain_get());
-    JADE_ASSERT(!keychain_has_pin());
-    JADE_ASSERT(!keychain_has_temporary());
-    bool rslt = false;
-
-    uint8_t pin[DIGIT_ENTRY_SIZE];
-    SENSITIVE_PUSH(pin, sizeof(pin));
-    uint8_t aeskey[AES_KEY_LEN_256];
-    SENSITIVE_PUSH(aeskey, sizeof(aeskey));
-
-    // Do the pinserver 'setpin' process
-    if (!set_pin_get_aeskey(process, "Enter New PIN", pin, sizeof(pin), aeskey, sizeof(aeskey))) {
-        // User abandoned entering PIN, or some sort of server or networking/connection error
-        // NOTE: reply message will have already been sent
-        goto cleanup;
-    }
-
-    // Persist wallet master key (or mnemonic entropy if passphrase-protected) to flash memory
-    if (!keychain_store(aeskey, sizeof(aeskey))) {
-        JADE_LOGE("Failed to store key data encrypted in flash memory!");
-        jade_process_reject_message(
-            process, CBOR_RPC_INTERNAL_ERROR, "Failed to store key data encrypted in flash memory");
-
-        await_error("Failed to persist key data");
-        goto cleanup;
-    }
-
-    // Re-set the (same) keychain in order to confirm the 'source'
-    // (ie interface) which we will accept receiving messages from.
-    // (This also clears any temporarily cached mnemonic entropy data)
-    keychain_set(keychain_get(), process->ctx.source, false);
-    rslt = true;
-
-    // All good
+    const bool rslt = set_pin_save_keys_for_source(process, process->ctx.source, true);
     set_request_change_pin(false); // clear flag
-    jade_process_reply_to_message_ok(process);
-    JADE_LOGI("Success");
-
-cleanup:
-    SENSITIVE_POP(aeskey);
-    SENSITIVE_POP(pin);
     return rslt;
 }
 
@@ -410,7 +507,7 @@ void auth_user_process(void* process_ptr)
         }
     } else {
         // Jade hw is not fully initialised - if we have an 'in-memory' mnemonic
-        // then offer to persist that (with PIN and key derived with the pinserver)
+        // then offer to persist that with PIN-derived encryption keys.
         if (!keychain_get()) {
             // No (in-memory) mnemonic has been set, offer to do that now
             // (This is not ideal as can take a long time and host app is

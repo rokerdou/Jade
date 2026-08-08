@@ -1,0 +1,38 @@
+#ifndef AMALGAMATED_BUILD
+#include "dispatcher.h"
+
+bool trezor_dispatcher_message_allowed(const uint32_t message_type)
+{
+    return message_type == TREZOR_MSG_INITIALIZE || message_type == TREZOR_MSG_GET_FEATURES
+        || message_type == TREZOR_MSG_CANCEL || message_type == TREZOR_MSG_GET_ADDRESS
+        || message_type == TREZOR_MSG_ETHEREUM_GET_ADDRESS || message_type == TREZOR_MSG_GET_PUBLIC_KEY
+        || message_type == TREZOR_MSG_ETHEREUM_GET_PUBLIC_KEY;
+}
+
+bool trezor_dispatcher_message_sensitive_or_unsupported(const uint32_t message_type)
+{
+    if (trezor_dispatcher_message_allowed(message_type)) {
+        return false;
+    }
+
+    switch (message_type) {
+    case TREZOR_MSG_GET_ENTROPY:
+    case TREZOR_MSG_LOAD_DEVICE:
+    case TREZOR_MSG_RESET_DEVICE:
+    case TREZOR_MSG_SIGN_TX:
+    case TREZOR_MSG_CIPHER_KEY_VALUE:
+    case TREZOR_MSG_BACKUP_DEVICE:
+    case TREZOR_MSG_SIGN_MESSAGE:
+    case TREZOR_MSG_PASSPHRASE_ACK:
+    case TREZOR_MSG_RECOVERY_DEVICE:
+    case TREZOR_MSG_SIGN_IDENTITY:
+    case TREZOR_MSG_GET_ECDH_SESSION_KEY:
+    case TREZOR_MSG_UNLOCK_PATH:
+    case TREZOR_MSG_ETHEREUM_SIGN_TX:
+    case TREZOR_MSG_ETHEREUM_SIGN_TX_EIP1559:
+        return true;
+    default:
+        return true;
+    }
+}
+#endif /* AMALGAMATED_BUILD */

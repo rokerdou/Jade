@@ -17,6 +17,39 @@
 #include <stdio.h>
 #include <string.h>
 
+#ifdef CONFIG_TREZOR_USB_HID
+#include "protocols/trezor/usb_hid.h"
+
+static volatile bool serial_is_enabled = false;
+
+bool serial_init(TaskHandle_t* serial_handle)
+{
+    JADE_ASSERT(serial_handle);
+    *serial_handle = NULL;
+    serial_is_enabled = trezor_usb_hid_init();
+    return serial_is_enabled;
+}
+
+bool serial_enabled(void) { return serial_is_enabled; }
+
+void serial_start(void)
+{
+    if (!serial_is_enabled) {
+        serial_is_enabled = trezor_usb_hid_init();
+    }
+}
+
+void serial_stop(void)
+{
+    if (!serial_is_enabled) {
+        return;
+    }
+    trezor_usb_hid_deinit();
+    serial_is_enabled = false;
+}
+
+#else
+
 #ifdef CONFIG_IDF_TARGET_ESP32S3
 
 #ifdef CONFIG_JADE_USE_USB_JTAG_SERIAL
@@ -327,4 +360,5 @@ void serial_stop(void)
 #endif
 #endif
 }
+#endif /* CONFIG_TREZOR_USB_HID */
 #endif // AMALGAMATED_BUILD

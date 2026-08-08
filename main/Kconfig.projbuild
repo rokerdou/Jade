@@ -26,6 +26,38 @@ menu "Blockstream Jade"
         help
             Enable amagamated build, compiling all files as a single translation unit.  Should create a smaller/faster binary.
 
+    config TREZOR_USB_HID
+        bool "Expose a Trezor-compatible USB transport"
+        depends on IDF_TARGET_ESP32S3
+        default n
+        help
+            Development transport for hosts that speak the Trezor USB protocol.
+            When enabled, the firmware initializes TinyUSB with a Trezor-like
+            WebUSB vendor interface instead of Jade's CDC/CBOR serial path.
+
+    config LOCAL_PIN_AUTH
+        bool "Use local device PIN KDF instead of Jade blind oracle"
+        default y if TREZOR_USB_HID
+        default n
+        help
+            Derive the wallet encryption key locally from the on-device PIN.
+            This is intended for Trezor USB-only builds where the Jade app
+            CBOR transport is not available. It avoids USB/host involvement
+            in wallet persistence, but it does not provide Jade blind oracle
+            protection against offline PIN guessing from a full flash dump.
+
+    config LOCAL_PIN_KDF_COST
+        int "Local PIN PBKDF2-HMAC-SHA512 iteration count"
+        depends on LOCAL_PIN_AUTH
+        default 120000
+        range 10000 1000000
+        help
+            Number of PBKDF2-HMAC-SHA512 iterations used to derive the local
+            wallet encryption key from the on-device PIN. Lower values unlock
+            faster but materially weaken resistance to offline PIN guessing
+            from a flash dump. Changing this value changes the PIN-derived
+            encryption key for newly persisted wallets.
+
     config BOARD_TYPE_JADE_ANY
         # Board is a Jade v1 or v2 device of any flavor
         # No prompt: this is internal config meant to be selected automatically

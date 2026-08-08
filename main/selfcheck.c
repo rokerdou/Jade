@@ -3,6 +3,9 @@
 #include <string.h>
 
 #include "bcur.h"
+#include "chains/ethereum/address.h"
+#include "chains/tron/address.h"
+#include "crypto/keccak256.h"
 #include "jade_assert.h"
 #include "jade_wally_verify.h"
 #include "keychain.h"
@@ -24,6 +27,7 @@
 
 #include <wally_bip32.h>
 #include <wally_bip85.h>
+#include <wally_crypto.h>
 
 #include <cdecoder.h>
 #include <cencoder.h>
@@ -1527,6 +1531,130 @@ static bool test_bip85_rsa_key_gen(jade_process_t* process)
     return true;
 }
 
+static bool test_eth_tron_address_vectors(void)
+{
+    const char ETH_ADDRESS_HEX[] = "7e5f4552091a69125d5dfcb7b8c2659029395bdf";
+    const char KECCAK256_ABC_HEX[] = "4e03657aea45a94fc7d47ba826c8d667c0d1e6e33a64a036ec44f58fa12d6c45";
+    const char KECCAK256_EMPTY_HEX[] = "c5d2460186f7233c927e7db2dcc703c0e500b653ca82273b7bfad8045d85a470";
+    const char TRON_ADDRESS_HEX[] = "417e5f4552091a69125d5dfcb7b8c2659029395bdf";
+    const char TRON_ADDRESS_BASE58[] = "TMVQGm1qAQYVdetCeGRRkTWYYrLXuHK2HC";
+
+    uint8_t expected_keccak_abc[KECCAK256_LEN];
+    uint8_t expected_keccak_empty[KECCAK256_LEN];
+    uint8_t expected_eth[ETHEREUM_ADDRESS_LEN];
+    uint8_t expected_tron[TRON_ADDRESS_LEN];
+    size_t written = 0;
+    if (wally_hex_to_bytes(KECCAK256_ABC_HEX, expected_keccak_abc, sizeof(expected_keccak_abc), &written) != WALLY_OK
+        || written != sizeof(expected_keccak_abc)) {
+        FAIL();
+    }
+    if (wally_hex_to_bytes(KECCAK256_EMPTY_HEX, expected_keccak_empty, sizeof(expected_keccak_empty), &written)
+            != WALLY_OK
+        || written != sizeof(expected_keccak_empty)) {
+        FAIL();
+    }
+    if (wally_hex_to_bytes(ETH_ADDRESS_HEX, expected_eth, sizeof(expected_eth), &written) != WALLY_OK
+        || written != sizeof(expected_eth)) {
+        FAIL();
+    }
+    if (wally_hex_to_bytes(TRON_ADDRESS_HEX, expected_tron, sizeof(expected_tron), &written) != WALLY_OK
+        || written != sizeof(expected_tron)) {
+        FAIL();
+    }
+
+    uint8_t private_key[EC_PRIVATE_KEY_LEN] = { 0 };
+    private_key[EC_PRIVATE_KEY_LEN - 1] = 1;
+
+    uint8_t compressed_pubkey[EC_PUBLIC_KEY_LEN];
+    uint8_t uncompressed_pubkey[EC_PUBLIC_KEY_UNCOMPRESSED_LEN];
+    if (wally_ec_public_key_from_private_key(
+            private_key, sizeof(private_key), compressed_pubkey, sizeof(compressed_pubkey))
+            != WALLY_OK
+        || wally_ec_public_key_decompress(
+               compressed_pubkey, sizeof(compressed_pubkey), uncompressed_pubkey, sizeof(uncompressed_pubkey))
+            != WALLY_OK) {
+        FAIL();
+    }
+
+    uint8_t keccak_hash[KECCAK256_LEN];
+    if (!keccak256(NULL, 0, keccak_hash, sizeof(keccak_hash))
+        || memcmp(keccak_hash, expected_keccak_empty, sizeof(expected_keccak_empty)) != 0
+        || !keccak256((const uint8_t*)"abc", 3, keccak_hash, sizeof(keccak_hash))
+        || memcmp(keccak_hash, expected_keccak_abc, sizeof(expected_keccak_abc)) != 0
+        || keccak256(private_key, sizeof(private_key), keccak_hash, sizeof(keccak_hash) - 1)) {
+        FAIL();
+    }
+
+    uint8_t eth_address[ETHEREUM_ADDRESS_LEN];
+    if (!ethereum_address_from_uncompressed_pubkey(
+            uncompressed_pubkey, sizeof(uncompressed_pubkey), eth_address, sizeof(eth_address))
+        || memcmp(eth_address, expected_eth, sizeof(expected_eth)) != 0
+        || !ethereum_address_matches_uncompressed_pubkey(
+            uncompressed_pubkey, sizeof(uncompressed_pubkey), expected_eth, sizeof(expected_eth))) {
+        FAIL();
+    }
+    if (ethereum_address_from_uncompressed_pubkey(
+            compressed_pubkey, sizeof(compressed_pubkey), eth_address, sizeof(eth_address))
+        || ethereum_address_from_uncompressed_pubkey(
+            uncompressed_pubkey, sizeof(uncompressed_pubkey), eth_address, sizeof(eth_address) - 1)) {
+        FAIL();
+    }
+
+    uint8_t bad_pubkey[EC_PUBLIC_KEY_UNCOMPRESSED_LEN];
+    memcpy(bad_pubkey, uncompressed_pubkey, sizeof(bad_pubkey));
+    bad_pubkey[0] = 0x02;
+    if (ethereum_address_from_uncompressed_pubkey(bad_pubkey, sizeof(bad_pubkey), eth_address, sizeof(eth_address))) {
+        FAIL();
+    }
+
+    uint8_t bad_eth[ETHEREUM_ADDRESS_LEN];
+    memcpy(bad_eth, expected_eth, sizeof(bad_eth));
+    bad_eth[sizeof(bad_eth) - 1] ^= 0x01;
+    if (ethereum_address_matches_uncompressed_pubkey(
+            uncompressed_pubkey, sizeof(uncompressed_pubkey), bad_eth, sizeof(bad_eth))) {
+        FAIL();
+    }
+
+    uint8_t tron_address[TRON_ADDRESS_LEN];
+    if (!tron_address_from_uncompressed_pubkey(
+            uncompressed_pubkey, sizeof(uncompressed_pubkey), tron_address, sizeof(tron_address))
+        || memcmp(tron_address, expected_tron, sizeof(expected_tron)) != 0
+        || !tron_owner_address_matches_uncompressed_pubkey(
+            uncompressed_pubkey, sizeof(uncompressed_pubkey), expected_tron, sizeof(expected_tron))) {
+        FAIL();
+    }
+
+    uint8_t bad_tron[TRON_ADDRESS_LEN];
+    memcpy(bad_tron, expected_tron, sizeof(bad_tron));
+    bad_tron[sizeof(bad_tron) - 1] ^= 0x01;
+    if (tron_owner_address_matches_uncompressed_pubkey(
+            uncompressed_pubkey, sizeof(uncompressed_pubkey), bad_tron, sizeof(bad_tron))) {
+        FAIL();
+    }
+    if (tron_owner_address_matches_uncompressed_pubkey(
+            uncompressed_pubkey, sizeof(uncompressed_pubkey), expected_tron + 1, TRON_ADDRESS_LEN - 1)) {
+        FAIL();
+    }
+    bad_tron[0] = 0x00;
+    if (tron_owner_address_matches_uncompressed_pubkey(
+            uncompressed_pubkey, sizeof(uncompressed_pubkey), bad_tron, sizeof(bad_tron))) {
+        FAIL();
+    }
+
+    char base58[TRON_BASE58_ADDRESS_MAX_LEN];
+    if (!tron_address_to_base58(expected_tron, sizeof(expected_tron), base58, sizeof(base58))
+        || strcmp(base58, TRON_ADDRESS_BASE58) != 0) {
+        FAIL();
+    }
+    if (tron_address_to_base58(expected_tron, sizeof(expected_tron), base58, 4)
+        || tron_address_to_base58(expected_tron + 1, TRON_ADDRESS_LEN - 1, base58, sizeof(base58))) {
+        FAIL();
+    }
+
+    JADE_WALLY_VERIFY(wally_bzero(private_key, sizeof(private_key)));
+    return true;
+}
+
 bool debug_selfcheck(jade_process_t* process)
 {
     JADE_ASSERT(process);
@@ -1570,6 +1698,11 @@ bool debug_selfcheck(jade_process_t* process)
 
     // Temporary test - will be replaced by python test when external rsa signing interface is completed
     if (!test_bip85_rsa_key_gen(process)) {
+        FAIL();
+    }
+
+    // Gate test for ETH/TRON private-key/public-key/address correspondence.
+    if (!test_eth_tron_address_vectors()) {
         FAIL();
     }
 

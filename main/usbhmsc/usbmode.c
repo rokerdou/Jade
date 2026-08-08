@@ -1009,7 +1009,7 @@ static bool export_usb_xpub_fn(const usbstorage_action_context_t* ctx)
         const size_t xpub_len = strlen(xpub);
         // Ensure enough space remains to close the descriptor and add checksum
         JADE_ASSERT(p + xpub_len < descriptor + (sizeof(descriptor) - 32));
-        strncpy(p, xpub, xpub_len);
+        memcpy(p, xpub, xpub_len);
         p += xpub_len;
         wally_free_string(xpub);
         memcpy(p, "/0/*)", sizeof("/0/*)"));
