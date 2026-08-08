@@ -346,6 +346,7 @@ static bool trezor_usb_hid_get_public_key(
 static trezor_session_t trezor_usb_hid_session(void)
 {
     const bool initialized = wallet_core_is_initialized();
+    const bool ready = wallet_core_is_ready();
     trezor_session_t session = {
         .features = {
             .vendor = "jade.tdisplay-s3",
@@ -363,11 +364,14 @@ static trezor_session_t trezor_usb_hid_session(void)
             .minor_version = 0,
             .patch_version = 0,
             .initialized = initialized,
-            .unlocked = wallet_core_is_ready(),
+            .has_unlocked = ready,
+            .unlocked = ready,
             .pin_protection = initialized,
+            .expose_private_fields = ready,
             .passphrase_protection = false,
-            .capabilities = { TREZOR_CAPABILITY_BITCOIN, TREZOR_CAPABILITY_BITCOIN_LIKE, TREZOR_CAPABILITY_ETHEREUM },
-            .capabilities_len = 3,
+            .capabilities = { TREZOR_CAPABILITY_BITCOIN, TREZOR_CAPABILITY_BITCOIN_LIKE, TREZOR_CAPABILITY_ETHEREUM,
+                TREZOR_CAPABILITY_TRON },
+            .capabilities_len = 4,
         },
         .state = &s_trezor_session_state,
         .initialize_session = trezor_usb_hid_initialize_session,

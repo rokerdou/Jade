@@ -1150,8 +1150,10 @@ int main(void)
         .minor_version = 0,
         .patch_version = 0,
         .initialized = true,
+        .has_unlocked = true,
         .unlocked = false,
         .pin_protection = true,
+        .expose_private_fields = true,
         .passphrase_protection = false,
         .capabilities = { TREZOR_CAPABILITY_BITCOIN, TREZOR_CAPABILITY_BITCOIN_LIKE, TREZOR_CAPABILITY_ETHEREUM,
             TREZOR_CAPABILITY_TRON },
@@ -1325,6 +1327,69 @@ int main(void)
     CHECK(saw_btc_like);
     CHECK(saw_eth);
     CHECK(saw_tron);
+
+    trezor_features_t locked_custom_features = features;
+    locked_custom_features.has_unlocked = false;
+    locked_custom_features.unlocked = false;
+    locked_custom_features.expose_private_fields = false;
+    memset(features_payload, 0, sizeof(features_payload));
+    features_payload_len = 0;
+    CHECK(trezor_features_encode(
+        &locked_custom_features, features_payload, sizeof(features_payload), &features_payload_len));
+    CHECK(features_payload_len > 0);
+    saw_initialized = false;
+    saw_pin_protection = false;
+    saw_passphrase_protection = false;
+    saw_unlocked = false;
+    saw_backup_availability = false;
+    saw_flags = false;
+    saw_unfinished_backup = false;
+    saw_no_backup = false;
+    saw_backup_type = false;
+    saw_safety_checks = false;
+    trezor_protobuf_reader_init(&features_reader, features_payload, features_payload_len);
+    while (features_reader.pos < features_reader.len) {
+        uint32_t field_number = 0;
+        uint8_t wire_type_field = 0;
+        const uint8_t* value = NULL;
+        size_t value_len = 0;
+        CHECK(trezor_protobuf_reader_next(&features_reader, &field_number, &wire_type_field, &value, &value_len));
+        if (field_number == 7) {
+            uint64_t bool_value = 0;
+            CHECK(trezor_protobuf_read_varint_value(value, value_len, &bool_value));
+            saw_pin_protection = bool_value == 1;
+        } else if (field_number == 8) {
+            saw_passphrase_protection = true;
+        } else if (field_number == 12) {
+            uint64_t bool_value = 0;
+            CHECK(trezor_protobuf_read_varint_value(value, value_len, &bool_value));
+            saw_initialized = bool_value == 1;
+        } else if (field_number == 16) {
+            saw_unlocked = true;
+        } else if (field_number == 19) {
+            saw_backup_availability = true;
+        } else if (field_number == 20) {
+            saw_flags = true;
+        } else if (field_number == 27) {
+            saw_unfinished_backup = true;
+        } else if (field_number == 28) {
+            saw_no_backup = true;
+        } else if (field_number == 31) {
+            saw_backup_type = true;
+        } else if (field_number == 37) {
+            saw_safety_checks = true;
+        }
+    }
+    CHECK(saw_initialized);
+    CHECK(saw_pin_protection);
+    CHECK(!saw_passphrase_protection);
+    CHECK(!saw_unlocked);
+    CHECK(!saw_backup_availability);
+    CHECK(!saw_flags);
+    CHECK(!saw_unfinished_backup);
+    CHECK(!saw_no_backup);
+    CHECK(!saw_backup_type);
+    CHECK(!saw_safety_checks);
 
     trezor_session_state_t trezor_session_state;
     wally_bzero(&trezor_session_state, sizeof(trezor_session_state));

@@ -24,8 +24,10 @@ typedef struct {
     uint32_t minor_version;
     uint32_t patch_version;
     bool initialized;
+    bool has_unlocked;
     bool unlocked;
     bool pin_protection;
+    bool expose_private_fields;
     bool passphrase_protection;
     bool no_backup;
     bool unfinished_backup;
