@@ -43,6 +43,10 @@ const char* trezor_trace_message_name(const uint16_t message_type)
         return "Features";
     case TREZOR_MSG_CANCEL:
         return "Cancel";
+    case TREZOR_MSG_BUTTON_REQUEST:
+        return "ButtonRequest";
+    case TREZOR_MSG_BUTTON_ACK:
+        return "ButtonAck";
     case TREZOR_MSG_GET_ADDRESS:
         return "GetAddress";
     case TREZOR_MSG_ADDRESS:
@@ -79,6 +83,8 @@ const char* trezor_trace_failure_name(const uint8_t failure_code)
         return "ActionCancelled";
     case TREZOR_FAILURE_NOT_INITIALIZED:
         return "NotInitialized";
+    case TREZOR_FAILURE_INVALID_SESSION:
+        return "InvalidSession";
     case TREZOR_FAILURE_INVALID_PROTOCOL:
         return "InvalidProtocol";
     default:
@@ -103,6 +109,10 @@ static const char* trezor_trace_message_short_name(const uint16_t message_type)
         return "Feat";
     case TREZOR_MSG_CANCEL:
         return "Cancel";
+    case TREZOR_MSG_BUTTON_REQUEST:
+        return "ButtonReq";
+    case TREZOR_MSG_BUTTON_ACK:
+        return "ButtonAck";
     case TREZOR_MSG_GET_ADDRESS:
         return "GetAddr";
     case TREZOR_MSG_ADDRESS:
@@ -523,6 +533,7 @@ static void trezor_trace_format_request(uint16_t request_type, const uint8_t* co
         break;
     case TREZOR_MSG_GET_FEATURES:
     case TREZOR_MSG_CANCEL:
+    case TREZOR_MSG_BUTTON_ACK:
         trezor_trace_append(output, output_len, "%s", payload_len ? "unexpected payload" : "empty");
         break;
     case TREZOR_MSG_GET_ADDRESS:
@@ -554,6 +565,9 @@ static void trezor_trace_format_response(uint16_t response_type, const uint8_t* 
     }
     case TREZOR_MSG_FEATURES:
         trezor_trace_format_features_response(payload, payload_len, output, output_len);
+        break;
+    case TREZOR_MSG_BUTTON_REQUEST:
+        trezor_trace_append(output, output_len, "local device action requested");
         break;
     case TREZOR_MSG_ADDRESS:
     case TREZOR_MSG_ETHEREUM_ADDRESS:

@@ -92,6 +92,12 @@ static trezor_bitcoin_get_address_t g_last_trezor_bitcoin_address_request;
 static trezor_ethereum_get_address_t g_last_trezor_eth_address_request;
 static bool g_trezor_public_key_ok = true;
 static trezor_public_key_request_t g_last_trezor_public_key_request;
+static bool g_trezor_needs_local_unlock = false;
+static bool g_trezor_local_unlock_ok = true;
+static size_t g_trezor_local_unlock_calls = 0;
+static bool g_trezor_initialize_session_ok = true;
+static uint8_t g_trezor_last_initialize_session_id[TREZOR_FEATURES_SESSION_ID_LEN];
+static size_t g_trezor_last_initialize_session_id_len = 0;
 
 static bool hex_char_to_nibble(const char c, uint8_t* const output)
 {
@@ -199,6 +205,37 @@ static bool trezor_test_get_public_key(
     return true;
 }
 
+static bool trezor_test_needs_local_unlock(void* ctx)
+{
+    (void)ctx;
+    return g_trezor_needs_local_unlock;
+}
+
+static bool trezor_test_perform_local_unlock(void* ctx)
+{
+    (void)ctx;
+    ++g_trezor_local_unlock_calls;
+    if (g_trezor_local_unlock_ok) {
+        g_trezor_needs_local_unlock = false;
+    }
+    return g_trezor_local_unlock_ok;
+}
+
+static bool trezor_test_initialize_session(
+    void* ctx, const uint8_t* const session_id, const size_t session_id_len)
+{
+    (void)ctx;
+    if (!g_trezor_initialize_session_ok || session_id_len > sizeof(g_trezor_last_initialize_session_id)) {
+        return false;
+    }
+    g_trezor_last_initialize_session_id_len = session_id_len;
+    wally_bzero(g_trezor_last_initialize_session_id, sizeof(g_trezor_last_initialize_session_id));
+    if (session_id_len) {
+        memcpy(g_trezor_last_initialize_session_id, session_id, session_id_len);
+    }
+    return true;
+}
+
 static bool trezor_payload_has_varint(const uint8_t* const payload, const size_t payload_len,
     const uint32_t expected_field, const uint64_t expected_value)
 {
@@ -215,6 +252,20 @@ static bool trezor_payload_has_varint(const uint8_t* const payload, const size_t
         }
         if (field_number == expected_field && wire_type == TREZOR_PROTOBUF_WIRE_VARINT
             && trezor_protobuf_read_varint_value(value, value_len, &decoded) && decoded == expected_value) {
+            return true;
+        }
+    }
+    return false;
+}
+
+static bool trezor_payload_contains_bytes(const uint8_t* const payload, const size_t payload_len,
+    const uint8_t* const needle, const size_t needle_len)
+{
+    if (!payload || !needle || needle_len == 0 || needle_len > payload_len) {
+        return false;
+    }
+    for (size_t i = 0; i <= payload_len - needle_len; ++i) {
+        if (memcmp(payload + i, needle, needle_len) == 0) {
             return true;
         }
     }
@@ -1090,6 +1141,7 @@ int main(void)
     trezor_features_t features = { .vendor = "jade.tdisplay-s3",
         .fw_vendor = "Jade T-Display-S3",
         .device_id = "jade-test",
+        .language = "en-US",
         .model = "Jade",
         .internal_model = "UNKNOWN",
         .session_id = trezor_session_id,
@@ -1116,12 +1168,23 @@ int main(void)
     bool saw_model = false;
     bool saw_bootloader_mode = false;
     bool saw_initialized = false;
+    bool saw_imported = false;
     bool saw_pin_protection = false;
     bool saw_passphrase_protection = false;
     bool saw_unlocked = false;
     bool saw_firmware_present = false;
+    bool saw_backup_availability = false;
+    bool saw_flags = false;
     bool saw_fw_vendor = false;
+    bool saw_unfinished_backup = false;
+    bool saw_no_backup = false;
+    bool saw_backup_type = false;
     bool saw_session_id = false;
+    bool saw_safety_checks = false;
+    bool saw_busy = false;
+    bool saw_internal_model = false;
+    bool saw_language_version_matches = false;
+    bool saw_usb_connected = false;
     bool saw_btc = false;
     bool saw_btc_like = false;
     bool saw_eth = false;
@@ -1150,7 +1213,9 @@ int main(void)
             CHECK(trezor_protobuf_read_varint_value(value, value_len, &version));
             saw_patch_version = version == 0;
         } else if (field_number == 5) {
-            saw_bootloader_mode = true;
+            uint64_t bool_value = 1;
+            CHECK(trezor_protobuf_read_varint_value(value, value_len, &bool_value));
+            saw_bootloader_mode = bool_value == 0;
         } else if (field_number == 7) {
             uint64_t bool_value = 0;
             CHECK(trezor_protobuf_read_varint_value(value, value_len, &bool_value));
@@ -1163,12 +1228,26 @@ int main(void)
             uint64_t bool_value = 0;
             CHECK(trezor_protobuf_read_varint_value(value, value_len, &bool_value));
             saw_initialized = bool_value == 1;
+        } else if (field_number == 15) {
+            uint64_t bool_value = 1;
+            CHECK(trezor_protobuf_read_varint_value(value, value_len, &bool_value));
+            saw_imported = bool_value == 0;
         } else if (field_number == 16) {
             uint64_t bool_value = 1;
             CHECK(trezor_protobuf_read_varint_value(value, value_len, &bool_value));
             saw_unlocked = bool_value == 0;
         } else if (field_number == 18) {
-            saw_firmware_present = true;
+            uint64_t bool_value = 0;
+            CHECK(trezor_protobuf_read_varint_value(value, value_len, &bool_value));
+            saw_firmware_present = bool_value == 1;
+        } else if (field_number == 19) {
+            uint64_t backup = 1;
+            CHECK(trezor_protobuf_read_varint_value(value, value_len, &backup));
+            saw_backup_availability = backup == 0;
+        } else if (field_number == 20) {
+            uint64_t flags = 1;
+            CHECK(trezor_protobuf_read_varint_value(value, value_len, &flags));
+            saw_flags = flags == 0;
         } else if (field_number == 21) {
             saw_model = wire_type_field == TREZOR_PROTOBUF_WIRE_LEN && value_len == strlen("Jade")
                 && memcmp(value, "Jade", value_len) == 0;
@@ -1182,9 +1261,40 @@ int main(void)
             saw_btc_like = saw_btc_like || capability == TREZOR_CAPABILITY_BITCOIN_LIKE;
             saw_eth = saw_eth || capability == TREZOR_CAPABILITY_ETHEREUM;
             saw_tron = saw_tron || capability == TREZOR_CAPABILITY_TRON;
+        } else if (field_number == 27) {
+            uint64_t bool_value = 1;
+            CHECK(trezor_protobuf_read_varint_value(value, value_len, &bool_value));
+            saw_unfinished_backup = bool_value == 0;
+        } else if (field_number == 28) {
+            uint64_t bool_value = 1;
+            CHECK(trezor_protobuf_read_varint_value(value, value_len, &bool_value));
+            saw_no_backup = bool_value == 0;
+        } else if (field_number == 31) {
+            uint64_t backup_type = 1;
+            CHECK(trezor_protobuf_read_varint_value(value, value_len, &backup_type));
+            saw_backup_type = backup_type == 0;
         } else if (field_number == 35) {
             saw_session_id = wire_type_field == TREZOR_PROTOBUF_WIRE_LEN && value_len == sizeof(trezor_session_id)
                 && memcmp(value, trezor_session_id, sizeof(trezor_session_id)) == 0;
+        } else if (field_number == 37) {
+            uint64_t safety_checks = 1;
+            CHECK(trezor_protobuf_read_varint_value(value, value_len, &safety_checks));
+            saw_safety_checks = safety_checks == 0;
+        } else if (field_number == 41) {
+            uint64_t bool_value = 1;
+            CHECK(trezor_protobuf_read_varint_value(value, value_len, &bool_value));
+            saw_busy = bool_value == 0;
+        } else if (field_number == 44) {
+            saw_internal_model = wire_type_field == TREZOR_PROTOBUF_WIRE_LEN && value_len == strlen("UNKNOWN")
+                && memcmp(value, "UNKNOWN", value_len) == 0;
+        } else if (field_number == 50) {
+            uint64_t bool_value = 0;
+            CHECK(trezor_protobuf_read_varint_value(value, value_len, &bool_value));
+            saw_language_version_matches = bool_value == 1;
+        } else if (field_number == 59) {
+            uint64_t bool_value = 0;
+            CHECK(trezor_protobuf_read_varint_value(value, value_len, &bool_value));
+            saw_usb_connected = bool_value == 1;
         }
     }
     CHECK(saw_vendor);
@@ -1192,21 +1302,41 @@ int main(void)
     CHECK(saw_minor_version);
     CHECK(saw_patch_version);
     CHECK(saw_model);
-    CHECK(!saw_bootloader_mode);
+    CHECK(saw_bootloader_mode);
     CHECK(saw_pin_protection);
     CHECK(saw_passphrase_protection);
     CHECK(saw_initialized);
+    CHECK(saw_imported);
     CHECK(saw_unlocked);
-    CHECK(!saw_firmware_present);
+    CHECK(saw_firmware_present);
+    CHECK(saw_backup_availability);
+    CHECK(saw_flags);
     CHECK(saw_fw_vendor);
+    CHECK(saw_unfinished_backup);
+    CHECK(saw_no_backup);
+    CHECK(saw_backup_type);
     CHECK(saw_session_id);
+    CHECK(saw_safety_checks);
+    CHECK(saw_busy);
+    CHECK(saw_internal_model);
+    CHECK(saw_language_version_matches);
+    CHECK(saw_usb_connected);
     CHECK(saw_btc);
     CHECK(saw_btc_like);
     CHECK(saw_eth);
     CHECK(saw_tron);
 
+    trezor_session_state_t trezor_session_state;
+    wally_bzero(&trezor_session_state, sizeof(trezor_session_state));
     trezor_session_t trezor_session = {
         .features = features,
+        .state = &trezor_session_state,
+        .initialize_session = trezor_test_initialize_session,
+        .initialize_session_ctx = NULL,
+        .needs_local_unlock = trezor_test_needs_local_unlock,
+        .needs_local_unlock_ctx = NULL,
+        .perform_local_unlock = trezor_test_perform_local_unlock,
+        .perform_local_unlock_ctx = NULL,
         .get_bitcoin_address = trezor_test_get_bitcoin_address,
         .get_bitcoin_address_ctx = NULL,
         .get_eth_address = trezor_test_get_eth_address,
@@ -1224,6 +1354,7 @@ int main(void)
     trezor_trace_snapshot_t trace_snapshot;
     char trace_text[TREZOR_TRACE_FORMATTED_LEN];
 
+    g_trezor_last_initialize_session_id_len = 99;
     CHECK(trezor_wire_encode_message(
         TREZOR_MSG_INITIALIZE, NULL, 0, session_request_chunks, sizeof(session_request_chunks), &session_request_len));
     CHECK(trezor_session_handle_wire(&trezor_session, session_request_chunks, session_request_len,
@@ -1239,6 +1370,7 @@ int main(void)
         session_response_payload, session_response_payload_len, 30, TREZOR_CAPABILITY_ETHEREUM));
     CHECK(
         trezor_payload_has_varint(session_response_payload, session_response_payload_len, 30, TREZOR_CAPABILITY_TRON));
+    CHECK(g_trezor_last_initialize_session_id_len == 0);
     CHECK(trezor_trace_snapshot(&trace_snapshot));
     CHECK(trace_snapshot.latest.request_type == TREZOR_MSG_INITIALIZE);
     CHECK(trace_snapshot.latest.response_type == TREZOR_MSG_FEATURES);
@@ -1254,7 +1386,7 @@ int main(void)
     uint8_t initialize_payload[96];
     trezor_protobuf_writer_t initialize_writer;
     trezor_protobuf_writer_init(&initialize_writer, initialize_payload, sizeof(initialize_payload));
-    CHECK(trezor_protobuf_write_bytes_field(&initialize_writer, 1, (const uint8_t*)"session", 7));
+    CHECK(trezor_protobuf_write_bytes_field(&initialize_writer, 1, trezor_session_id, sizeof(trezor_session_id)));
     CHECK(trezor_protobuf_write_bool_field(&initialize_writer, 3, true));
     CHECK(trezor_wire_encode_message(TREZOR_MSG_INITIALIZE, initialize_payload, initialize_writer.len,
         session_request_chunks, sizeof(session_request_chunks), &session_request_len));
@@ -1263,6 +1395,19 @@ int main(void)
     CHECK(trezor_wire_decode_message(session_response_chunks, session_response_len, &session_response_type,
         session_response_payload, sizeof(session_response_payload), &session_response_payload_len));
     CHECK(session_response_type == TREZOR_MSG_FEATURES);
+    CHECK(g_trezor_last_initialize_session_id_len == sizeof(trezor_session_id));
+    CHECK(memcmp(g_trezor_last_initialize_session_id, trezor_session_id, sizeof(trezor_session_id)) == 0);
+
+    trezor_protobuf_writer_init(&initialize_writer, initialize_payload, sizeof(initialize_payload));
+    CHECK(trezor_protobuf_write_bytes_field(&initialize_writer, 1, (const uint8_t*)"session", 7));
+    CHECK(trezor_wire_encode_message(TREZOR_MSG_INITIALIZE, initialize_payload, initialize_writer.len,
+        session_request_chunks, sizeof(session_request_chunks), &session_request_len));
+    CHECK(trezor_session_handle_wire(&trezor_session, session_request_chunks, session_request_len,
+        session_response_chunks, sizeof(session_response_chunks), &session_response_len));
+    CHECK(trezor_wire_decode_message(session_response_chunks, session_response_len, &session_response_type,
+        session_response_payload, sizeof(session_response_payload), &session_response_payload_len));
+    CHECK(session_response_type == TREZOR_MSG_FAILURE);
+    CHECK(trezor_payload_has_varint(session_response_payload, session_response_payload_len, 1, TREZOR_FAILURE_DATA_ERROR));
 
     trezor_protobuf_writer_init(&initialize_writer, initialize_payload, sizeof(initialize_payload));
     CHECK(trezor_protobuf_write_varint_field(&initialize_writer, 3, 2));
@@ -1284,6 +1429,69 @@ int main(void)
     CHECK(session_response_type == TREZOR_MSG_FAILURE);
     CHECK(trezor_payload_has_varint(
         session_response_payload, session_response_payload_len, 1, TREZOR_FAILURE_ACTION_CANCELLED));
+
+    g_trezor_needs_local_unlock = true;
+    g_trezor_local_unlock_ok = true;
+    g_trezor_local_unlock_calls = 0;
+    CHECK(trezor_wire_encode_message(TREZOR_MSG_ETHEREUM_GET_PUBLIC_KEY, trezor_eth_public_key_payload,
+        trezor_eth_public_key_payload_len, session_request_chunks, sizeof(session_request_chunks), &session_request_len));
+    CHECK(trezor_session_handle_wire(&trezor_session, session_request_chunks, session_request_len,
+        session_response_chunks, sizeof(session_response_chunks), &session_response_len));
+    CHECK(trezor_wire_decode_message(session_response_chunks, session_response_len, &session_response_type,
+        session_response_payload, sizeof(session_response_payload), &session_response_payload_len));
+    CHECK(session_response_type == TREZOR_MSG_BUTTON_REQUEST);
+    CHECK(trezor_payload_has_varint(
+        session_response_payload, session_response_payload_len, 1, TREZOR_BUTTON_REQUEST_PIN_ENTRY));
+    CHECK(!trezor_payload_contains_bytes(session_response_payload, session_response_payload_len,
+        (const uint8_t*)"xpub-test-only", strlen("xpub-test-only")));
+    CHECK(g_trezor_local_unlock_calls == 0);
+    CHECK(trezor_session_state.has_pending_local_unlock);
+    CHECK(trezor_session_state.pending_request_type == TREZOR_MSG_ETHEREUM_GET_PUBLIC_KEY);
+    CHECK(trezor_session_state.pending_request_payload_len == trezor_eth_public_key_payload_len);
+    CHECK(trezor_trace_format_latest(trace_text, sizeof(trace_text)));
+    CHECK(strstr(trace_text, "EthereumGetPublicKey") != NULL);
+    CHECK(strstr(trace_text, "ButtonRequest") != NULL);
+
+    CHECK(trezor_wire_encode_message(
+        TREZOR_MSG_BUTTON_ACK, NULL, 0, session_request_chunks, sizeof(session_request_chunks), &session_request_len));
+    CHECK(trezor_session_handle_wire(&trezor_session, session_request_chunks, session_request_len,
+        session_response_chunks, sizeof(session_response_chunks), &session_response_len));
+    CHECK(trezor_wire_decode_message(session_response_chunks, session_response_len, &session_response_type,
+        session_response_payload, sizeof(session_response_payload), &session_response_payload_len));
+    CHECK(session_response_type == TREZOR_MSG_ETHEREUM_PUBLIC_KEY);
+    CHECK(g_trezor_local_unlock_calls == 1);
+    CHECK(!g_trezor_needs_local_unlock);
+    CHECK(!trezor_session_state.has_pending_local_unlock);
+    CHECK(!trezor_public_key_payload_has_private_key_field(session_response_payload, session_response_payload_len));
+
+    g_trezor_needs_local_unlock = true;
+    session_response_type = 0;
+    session_response_payload_len = 0;
+    CHECK(!trezor_session_handle_payload(&trezor_session, TREZOR_MSG_ETHEREUM_GET_PUBLIC_KEY,
+        trezor_eth_public_key_payload, trezor_eth_public_key_payload_len, &session_response_type,
+        session_response_payload, 1, &session_response_payload_len));
+    CHECK(!trezor_session_state.has_pending_local_unlock);
+    g_trezor_needs_local_unlock = false;
+
+    g_trezor_needs_local_unlock = true;
+    CHECK(trezor_wire_encode_message(TREZOR_MSG_GET_ADDRESS, trezor_bitcoin_payload, trezor_bitcoin_payload_len,
+        session_request_chunks, sizeof(session_request_chunks), &session_request_len));
+    CHECK(trezor_session_handle_wire(&trezor_session, session_request_chunks, session_request_len,
+        session_response_chunks, sizeof(session_response_chunks), &session_response_len));
+    CHECK(trezor_wire_decode_message(session_response_chunks, session_response_len, &session_response_type,
+        session_response_payload, sizeof(session_response_payload), &session_response_payload_len));
+    CHECK(session_response_type == TREZOR_MSG_BUTTON_REQUEST);
+    CHECK(trezor_session_state.has_pending_local_unlock);
+
+    CHECK(trezor_wire_encode_message(
+        TREZOR_MSG_CANCEL, NULL, 0, session_request_chunks, sizeof(session_request_chunks), &session_request_len));
+    CHECK(trezor_session_handle_wire(&trezor_session, session_request_chunks, session_request_len,
+        session_response_chunks, sizeof(session_response_chunks), &session_response_len));
+    CHECK(trezor_wire_decode_message(session_response_chunks, session_response_len, &session_response_type,
+        session_response_payload, sizeof(session_response_payload), &session_response_payload_len));
+    CHECK(session_response_type == TREZOR_MSG_FAILURE);
+    CHECK(!trezor_session_state.has_pending_local_unlock);
+    g_trezor_needs_local_unlock = false;
 
     CHECK(trezor_wire_encode_message(TREZOR_MSG_GET_ADDRESS, trezor_bitcoin_payload, trezor_bitcoin_payload_len,
         session_request_chunks, sizeof(session_request_chunks), &session_request_len));
@@ -1456,6 +1664,7 @@ int main(void)
 
     CHECK(trezor_dispatcher_message_allowed(TREZOR_MSG_INITIALIZE));
     CHECK(trezor_dispatcher_message_allowed(TREZOR_MSG_GET_FEATURES));
+    CHECK(trezor_dispatcher_message_allowed(TREZOR_MSG_BUTTON_ACK));
     CHECK(trezor_dispatcher_message_allowed(TREZOR_MSG_GET_ADDRESS));
     CHECK(trezor_dispatcher_message_allowed(TREZOR_MSG_ETHEREUM_GET_ADDRESS));
     CHECK(trezor_dispatcher_message_allowed(TREZOR_MSG_GET_PUBLIC_KEY));

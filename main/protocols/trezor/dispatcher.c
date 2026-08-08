@@ -4,7 +4,7 @@
 bool trezor_dispatcher_message_allowed(const uint32_t message_type)
 {
     return message_type == TREZOR_MSG_INITIALIZE || message_type == TREZOR_MSG_GET_FEATURES
-        || message_type == TREZOR_MSG_CANCEL || message_type == TREZOR_MSG_GET_ADDRESS
+        || message_type == TREZOR_MSG_CANCEL || message_type == TREZOR_MSG_BUTTON_ACK || message_type == TREZOR_MSG_GET_ADDRESS
         || message_type == TREZOR_MSG_ETHEREUM_GET_ADDRESS || message_type == TREZOR_MSG_GET_PUBLIC_KEY
         || message_type == TREZOR_MSG_ETHEREUM_GET_PUBLIC_KEY;
 }

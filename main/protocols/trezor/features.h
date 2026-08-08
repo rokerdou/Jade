@@ -14,6 +14,7 @@ typedef struct {
     const char* vendor;
     const char* fw_vendor;
     const char* device_id;
+    const char* language;
     const char* label;
     const char* model;
     const char* internal_model;
@@ -26,6 +27,9 @@ typedef struct {
     bool unlocked;
     bool pin_protection;
     bool passphrase_protection;
+    bool no_backup;
+    bool unfinished_backup;
+    uint32_t flags;
     trezor_capability_t capabilities[TREZOR_FEATURES_MAX_CAPABILITIES];
     size_t capabilities_len;
 } trezor_features_t;

@@ -20,6 +20,7 @@
 #include "../../wallet_core/wallet_core.h"
 
 #include <esp_err.h>
+#include <esp_mac.h>
 #include <esp_random.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/queue.h>
@@ -53,6 +54,8 @@ static TaskHandle_t s_hid_task = NULL;
 static volatile bool s_hid_enabled = false;
 static uint8_t s_trezor_session_id[TREZOR_FEATURES_SESSION_ID_LEN];
 static bool s_trezor_session_id_initialized = false;
+static trezor_session_state_t s_trezor_session_state;
+static char s_trezor_device_id[13];
 
 static const tusb_desc_device_t TREZOR_USB_HID_DEVICE_DESCRIPTOR = {
     .bLength = sizeof(tusb_desc_device_t),
@@ -97,7 +100,7 @@ static const char* TREZOR_USB_HID_STRINGS[] = {
     (const char[]){ 0x09, 0x04 },
     "SatoshiLabs",
     "TREZOR",
-    "000000000000000000000000",
+    s_trezor_device_id,
     "TREZOR Interface",
 };
 
@@ -123,6 +126,41 @@ static const uint8_t TREZOR_USB_WEBUSB_URL_DESCRIPTOR[] = {
 };
 
 bool show_confirm_address_activity(const char* address, bool default_selection);
+
+static void trezor_usb_hid_init_device_id(void)
+{
+    if (s_trezor_device_id[0] != '\0') {
+        return;
+    }
+
+    uint8_t mac[6];
+    if (esp_efuse_mac_get_default(mac) == ESP_OK) {
+        static const char hex[] = "0123456789ABCDEF";
+        for (size_t i = 0; i < sizeof(mac); ++i) {
+            s_trezor_device_id[i * 2] = hex[mac[i] >> 4];
+            s_trezor_device_id[(i * 2) + 1] = hex[mac[i] & 0x0f];
+        }
+        s_trezor_device_id[sizeof(s_trezor_device_id) - 1] = '\0';
+        return;
+    }
+
+    memcpy(s_trezor_device_id, "JADEUNKNOWN", sizeof("JADEUNKNOWN"));
+}
+
+static bool trezor_usb_hid_initialize_session(void* ctx, const uint8_t* const session_id, const size_t session_id_len)
+{
+    (void)ctx;
+    if (session_id_len != 0 && session_id_len != sizeof(s_trezor_session_id)) {
+        return false;
+    }
+    if (session_id_len == sizeof(s_trezor_session_id)) {
+        memcpy(s_trezor_session_id, session_id, sizeof(s_trezor_session_id));
+    } else {
+        esp_fill_random(s_trezor_session_id, sizeof(s_trezor_session_id));
+    }
+    s_trezor_session_id_initialized = true;
+    return true;
+}
 
 uint8_t const* tud_descriptor_bos_cb(void)
 {
@@ -197,13 +235,18 @@ static bool trezor_usb_hid_send_chunks(const uint8_t* const chunks, const size_t
 
 static bool trezor_usb_hid_ensure_wallet_ready(void)
 {
-    if (wallet_core_is_ready()) {
-        return true;
-    }
-    if (!wallet_core_is_initialized() || wallet_core_is_unlocked()) {
-        return false;
-    }
+    return wallet_core_is_ready();
+}
 
+static bool trezor_usb_hid_needs_local_unlock(void* ctx)
+{
+    (void)ctx;
+    return wallet_core_is_initialized() && !wallet_core_is_ready() && !wallet_core_is_unlocked();
+}
+
+static bool trezor_usb_hid_perform_local_unlock(void* ctx)
+{
+    (void)ctx;
     return auth_user_unlock_wallet_with_pin(SOURCE_SERIAL) && wallet_core_is_ready();
 }
 
@@ -307,7 +350,8 @@ static trezor_session_t trezor_usb_hid_session(void)
         .features = {
             .vendor = "jade.tdisplay-s3",
             .fw_vendor = "Jade T-Display-S3",
-            .device_id = "000000000000000000000000",
+            .device_id = s_trezor_device_id,
+            .language = "en-US",
             .label = "Jade T-Display-S3",
             .model = "Jade",
             .internal_model = "UNKNOWN",
@@ -325,6 +369,13 @@ static trezor_session_t trezor_usb_hid_session(void)
             .capabilities = { TREZOR_CAPABILITY_BITCOIN, TREZOR_CAPABILITY_BITCOIN_LIKE, TREZOR_CAPABILITY_ETHEREUM },
             .capabilities_len = 3,
         },
+        .state = &s_trezor_session_state,
+        .initialize_session = trezor_usb_hid_initialize_session,
+        .initialize_session_ctx = NULL,
+        .needs_local_unlock = trezor_usb_hid_needs_local_unlock,
+        .needs_local_unlock_ctx = NULL,
+        .perform_local_unlock = trezor_usb_hid_perform_local_unlock,
+        .perform_local_unlock_ctx = NULL,
         .get_bitcoin_address = trezor_usb_hid_get_bitcoin_address,
         .get_bitcoin_address_ctx = NULL,
         .get_eth_address = trezor_usb_hid_get_eth_address,
@@ -404,6 +455,7 @@ bool trezor_usb_hid_init(void)
         esp_fill_random(s_trezor_session_id, sizeof(s_trezor_session_id));
         s_trezor_session_id_initialized = true;
     }
+    trezor_usb_hid_init_device_id();
 
     const tinyusb_config_t usb_config = {
         .device_descriptor = &TREZOR_USB_HID_DEVICE_DESCRIPTOR,
