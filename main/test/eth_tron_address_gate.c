@@ -258,6 +258,25 @@ static bool trezor_payload_has_varint(const uint8_t* const payload, const size_t
     return false;
 }
 
+static int trezor_check_rejected_message(
+    const trezor_session_t* const session, const uint16_t message_type, const char* const label)
+{
+    uint8_t response_payload[256];
+    size_t response_payload_len = 0;
+    uint16_t response_type = 0;
+
+    if (!session || !label
+        || !trezor_session_handle_payload(
+            session, message_type, NULL, 0, &response_type, response_payload, sizeof(response_payload),
+            &response_payload_len)
+        || response_type != TREZOR_MSG_FAILURE
+        || !trezor_payload_has_varint(response_payload, response_payload_len, 1, TREZOR_FAILURE_UNEXPECTED_MESSAGE)) {
+        fprintf(stderr, "Trezor USB sensitive message was not rejected: %s (%u)\n", label, message_type);
+        return 1;
+    }
+    return 0;
+}
+
 static bool trezor_payload_contains_bytes(const uint8_t* const payload, const size_t payload_len,
     const uint8_t* const needle, const size_t needle_len)
 {
@@ -1767,12 +1786,35 @@ int main(void)
     CHECK(trezor_dispatcher_message_allowed(TREZOR_MSG_GET_PUBLIC_KEY));
     CHECK(trezor_dispatcher_message_allowed(TREZOR_MSG_ETHEREUM_GET_PUBLIC_KEY));
     CHECK(trezor_dispatcher_message_sensitive_or_unsupported(TREZOR_MSG_LOAD_DEVICE));
+    CHECK(trezor_dispatcher_message_sensitive_or_unsupported(TREZOR_MSG_RESET_DEVICE));
     CHECK(trezor_dispatcher_message_sensitive_or_unsupported(TREZOR_MSG_RECOVERY_DEVICE));
     CHECK(trezor_dispatcher_message_sensitive_or_unsupported(TREZOR_MSG_GET_ENTROPY));
+    CHECK(trezor_dispatcher_message_sensitive_or_unsupported(TREZOR_MSG_SIGN_TX));
     CHECK(trezor_dispatcher_message_sensitive_or_unsupported(TREZOR_MSG_CIPHER_KEY_VALUE));
+    CHECK(trezor_dispatcher_message_sensitive_or_unsupported(TREZOR_MSG_BACKUP_DEVICE));
+    CHECK(trezor_dispatcher_message_sensitive_or_unsupported(TREZOR_MSG_SIGN_MESSAGE));
+    CHECK(trezor_dispatcher_message_sensitive_or_unsupported(TREZOR_MSG_PASSPHRASE_ACK));
+    CHECK(trezor_dispatcher_message_sensitive_or_unsupported(TREZOR_MSG_SIGN_IDENTITY));
     CHECK(trezor_dispatcher_message_sensitive_or_unsupported(TREZOR_MSG_GET_ECDH_SESSION_KEY));
+    CHECK(trezor_dispatcher_message_sensitive_or_unsupported(TREZOR_MSG_UNLOCK_PATH));
     CHECK(trezor_dispatcher_message_sensitive_or_unsupported(TREZOR_MSG_ETHEREUM_SIGN_TX));
     CHECK(trezor_dispatcher_message_sensitive_or_unsupported(TREZOR_MSG_ETHEREUM_SIGN_TX_EIP1559));
+
+    CHECK(!trezor_check_rejected_message(&trezor_session, TREZOR_MSG_GET_ENTROPY, "GetEntropy"));
+    CHECK(!trezor_check_rejected_message(&trezor_session, TREZOR_MSG_LOAD_DEVICE, "LoadDevice"));
+    CHECK(!trezor_check_rejected_message(&trezor_session, TREZOR_MSG_RESET_DEVICE, "ResetDevice"));
+    CHECK(!trezor_check_rejected_message(&trezor_session, TREZOR_MSG_SIGN_TX, "SignTx"));
+    CHECK(!trezor_check_rejected_message(&trezor_session, TREZOR_MSG_CIPHER_KEY_VALUE, "CipherKeyValue"));
+    CHECK(!trezor_check_rejected_message(&trezor_session, TREZOR_MSG_BACKUP_DEVICE, "BackupDevice"));
+    CHECK(!trezor_check_rejected_message(&trezor_session, TREZOR_MSG_SIGN_MESSAGE, "SignMessage"));
+    CHECK(!trezor_check_rejected_message(&trezor_session, TREZOR_MSG_PASSPHRASE_ACK, "PassphraseAck"));
+    CHECK(!trezor_check_rejected_message(&trezor_session, TREZOR_MSG_RECOVERY_DEVICE, "RecoveryDevice"));
+    CHECK(!trezor_check_rejected_message(&trezor_session, TREZOR_MSG_SIGN_IDENTITY, "SignIdentity"));
+    CHECK(!trezor_check_rejected_message(&trezor_session, TREZOR_MSG_GET_ECDH_SESSION_KEY, "GetECDHSessionKey"));
+    CHECK(!trezor_check_rejected_message(&trezor_session, TREZOR_MSG_UNLOCK_PATH, "UnlockPath"));
+    CHECK(!trezor_check_rejected_message(&trezor_session, TREZOR_MSG_ETHEREUM_SIGN_TX, "EthereumSignTx"));
+    CHECK(!trezor_check_rejected_message(
+        &trezor_session, TREZOR_MSG_ETHEREUM_SIGN_TX_EIP1559, "EthereumSignTxEIP1559"));
 
     return 0;
 }

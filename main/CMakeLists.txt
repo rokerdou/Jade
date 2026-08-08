@@ -36,6 +36,14 @@ if(CONFIG_LOG_WIFI)
     list(APPEND extra_priv_requires "esp_wifi")
 endif()
 
+if(CONFIG_TREZOR_USB_HID AND CONFIG_DEBUG_MODE)
+    message(FATAL_ERROR "CONFIG_TREZOR_USB_HID must not be combined with CONFIG_DEBUG_MODE")
+endif()
+
+if(CONFIG_TREZOR_USB_HID AND (CONFIG_TINYUSB_CDC_ENABLED OR CONFIG_JADE_USE_USB_JTAG_SERIAL))
+    message(FATAL_ERROR "CONFIG_TREZOR_USB_HID must not be combined with Jade USB serial/RPC transports")
+endif()
+
 find_program(HOST_CC NAMES cc clang gcc)
 
 idf_component_register(SRC_DIRS "."
