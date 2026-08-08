@@ -98,6 +98,8 @@ const char* trezor_trace_message_name(const uint16_t message_type)
     switch (message_type) {
     case TREZOR_MSG_INITIALIZE:
         return "Initialize";
+    case TREZOR_MSG_SUCCESS:
+        return "Success";
     case TREZOR_MSG_FAILURE:
         return "Failure";
     case TREZOR_MSG_GET_PUBLIC_KEY:
@@ -118,6 +120,8 @@ const char* trezor_trace_message_name(const uint16_t message_type)
         return "Address";
     case TREZOR_MSG_GET_FEATURES:
         return "GetFeatures";
+    case TREZOR_MSG_END_SESSION:
+        return "EndSession";
     case TREZOR_MSG_ETHEREUM_GET_ADDRESS:
         return "EthereumGetAddress";
     case TREZOR_MSG_ETHEREUM_ADDRESS:
@@ -164,6 +168,8 @@ static const char* trezor_trace_message_short_name(const uint16_t message_type)
         return "Pending";
     case TREZOR_MSG_INITIALIZE:
         return "Init";
+    case TREZOR_MSG_SUCCESS:
+        return "Success";
     case TREZOR_MSG_FAILURE:
         return "Fail";
     case TREZOR_MSG_GET_PUBLIC_KEY:
@@ -184,6 +190,8 @@ static const char* trezor_trace_message_short_name(const uint16_t message_type)
         return "Addr";
     case TREZOR_MSG_GET_FEATURES:
         return "GetFeat";
+    case TREZOR_MSG_END_SESSION:
+        return "End";
     case TREZOR_MSG_ETHEREUM_GET_ADDRESS:
         return "EthAddr?";
     case TREZOR_MSG_ETHEREUM_ADDRESS:
@@ -598,6 +606,7 @@ static void trezor_trace_format_request(uint16_t request_type, const uint8_t* co
         break;
     case TREZOR_MSG_GET_FEATURES:
     case TREZOR_MSG_CANCEL:
+    case TREZOR_MSG_END_SESSION:
     case TREZOR_MSG_BUTTON_ACK:
         trezor_trace_append(output, output_len, "%s", payload_len ? "unexpected payload" : "empty");
         break;

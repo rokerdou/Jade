@@ -18,6 +18,7 @@
 #include "../../jade_tasks.h"
 #include "../../process/auth_user.h"
 #include "../../process.h"
+#include "../../sensitive.h"
 #include "../../wallet_core/wallet_core.h"
 
 #include <esp_err.h>
@@ -439,6 +440,8 @@ static trezor_session_t trezor_usb_hid_session(void)
 static void trezor_usb_hid_task(void* ignore)
 {
     (void)ignore;
+    sensitive_init();
+
     size_t rx_len = 0;
     size_t expected_len = 0;
 
@@ -466,6 +469,7 @@ static void trezor_usb_hid_task(void* ignore)
                     trezor_trace_set_stage(sent ? "usb:idle" : "usb:txfail");
                 }
                 wally_bzero(s_hid_tx_chunks, sizeof(s_hid_tx_chunks));
+                sensitive_assert_empty();
                 continue;
             }
             trezor_trace_set_stage("usb:expect_ok");
@@ -502,6 +506,7 @@ static void trezor_usb_hid_task(void* ignore)
             }
             wally_bzero(s_hid_rx_chunks, rx_len);
             wally_bzero(s_hid_tx_chunks, sizeof(s_hid_tx_chunks));
+            sensitive_assert_empty();
             rx_len = 0;
             expected_len = 0;
         }

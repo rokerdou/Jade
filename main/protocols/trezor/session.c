@@ -248,6 +248,17 @@ bool trezor_session_handle_payload(const trezor_session_t* const session, const 
             response_payload, response_payload_len, response_payload_written);
     }
 
+    if (request_type == TREZOR_MSG_END_SESSION) {
+        if (request_payload_len != 0) {
+            return trezor_session_failure_payload(TREZOR_FAILURE_DATA_ERROR, "Unexpected payload", response_type,
+                response_payload, response_payload_len, response_payload_written);
+        }
+        trezor_session_clear_pending(session->state);
+        *response_type = TREZOR_MSG_SUCCESS;
+        *response_payload_written = 0;
+        return true;
+    }
+
     if (request_type == TREZOR_MSG_BUTTON_ACK) {
         return trezor_session_handle_button_ack(session, request_payload, request_payload_len, response_type,
             response_payload, response_payload_len, response_payload_written);

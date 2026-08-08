@@ -1636,6 +1636,15 @@ int main(void)
     CHECK(strstr(trace_text, "address omitted") != NULL);
     CHECK(strstr(trace_text, "0x52908400098527886E0F7030069857D2E4169EE7") == NULL);
 
+    CHECK(trezor_wire_encode_message(TREZOR_MSG_END_SESSION, NULL, 0, session_request_chunks,
+        sizeof(session_request_chunks), &session_request_len));
+    CHECK(trezor_session_handle_wire(&trezor_session, session_request_chunks, session_request_len,
+        session_response_chunks, sizeof(session_response_chunks), &session_response_len));
+    CHECK(trezor_wire_decode_message(session_response_chunks, session_response_len, &session_response_type,
+        session_response_payload, sizeof(session_response_payload), &session_response_payload_len));
+    CHECK(session_response_type == TREZOR_MSG_SUCCESS);
+    CHECK(session_response_payload_len == 0);
+
     CHECK(trezor_wire_encode_message(TREZOR_MSG_GET_PUBLIC_KEY, trezor_public_key_payload,
         trezor_public_key_payload_len, session_request_chunks, sizeof(session_request_chunks), &session_request_len));
     CHECK(trezor_session_handle_wire(&trezor_session, session_request_chunks, session_request_len,
@@ -1752,6 +1761,7 @@ int main(void)
 
     CHECK(trezor_dispatcher_message_allowed(TREZOR_MSG_INITIALIZE));
     CHECK(trezor_dispatcher_message_allowed(TREZOR_MSG_GET_FEATURES));
+    CHECK(trezor_dispatcher_message_allowed(TREZOR_MSG_END_SESSION));
     CHECK(trezor_dispatcher_message_allowed(TREZOR_MSG_BUTTON_ACK));
     CHECK(trezor_dispatcher_message_allowed(TREZOR_MSG_GET_ADDRESS));
     CHECK(trezor_dispatcher_message_allowed(TREZOR_MSG_ETHEREUM_GET_ADDRESS));
