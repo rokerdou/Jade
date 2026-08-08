@@ -67,20 +67,15 @@ bool wallet_core_get_public_key(const wallet_core_path_t* const path, const wall
     }
 
     if (format == WALLET_CORE_PUBKEY_UNCOMPRESSED) {
-        uint8_t private_key[EC_PRIVATE_KEY_LEN];
         uint8_t compressed_pubkey[EC_PUBLIC_KEY_LEN];
-        SENSITIVE_PUSH(private_key, sizeof(private_key));
         SENSITIVE_PUSH(compressed_pubkey, sizeof(compressed_pubkey));
 
-        const bool ok = derive_private_key(path, private_key, sizeof(private_key))
-            && wally_ec_public_key_from_private_key(
-                   private_key, sizeof(private_key), compressed_pubkey, sizeof(compressed_pubkey))
-                == WALLY_OK
+        const bool ok = wallet_core_get_public_key(
+                            path, WALLET_CORE_PUBKEY_COMPRESSED, compressed_pubkey, sizeof(compressed_pubkey))
             && wally_ec_public_key_decompress(compressed_pubkey, sizeof(compressed_pubkey), output, output_len)
                 == WALLY_OK;
 
         SENSITIVE_POP(compressed_pubkey);
-        SENSITIVE_POP(private_key);
         return ok;
     }
 
