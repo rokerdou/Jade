@@ -1138,7 +1138,7 @@ int main(void)
               0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f,
               0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17,
               0x18, 0x19, 0x1a, 0x1b, 0x1c, 0x1d, 0x1e, 0x1f };
-    trezor_features_t features = { .vendor = "jade.tdisplay-s3",
+    trezor_features_t features = { .vendor = "trezor.io",
         .fw_vendor = "Jade T-Display-S3",
         .device_id = "jade-test",
         .language = "en-US",
@@ -1200,8 +1200,8 @@ int main(void)
         size_t value_len = 0;
         CHECK(trezor_protobuf_reader_next(&features_reader, &field_number, &wire_type_field, &value, &value_len));
         if (field_number == 1) {
-            saw_vendor = wire_type_field == TREZOR_PROTOBUF_WIRE_LEN && value_len == strlen("jade.tdisplay-s3")
-                && memcmp(value, "jade.tdisplay-s3", value_len) == 0;
+            saw_vendor = wire_type_field == TREZOR_PROTOBUF_WIRE_LEN && value_len == strlen("trezor.io")
+                && memcmp(value, "trezor.io", value_len) == 0;
         } else if (field_number == 2) {
             uint64_t version = 0;
             CHECK(trezor_protobuf_read_varint_value(value, value_len, &version));

@@ -349,7 +349,10 @@ static trezor_session_t trezor_usb_hid_session(void)
     const bool ready = wallet_core_is_ready();
     trezor_session_t session = {
         .features = {
-            .vendor = "jade.tdisplay-s3",
+            // trezorlib accepts unknown/custom models only when the protocol vendor is one of
+            // the official Trezor vendor strings. Keep the custom device identity in fw_vendor,
+            // label, model, and internal_model instead of leaking it through the protocol vendor.
+            .vendor = "trezor.io",
             .fw_vendor = "Jade T-Display-S3",
             .device_id = s_trezor_device_id,
             .language = "en-US",
