@@ -37,7 +37,7 @@
 #define TREZOR_USB_HID_RELEASE 0x0200
 #define TREZOR_USB_HID_ENDPOINT 0x01
 #define TREZOR_USB_HID_QUEUE_LEN 4
-#define TREZOR_USB_HID_TASK_STACK 12288
+#define TREZOR_USB_HID_TASK_STACK 16384
 #define TREZOR_USB_HID_TASK_PRIORITY 5
 #define TREZOR_USB_HID_RX_BUF_LEN 1152
 #define TREZOR_USB_HID_TX_BUF_LEN 1152
@@ -188,14 +188,18 @@ bool tud_vendor_control_xfer_cb(const uint8_t rhport, const uint8_t stage, const
 
 void tud_vendor_rx_cb(const uint8_t instance, const uint8_t* const buffer, const uint16_t bufsize)
 {
+    trezor_trace_set_stage("usb:rx_cb");
     if (!s_hid_rx_queue || instance != 0 || !buffer || bufsize != TREZOR_WIRE_CHUNK_SIZE) {
+        trezor_trace_set_stage("usb:rx_drop");
         return;
     }
 
     trezor_usb_hid_chunk_t chunk;
     memcpy(chunk.bytes, buffer, sizeof(chunk.bytes));
+    trezor_trace_set_stage("usb:rx_queue");
     (void)xQueueSend(s_hid_rx_queue, &chunk, 0);
     tud_vendor_read_flush();
+    trezor_trace_set_stage("usb:rx_done");
 }
 
 static bool trezor_usb_hid_expected_wire_len(const uint8_t chunk[TREZOR_WIRE_CHUNK_SIZE], size_t* const output_len)
@@ -438,12 +442,16 @@ static void trezor_usb_hid_task(void* ignore)
         if (xQueueReceive(s_hid_rx_queue, &chunk, 100 / portTICK_PERIOD_MS) != pdTRUE) {
             continue;
         }
+        trezor_trace_set_stage("usb:task_rx");
 
         if (rx_len == 0) {
             expected_len = 0;
+            trezor_trace_set_stage("usb:expect");
             if (!trezor_usb_hid_expected_wire_len(chunk.bytes, &expected_len)) {
+                trezor_trace_set_stage("usb:bad_wire");
                 trezor_session_t session = trezor_usb_hid_session();
                 size_t tx_len = 0;
+                trezor_trace_set_stage("usb:handle_bad");
                 if (trezor_session_handle_wire(
                         &session, chunk.bytes, sizeof(chunk.bytes), s_hid_tx_chunks, sizeof(s_hid_tx_chunks), &tx_len)) {
                     uint32_t available = 0;
@@ -455,25 +463,32 @@ static void trezor_usb_hid_task(void* ignore)
                 wally_bzero(s_hid_tx_chunks, sizeof(s_hid_tx_chunks));
                 continue;
             }
+            trezor_trace_set_stage("usb:expect_ok");
         } else if (chunk.bytes[0] != TREZOR_WIRE_MARKER) {
+            trezor_trace_set_stage("usb:cont_bad");
             rx_len = 0;
             expected_len = 0;
             continue;
         }
 
         if (rx_len > sizeof(s_hid_rx_chunks) - sizeof(chunk.bytes)) {
+            trezor_trace_set_stage("usb:rx_oversize");
             rx_len = 0;
             expected_len = 0;
             continue;
         }
+        trezor_trace_set_stage("usb:copy");
         memcpy(s_hid_rx_chunks + rx_len, chunk.bytes, sizeof(chunk.bytes));
         rx_len += sizeof(chunk.bytes);
 
         if (expected_len != 0 && rx_len >= expected_len) {
+            trezor_trace_set_stage("usb:pre_session");
             trezor_session_t session = trezor_usb_hid_session();
             size_t tx_len = 0;
+            trezor_trace_set_stage("usb:handle");
             if (trezor_session_handle_wire(
                     &session, s_hid_rx_chunks, rx_len, s_hid_tx_chunks, sizeof(s_hid_tx_chunks), &tx_len)) {
+                trezor_trace_set_stage("usb:handled");
                 uint32_t available = 0;
                 uint32_t written = 0;
                 const bool sent = trezor_usb_hid_send_chunks(s_hid_tx_chunks, tx_len, &available, &written);
