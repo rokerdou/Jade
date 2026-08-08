@@ -629,6 +629,21 @@ void trezor_trace_record_request_start(
     TREZOR_TRACE_UNLOCK();
 }
 
+void trezor_trace_record_transport_result(
+    const bool ok, const size_t len, const uint32_t available, const uint32_t written)
+{
+    TREZOR_TRACE_LOCK();
+    if (s_trace_total) {
+        trezor_trace_entry_t* const entry = &s_trace_entries[(s_trace_total - 1) % TREZOR_TRACE_HISTORY_LEN];
+        entry->transport_recorded = true;
+        entry->transport_ok = ok;
+        entry->transport_len = len <= UINT16_MAX ? (uint16_t)len : UINT16_MAX;
+        entry->transport_available = available <= UINT16_MAX ? (uint16_t)available : UINT16_MAX;
+        entry->transport_written = written <= UINT16_MAX ? (uint16_t)written : UINT16_MAX;
+    }
+    TREZOR_TRACE_UNLOCK();
+}
+
 bool trezor_trace_snapshot(trezor_trace_snapshot_t* const output)
 {
     if (!output) {
@@ -685,6 +700,10 @@ bool trezor_trace_format_latest(char* const output, const size_t output_len)
         entry->response_detail, entry->failure_code,
         trezor_trace_failure_name(entry->failure_code), entry->wire_ok ? "ok" : "bad",
         entry->response_type != TREZOR_TRACE_PENDING_RESPONSE && entry->handler_ok ? "ok" : "bad");
+    if (entry->transport_recorded) {
+        trezor_trace_append(output, output_len, " tx=%s len=%u av=%u wr=%u", entry->transport_ok ? "ok" : "bad",
+            entry->transport_len, entry->transport_available, entry->transport_written);
+    }
     return true;
 }
 
@@ -709,11 +728,15 @@ bool trezor_trace_format_history(char* const output, const size_t output_len)
             continue;
         }
 
-        trezor_trace_append(output, output_len, "#%lu %s>%s f%u %s\n", (unsigned long)entry->seq,
+        trezor_trace_append(output, output_len, "#%lu %s>%s f%u %s", (unsigned long)entry->seq,
             entry->wire_ok ? trezor_trace_message_short_name(entry->request_type) : "BadWire",
             trezor_trace_message_short_name(entry->response_type), entry->failure_code,
             entry->response_type != TREZOR_TRACE_PENDING_RESPONSE ? (entry->wire_ok && entry->handler_ok ? "ok" : "bad")
                                                                    : "pending");
+        if (entry->transport_recorded) {
+            trezor_trace_append(output, output_len, " tx%s", entry->transport_ok ? "ok" : "bad");
+        }
+        trezor_trace_append(output, output_len, "\n");
     }
     return true;
 }

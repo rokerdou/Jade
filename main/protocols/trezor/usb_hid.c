@@ -6,6 +6,7 @@
 #include "messages.h"
 #include "public_key.h"
 #include "session.h"
+#include "trace.h"
 #include "wire.h"
 
 #include "../../chains/bitcoin/path.h"
@@ -207,17 +208,35 @@ static bool trezor_usb_hid_expected_wire_len(const uint8_t chunk[TREZOR_WIRE_CHU
         && *output_len <= TREZOR_USB_HID_RX_BUF_LEN;
 }
 
-static bool trezor_usb_hid_send_chunks(const uint8_t* const chunks, const size_t chunks_len)
+static bool trezor_usb_hid_send_chunks(
+    const uint8_t* const chunks, const size_t chunks_len, uint32_t* const last_available, uint32_t* const last_written)
 {
     if (!chunks || chunks_len == 0 || chunks_len % TREZOR_WIRE_CHUNK_SIZE != 0) {
         return false;
+    }
+    if (last_available) {
+        *last_available = 0;
+    }
+    if (last_written) {
+        *last_written = 0;
     }
 
     for (size_t offset = 0; offset < chunks_len; offset += TREZOR_WIRE_CHUNK_SIZE) {
         bool sent = false;
         for (size_t retry = 0; retry < 200; ++retry) {
-            if (tud_vendor_mounted() && tud_vendor_n_write_available(0) >= TREZOR_WIRE_CHUNK_SIZE
-                && tud_vendor_write(chunks + offset, TREZOR_WIRE_CHUNK_SIZE) == TREZOR_WIRE_CHUNK_SIZE) {
+            const uint32_t available = tud_vendor_mounted() ? tud_vendor_n_write_available(0) : 0;
+            if (last_available) {
+                *last_available = available;
+            }
+            if (tud_vendor_mounted() && available >= TREZOR_WIRE_CHUNK_SIZE) {
+                const uint32_t written = tud_vendor_write(chunks + offset, TREZOR_WIRE_CHUNK_SIZE);
+                if (last_written) {
+                    *last_written = written;
+                }
+                if (written != TREZOR_WIRE_CHUNK_SIZE) {
+                    vTaskDelay(pdMS_TO_TICKS(1));
+                    continue;
+                }
 #if CFG_TUD_VENDOR_TX_BUFSIZE > 0
                 (void)tud_vendor_write_flush();
 #endif
@@ -414,7 +433,10 @@ static void trezor_usb_hid_task(void* ignore)
                 size_t tx_len = 0;
                 if (trezor_session_handle_wire(
                         &session, chunk.bytes, sizeof(chunk.bytes), tx_chunks, sizeof(tx_chunks), &tx_len)) {
-                    (void)trezor_usb_hid_send_chunks(tx_chunks, tx_len);
+                    uint32_t available = 0;
+                    uint32_t written = 0;
+                    const bool sent = trezor_usb_hid_send_chunks(tx_chunks, tx_len, &available, &written);
+                    trezor_trace_record_transport_result(sent, tx_len, available, written);
                 }
                 continue;
             }
@@ -436,7 +458,10 @@ static void trezor_usb_hid_task(void* ignore)
             trezor_session_t session = trezor_usb_hid_session();
             size_t tx_len = 0;
             if (trezor_session_handle_wire(&session, rx_chunks, rx_len, tx_chunks, sizeof(tx_chunks), &tx_len)) {
-                (void)trezor_usb_hid_send_chunks(tx_chunks, tx_len);
+                uint32_t available = 0;
+                uint32_t written = 0;
+                const bool sent = trezor_usb_hid_send_chunks(tx_chunks, tx_len, &available, &written);
+                trezor_trace_record_transport_result(sent, tx_len, available, written);
             }
             wally_bzero(rx_chunks, rx_len);
             wally_bzero(tx_chunks, sizeof(tx_chunks));
