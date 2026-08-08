@@ -1178,9 +1178,8 @@ int main(void)
         .pin_protection = true,
         .expose_private_fields = true,
         .passphrase_protection = false,
-        .capabilities = { TREZOR_CAPABILITY_BITCOIN, TREZOR_CAPABILITY_BITCOIN_LIKE, TREZOR_CAPABILITY_ETHEREUM,
-            TREZOR_CAPABILITY_TRON },
-        .capabilities_len = 4 };
+        .capabilities = { TREZOR_CAPABILITY_BITCOIN, TREZOR_CAPABILITY_BITCOIN_LIKE, TREZOR_CAPABILITY_ETHEREUM },
+        .capabilities_len = 3 };
     uint8_t features_payload[256];
     size_t features_payload_len = 0;
     CHECK(trezor_features_encode(&features, features_payload, sizeof(features_payload), &features_payload_len));
@@ -1349,7 +1348,7 @@ int main(void)
     CHECK(saw_btc);
     CHECK(saw_btc_like);
     CHECK(saw_eth);
-    CHECK(saw_tron);
+    CHECK(!saw_tron);
 
     trezor_features_t locked_custom_features = features;
     locked_custom_features.has_unlocked = false;
@@ -1457,7 +1456,7 @@ int main(void)
     CHECK(trezor_payload_has_varint(
         session_response_payload, session_response_payload_len, 30, TREZOR_CAPABILITY_ETHEREUM));
     CHECK(
-        trezor_payload_has_varint(session_response_payload, session_response_payload_len, 30, TREZOR_CAPABILITY_TRON));
+        !trezor_payload_has_varint(session_response_payload, session_response_payload_len, 30, TREZOR_CAPABILITY_TRON));
     CHECK(g_trezor_last_initialize_session_id_len == 0);
     CHECK(trezor_trace_snapshot(&trace_snapshot));
     CHECK(trace_snapshot.latest.request_type == TREZOR_MSG_INITIALIZE);
