@@ -110,8 +110,9 @@ void enable_usb_host(void) {}
 
 bool usb_is_powered(void)
 {
-    // Check if USB is mounted and not suspended (active connection)
-    if (tud_mounted() && !tud_suspended()) {
+    // T-Display-S3 has no reliable VBUS sense GPIO/PMIC path. For WebUSB/Trezor
+    // sessions, USB suspend is an idle state, not physical disconnection.
+    if (tud_mounted()) {
         return true;
     }
     // Fallback: If voltage is near zero (<1V) but chip is on,
