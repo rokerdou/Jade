@@ -13,6 +13,10 @@
 #include <string.h>
 #include <wally_crypto.h>
 
+static uint8_t s_trezor_session_request_payload[TREZOR_SESSION_MAX_REQUEST_PAYLOAD_LEN];
+static uint8_t s_trezor_session_response_payload[TREZOR_SESSION_MAX_RESPONSE_PAYLOAD_LEN];
+static uint8_t s_trezor_session_pending_payload[TREZOR_SESSION_MAX_REQUEST_PAYLOAD_LEN];
+
 static bool trezor_session_failure_payload(const trezor_failure_type_t code, const char* const message,
     uint16_t* const response_type, uint8_t* const response_payload, const size_t response_payload_len,
     size_t* const response_payload_written)
@@ -118,9 +122,9 @@ static bool trezor_session_handle_button_ack(const trezor_session_t* const sessi
     }
 
     const uint16_t pending_type = session->state->pending_request_type;
-    uint8_t pending_payload[TREZOR_SESSION_MAX_REQUEST_PAYLOAD_LEN];
+    uint8_t* const pending_payload = s_trezor_session_pending_payload;
     const size_t pending_payload_len = session->state->pending_request_payload_len;
-    if (pending_payload_len > sizeof(pending_payload)) {
+    if (pending_payload_len > TREZOR_SESSION_MAX_REQUEST_PAYLOAD_LEN) {
         trezor_session_clear_pending(session->state);
         return trezor_session_failure_payload(TREZOR_FAILURE_DATA_ERROR, "Pending request too big", response_type,
             response_payload, response_payload_len, response_payload_written);
@@ -129,14 +133,14 @@ static bool trezor_session_handle_button_ack(const trezor_session_t* const sessi
     trezor_session_clear_pending(session->state);
 
     if (!session->perform_local_unlock(session->perform_local_unlock_ctx)) {
-        wally_bzero(pending_payload, sizeof(pending_payload));
+        wally_bzero(pending_payload, TREZOR_SESSION_MAX_REQUEST_PAYLOAD_LEN);
         return trezor_session_failure_payload(TREZOR_FAILURE_ACTION_CANCELLED, "Local unlock rejected", response_type,
             response_payload, response_payload_len, response_payload_written);
     }
 
     const bool ok = trezor_session_handle_payload(session, pending_type, pending_payload, pending_payload_len,
         response_type, response_payload, response_payload_len, response_payload_written);
-    wally_bzero(pending_payload, sizeof(pending_payload));
+    wally_bzero(pending_payload, TREZOR_SESSION_MAX_REQUEST_PAYLOAD_LEN);
     return ok;
 }
 
@@ -287,11 +291,14 @@ bool trezor_session_handle_payload(const trezor_session_t* const session, const 
 
     if (request_type == TREZOR_MSG_ETHEREUM_GET_ADDRESS) {
         trezor_ethereum_get_address_t request;
+        trezor_trace_set_stage("eth:decode");
         if (!session->get_eth_address
             || !trezor_ethereum_get_address_decode(request_payload, request_payload_len, &request)) {
+            trezor_trace_set_stage("eth:decode_fail");
             return trezor_session_failure_payload(TREZOR_FAILURE_DATA_ERROR, "Invalid Ethereum address request",
                 response_type, response_payload, response_payload_len, response_payload_written);
         }
+        trezor_trace_set_stage("eth:decoded");
 
         bool deferred = false;
         if (!trezor_session_maybe_defer_for_local_unlock(session, request_type, request_payload, request_payload_len,
@@ -375,37 +382,40 @@ bool trezor_session_handle_wire(const trezor_session_t* const session, const uin
     }
 
     uint16_t request_type = 0;
-    uint8_t request_payload[TREZOR_SESSION_MAX_REQUEST_PAYLOAD_LEN];
+    uint8_t* const request_payload = s_trezor_session_request_payload;
     size_t request_payload_len = 0;
-    uint8_t response_payload[TREZOR_SESSION_MAX_RESPONSE_PAYLOAD_LEN];
+    uint8_t* const response_payload = s_trezor_session_response_payload;
     size_t response_payload_len = 0;
     uint16_t response_type = TREZOR_MSG_FAILURE;
     bool wire_ok = false;
 
     bool ok = false;
+    trezor_trace_set_stage("wire:decode");
     if (trezor_wire_decode_message(request_chunks, request_chunks_len, &request_type, request_payload,
-            sizeof(request_payload), &request_payload_len)) {
+            TREZOR_SESSION_MAX_REQUEST_PAYLOAD_LEN, &request_payload_len)) {
         wire_ok = true;
+        trezor_trace_set_stage("wire:trace_start");
         trezor_trace_record_request_start(request_type, request_payload, request_payload_len);
+        trezor_trace_set_stage("wire:payload");
         ok = trezor_session_handle_payload(session, request_type, request_payload, request_payload_len, &response_type,
-            response_payload, sizeof(response_payload), &response_payload_len);
+            response_payload, TREZOR_SESSION_MAX_RESPONSE_PAYLOAD_LEN, &response_payload_len);
     } else {
         ok = trezor_session_failure_payload(TREZOR_FAILURE_INVALID_PROTOCOL, "Invalid wire message", &response_type,
-            response_payload, sizeof(response_payload), &response_payload_len);
+            response_payload, TREZOR_SESSION_MAX_RESPONSE_PAYLOAD_LEN, &response_payload_len);
     }
 
     trezor_trace_record_exchange(request_type, request_payload, request_payload_len, response_type, response_payload,
         response_payload_len, wire_ok, ok);
 
-    wally_bzero(request_payload, sizeof(request_payload));
+    wally_bzero(request_payload, TREZOR_SESSION_MAX_REQUEST_PAYLOAD_LEN);
     if (!ok) {
-        wally_bzero(response_payload, sizeof(response_payload));
+        wally_bzero(response_payload, TREZOR_SESSION_MAX_RESPONSE_PAYLOAD_LEN);
         return false;
     }
 
     ok = trezor_wire_encode_message(response_type, response_payload, response_payload_len, response_chunks,
         response_chunks_len, response_chunks_written);
-    wally_bzero(response_payload, sizeof(response_payload));
+    wally_bzero(response_payload, TREZOR_SESSION_MAX_RESPONSE_PAYLOAD_LEN);
     return ok;
 }
 #endif /* AMALGAMATED_BUILD */
