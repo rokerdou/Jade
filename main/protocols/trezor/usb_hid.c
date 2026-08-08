@@ -228,22 +228,24 @@ static bool trezor_usb_hid_send_chunks(
             if (last_available) {
                 *last_available = available;
             }
-            if (tud_vendor_mounted() && available >= TREZOR_WIRE_CHUNK_SIZE) {
-                const uint32_t written = tud_vendor_write(chunks + offset, TREZOR_WIRE_CHUNK_SIZE);
-                if (last_written) {
-                    *last_written = written;
-                }
-                if (written != TREZOR_WIRE_CHUNK_SIZE) {
-                    vTaskDelay(pdMS_TO_TICKS(1));
-                    continue;
-                }
-#if CFG_TUD_VENDOR_TX_BUFSIZE > 0
-                (void)tud_vendor_write_flush();
-#endif
-                sent = true;
-                break;
+            if (!tud_vendor_mounted()) {
+                vTaskDelay(pdMS_TO_TICKS(1));
+                continue;
             }
-            vTaskDelay(pdMS_TO_TICKS(1));
+
+            const uint32_t written = tud_vendor_write(chunks + offset, TREZOR_WIRE_CHUNK_SIZE);
+            if (last_written) {
+                *last_written = written;
+            }
+            if (written != TREZOR_WIRE_CHUNK_SIZE) {
+                vTaskDelay(pdMS_TO_TICKS(1));
+                continue;
+            }
+#if CFG_TUD_VENDOR_TX_BUFSIZE > 0
+            (void)tud_vendor_write_flush();
+#endif
+            sent = true;
+            break;
         }
         if (!sent) {
             return false;

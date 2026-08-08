@@ -734,7 +734,8 @@ bool trezor_trace_format_history(char* const output, const size_t output_len)
             entry->response_type != TREZOR_TRACE_PENDING_RESPONSE ? (entry->wire_ok && entry->handler_ok ? "ok" : "bad")
                                                                    : "pending");
         if (entry->transport_recorded) {
-            trezor_trace_append(output, output_len, " tx%s", entry->transport_ok ? "ok" : "bad");
+            trezor_trace_append(output, output_len, " tx%s l%u a%u w%u", entry->transport_ok ? "ok" : "bad",
+                entry->transport_len, entry->transport_available, entry->transport_written);
         }
         trezor_trace_append(output, output_len, "\n");
     }
