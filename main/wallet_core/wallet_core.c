@@ -105,7 +105,7 @@ bool wallet_core_get_public_node(const wallet_core_path_t* const path, wallet_co
     }
     if (ok) {
         output->depth = derived.depth;
-        output->fingerprint = wallet_core_fingerprint_to_u32(derived.hash160);
+        output->fingerprint = wallet_core_fingerprint_to_u32(derived.parent160);
         output->child_num = derived.child_num;
         memcpy(output->chain_code, derived.chain_code, sizeof(output->chain_code));
         memcpy(output->public_key, derived.pub_key, sizeof(output->public_key));

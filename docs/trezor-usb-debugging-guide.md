@@ -174,6 +174,44 @@ Fix:
 - Clear pending local-unlock state.
 - Return empty `Success`.
 
+### PublicKey xpub/Node Mismatch
+
+Symptom:
+
+```text
+pubKey2bjsNode: Invalid public key transmission detected
+```
+
+Root cause found: the `HDNodeType.fingerprint` field must be the immediate
+parent fingerprint of the exported node. It must match the parent fingerprint
+embedded inside the exported xpub. The broken code used the current node's
+HASH160, so both fields looked individually valid but described different
+BIP32 nodes.
+
+Trezor reference behavior:
+
+- Ethereum `GetPublicKey` reuses Bitcoin public-node generation.
+- The response returns `EthereumPublicKey(node=resp.node, xpub=resp.xpub)`.
+- `node.fingerprint()` and `node.serialize_public(...)` therefore come from
+  the same derived node object.
+
+Fix:
+
+- Build `wallet_core_public_node_t.fingerprint` from `derived.parent160`.
+- Keep `xpub`, `depth`, `child_num`, `chain_code`, and compressed `public_key`
+  copied from the same derived public node.
+
+Gate:
+
+```sh
+./build-tdisplays3-hardened-ok/wallet_core_public_node_gate
+```
+
+This gate compiles the real `wallet_core/wallet_core.c` with controlled host
+stubs and fails if the exported public-node fields disagree. It exists because
+the broader ETH/TRON protocol gate intentionally mocks `wallet_core`, so it
+cannot catch this class of real-derivation bugs.
+
 ## Hardware-Specific Pitfall
 
 T-Display-S3 has no Jade-style PMIC/VBUS status path. Do not treat USB suspend

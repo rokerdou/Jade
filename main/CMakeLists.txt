@@ -100,6 +100,8 @@ target_compile_options(${COMPONENT_LIB} PRIVATE -Werror=unused-result)
 if(HOST_CC)
     set(eth_tron_address_gate_bin ${CMAKE_BINARY_DIR}/eth_tron_address_gate)
     set(eth_tron_address_gate_stamp ${CMAKE_BINARY_DIR}/eth_tron_address_gate.stamp)
+    set(wallet_core_public_node_gate_bin ${CMAKE_BINARY_DIR}/wallet_core_public_node_gate)
+    set(wallet_core_public_node_gate_stamp ${CMAKE_BINARY_DIR}/wallet_core_public_node_gate.stamp)
     add_custom_command(OUTPUT ${eth_tron_address_gate_stamp}
         COMMAND ${HOST_CC} -std=c11 -Wall -Wextra -Werror
             -I${COMPONENT_DIR}
@@ -213,6 +215,29 @@ if(HOST_CC)
         VERBATIM)
     add_custom_target(eth_tron_address_gate DEPENDS ${eth_tron_address_gate_stamp})
     add_dependencies(${COMPONENT_LIB} eth_tron_address_gate)
+    add_custom_command(OUTPUT ${wallet_core_public_node_gate_stamp}
+        COMMAND ${HOST_CC} -std=c11 -Wall -Wextra -Werror
+            -I${COMPONENT_DIR}
+            -I${COMPONENT_DIR}/test/host_shims
+            -I${PROJECT_DIR}/components/libwally-core/upstream/include
+            ${COMPONENT_DIR}/test/wallet_core_public_node_gate.c
+            ${COMPONENT_DIR}/wallet_core/wallet_core.c
+            -o ${wallet_core_public_node_gate_bin}
+        COMMAND ${wallet_core_public_node_gate_bin}
+        COMMAND ${CMAKE_COMMAND} -E touch ${wallet_core_public_node_gate_stamp}
+        DEPENDS
+            ${COMPONENT_DIR}/test/wallet_core_public_node_gate.c
+            ${COMPONENT_DIR}/test/host_shims/esp_log.h
+            ${COMPONENT_DIR}/wallet_core/wallet_core.c
+            ${COMPONENT_DIR}/wallet_core/wallet_core.h
+            ${COMPONENT_DIR}/jade_wally_verify.h
+            ${COMPONENT_DIR}/keychain.h
+            ${COMPONENT_DIR}/sensitive.h
+            ${COMPONENT_DIR}/utils/util.h
+            ${COMPONENT_DIR}/wallet.h
+        VERBATIM)
+    add_custom_target(wallet_core_public_node_gate DEPENDS ${wallet_core_public_node_gate_stamp})
+    add_dependencies(${COMPONENT_LIB} wallet_core_public_node_gate)
 else()
     message(FATAL_ERROR "No host C compiler found for ETH/TRON address gate tests")
 endif()
