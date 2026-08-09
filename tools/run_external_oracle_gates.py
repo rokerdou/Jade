@@ -46,6 +46,86 @@ def p2wpkh_address_testnet(pubkey_hash: bytes) -> str:
     return bech32_encode("tb", [0] + convertbits(pubkey_hash, 8, 5))
 
 
+def ethereum_legacy_signing_fields(
+    *, nonce: int, gas_price: int, gas_limit: int, to_address: bytes, value: int, data: bytes, chain_id: int
+) -> list[int | bytes]:
+    return [
+        nonce,
+        gas_price,
+        gas_limit,
+        to_address,
+        value,
+        data,
+        chain_id,
+        0,
+        0,
+    ]
+
+
+def ethereum_legacy_signed_fields(
+    *, nonce: int, gas_price: int, gas_limit: int, to_address: bytes, value: int, data: bytes, v: int, r: int, s: int
+) -> list[int | bytes]:
+    return [
+        nonce,
+        gas_price,
+        gas_limit,
+        to_address,
+        value,
+        data,
+        v,
+        r,
+        s,
+    ]
+
+
+def decode_legacy_raw_tx(raw_tx: bytes) -> dict[str, object]:
+    decoded = rlp.decode(raw_tx)
+    if not isinstance(decoded, list) or len(decoded) != 9:
+        field_count = len(decoded) if isinstance(decoded, list) else "not-list"
+        raise AssertionError(f"unexpected legacy Ethereum raw tx field count: {field_count}")
+
+    def as_int(value: bytes) -> int:
+        return int.from_bytes(value, "big") if value else 0
+
+    nonce, gas_price, gas_limit, to_address, value, data, v_bytes, r_bytes, s_bytes = decoded
+    v = as_int(v_bytes)
+    if v < 35:
+        raise AssertionError(f"legacy Ethereum tx is missing EIP-155 v value: {v}")
+    chain_id = (v - 35) // 2
+    recovery_id = (v - 35) % 2
+    if recovery_id not in (0, 1):
+        raise AssertionError(f"invalid Ethereum recovery id: {recovery_id}")
+
+    signing_payload = rlp.encode(
+        ethereum_legacy_signing_fields(
+            nonce=as_int(nonce),
+            gas_price=as_int(gas_price),
+            gas_limit=as_int(gas_limit),
+            to_address=to_address,
+            value=as_int(value),
+            data=data,
+            chain_id=chain_id,
+        )
+    )
+    signing_hash = keccak(signing_payload)
+    signature = keys.Signature(vrs=(recovery_id, as_int(r_bytes), as_int(s_bytes)))
+    recovered_address = signature.recover_public_key_from_msg_hash(signing_hash).to_checksum_address()
+
+    return {
+        "nonce": as_int(nonce),
+        "gas_price": as_int(gas_price),
+        "gas_limit": as_int(gas_limit),
+        "to": "0x" + to_address.hex(),
+        "value": as_int(value),
+        "data": "0x" + data.hex(),
+        "chain_id": chain_id,
+        "recovery_id": recovery_id,
+        "signing_payload": signing_payload.hex(),
+        "signing_hash": signing_hash.hex(),
+        "from": recovered_address,
+    }
+
+
 def expected_vectors() -> dict[str, str]:
     private_key = keys.PrivateKey(PRIVATE_KEY_ONE)
     public_key = private_key.public_key
@@ -58,17 +138,15 @@ def expected_vectors() -> dict[str, str]:
 
     to_address = bytes([0x35] * 20)
     eip155_payload = rlp.encode(
-        [
-            9,
-            20_000_000_000,
-            21_000,
-            to_address,
-            1_000_000_000_000_000_000,
-            b"",
-            1,
-            0,
-            0,
-        ]
+        ethereum_legacy_signing_fields(
+            nonce=9,
+            gas_price=20_000_000_000,
+            gas_limit=21_000,
+            to_address=to_address,
+            value=1_000_000_000_000_000_000,
+            data=b"",
+            chain_id=1,
+        )
     )
     eip155_hash = keccak(eip155_payload)
 
@@ -106,6 +184,52 @@ def expected_vectors() -> dict[str, str]:
         "erc20_transfer_call": (transfer_selector + erc20_address_arg + erc20_amount).hex(),
         "erc20_approve_call": (approve_selector + erc20_address_arg + erc20_amount).hex(),
     }
+
+
+def check_eth_signed_raw_tx_oracle(local_vectors: dict[str, str], expected: dict[str, str]) -> None:
+    """Verify ETH raw tx semantics with independent Python libraries.
+
+    The local C gate exposes a public EIP-155 payload/hash test vector. This
+    oracle signs that vector with eth_keys, serializes a raw transaction with
+    rlp, decodes it again, and recovers the sender address from v/r/s.
+    """
+
+    to_address = bytes.fromhex("35" * 20)
+    signing_hash = bytes.fromhex(local_vectors["eth_eip155_signing_hash"])
+    signature = keys.PrivateKey(PRIVATE_KEY_ONE).sign_msg_hash(signing_hash)
+    eip155_v = 35 + (2 * 1) + signature.v
+    raw_tx = rlp.encode(
+        ethereum_legacy_signed_fields(
+            nonce=9,
+            gas_price=20_000_000_000,
+            gas_limit=21_000,
+            to_address=to_address,
+            value=1_000_000_000_000_000_000,
+            data=b"",
+            v=eip155_v,
+            r=signature.r,
+            s=signature.s,
+        )
+    )
+    decoded = decode_legacy_raw_tx(raw_tx)
+    expected_decoded: dict[str, object] = {
+        "nonce": 9,
+        "gas_price": 20_000_000_000,
+        "gas_limit": 21_000,
+        "to": "0x" + to_address.hex(),
+        "value": 1_000_000_000_000_000_000,
+        "data": "0x",
+        "chain_id": 1,
+        "signing_payload": local_vectors["eth_eip155_signing_payload"],
+        "signing_hash": local_vectors["eth_eip155_signing_hash"],
+        "from": expected["eth_checksum_address"],
+    }
+    for key, expected_value in expected_decoded.items():
+        actual_value = decoded[key]
+        if actual_value != expected_value:
+            raise AssertionError(
+                f"Ethereum signed raw tx oracle mismatch for {key}: actual={actual_value} expected={expected_value}"
+            )
 
 
 def message_payload(message: messages.MessageType) -> bytes:
@@ -642,6 +766,7 @@ def main() -> int:
             print(f"  external: {expected_value}", file=sys.stderr)
             return 1
 
+    check_eth_signed_raw_tx_oracle(local, expected)
     check_trezorlib_btc_protobuf_oracle()
     check_trezorlib_btc_signtx_host_flow_oracle()
     check_trezorlib_protocol_oracle(gate, local)
