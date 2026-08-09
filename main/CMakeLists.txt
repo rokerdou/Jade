@@ -137,6 +137,7 @@ if(HOST_CC)
             ${COMPONENT_DIR}/chains/ethereum/tx_request.c
             ${COMPONENT_DIR}/chains/ethereum/wallet.c
             ${COMPONENT_DIR}/protocols/trezor/bitcoin/protocol.c
+            ${COMPONENT_DIR}/protocols/trezor/bitcoin/prev_tx_verifier.c
             ${COMPONENT_DIR}/protocols/trezor/dispatcher.c
             ${COMPONENT_DIR}/protocols/trezor/ethereum/protocol.c
             ${COMPONENT_DIR}/protocols/trezor/ethereum/definitions.c
@@ -196,6 +197,8 @@ if(HOST_CC)
             ${COMPONENT_DIR}/chains/ethereum/wallet.h
             ${COMPONENT_DIR}/protocols/trezor/bitcoin/protocol.c
             ${COMPONENT_DIR}/protocols/trezor/bitcoin/protocol.h
+            ${COMPONENT_DIR}/protocols/trezor/bitcoin/prev_tx_verifier.c
+            ${COMPONENT_DIR}/protocols/trezor/bitcoin/prev_tx_verifier.h
             ${COMPONENT_DIR}/protocols/trezor/dispatcher.c
             ${COMPONENT_DIR}/protocols/trezor/dispatcher.h
             ${COMPONENT_DIR}/protocols/trezor/ethereum/protocol.c
