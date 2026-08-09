@@ -23,6 +23,7 @@ from trezorlib import messages, protobuf
 
 
 PRIVATE_KEY_ONE = bytes.fromhex("00" * 31 + "01")
+BTC_TEST_COMPRESSED_PUBKEY = keys.PrivateKey(PRIVATE_KEY_ONE).public_key.to_compressed_bytes()
 TESTNET_P2PKH_VERSION = b"\x6f"
 WIRE_CHUNK_SIZE = 64
 WIRE_INIT_HEADER_LEN = 9
@@ -846,12 +847,85 @@ def assert_btc_failure(response: tuple[int, bytes], expected_code: messages.Fail
         raise AssertionError(f"{case_name} failure code mismatch: actual={failure.code} expected={expected_code}")
 
 
+def check_embit_btc_signed_tx_oracle(
+    raw_tx: bytes,
+    *,
+    version: int,
+    locktime: int,
+    inputs: list[tuple[bytes, int]],
+    outputs: list[tuple[int, bytes]],
+    witness_pubkeys: list[bytes],
+) -> None:
+    """Verify BTC signed tx semantics with an independent community library."""
+    from embit.transaction import Transaction
+
+    tx = Transaction.parse(raw_tx)
+    if tx.serialize() != raw_tx:
+        raise AssertionError("BTC signed tx oracle failed round-trip serialization")
+    if tx.version != version or tx.locktime != locktime:
+        raise AssertionError(f"BTC signed tx version/locktime mismatch: {tx.version}/{tx.locktime}")
+    if len(tx.vin) != len(inputs) or len(tx.vout) != len(outputs):
+        raise AssertionError(f"BTC signed tx input/output count mismatch: {len(tx.vin)}/{len(tx.vout)}")
+
+    for index, (expected_txid, expected_vout) in enumerate(inputs):
+        txin = tx.vin[index]
+        if txin.txid != expected_txid or txin.vout != expected_vout:
+            raise AssertionError(f"BTC input {index} outpoint mismatch: {txin.txid.hex()}:{txin.vout}")
+        if txin.script_sig.data != b"":
+            raise AssertionError(f"BTC input {index} scriptSig must be empty for native segwit")
+        if txin.sequence != 0xFFFFFFFF:
+            raise AssertionError(f"BTC input {index} sequence mismatch: {txin.sequence}")
+        if len(txin.witness.items) != 2:
+            raise AssertionError(f"BTC input {index} witness item count mismatch: {len(txin.witness.items)}")
+        signature, pubkey = txin.witness.items
+        if len(signature) < 9 or signature[-1] != 1:
+            raise AssertionError(f"BTC input {index} witness signature missing SIGHASH_ALL")
+        if pubkey != witness_pubkeys[index]:
+            raise AssertionError(f"BTC input {index} witness pubkey mismatch: {pubkey.hex()}")
+
+    for index, (expected_amount, expected_script_pubkey) in enumerate(outputs):
+        txout = tx.vout[index]
+        if txout.value != expected_amount:
+            raise AssertionError(f"BTC output {index} amount mismatch: {txout.value}")
+        if txout.script_pubkey.data != expected_script_pubkey:
+            raise AssertionError(f"BTC output {index} scriptPubKey mismatch: {txout.script_pubkey.data.hex()}")
+
+
 def check_local_btc_signtx_wire_script_oracle(gate: Path) -> None:
+    btc_pubkey_hash = hash160(BTC_TEST_COMPRESSED_PUBKEY)
+    btc_p2wpkh_script_pubkey = b"\x00\x14" + btc_pubkey_hash
     tx_input_0 = btc_tx_input(path=btc_input_path())
     tx_input_1 = btc_tx_input(path=btc_input_path(1), prev_hash=bytes.fromhex("22" * 32), prev_index=1, amount=40_000)
     external_output = btc_tx_output_external(amount=90_000)
     change_output = btc_tx_output_change(amount=45_000)
     common_meta = btc_tx_ack_meta(2, 2)
+
+    single_responses = run_local_wire_script(
+        gate,
+        [
+            (
+                messages.MessageType.SignTx,
+                messages.SignTx(coin_name="Testnet", inputs_count=1, outputs_count=1, version=2, lock_time=0),
+            ),
+            (messages.MessageType.TxAck, btc_tx_ack_meta(1, 1)),
+            (messages.MessageType.TxAck, btc_tx_ack_input(tx_input_0)),
+            (messages.MessageType.TxAck, btc_tx_ack_output(external_output)),
+        ],
+    )
+    single_final = assert_btc_tx_request(
+        single_responses[-1],
+        messages.RequestType.TXFINISHED,
+        signature_index=0,
+        expect_serialized_tx=True,
+    )
+    check_embit_btc_signed_tx_oracle(
+        single_final.serialized.serialized_tx,
+        version=2,
+        locktime=0,
+        inputs=[(btc_tx_prev_hash(), 0)],
+        outputs=[(90_000, btc_p2wpkh_script_pubkey)],
+        witness_pubkeys=[BTC_TEST_COMPRESSED_PUBKEY],
+    )
 
     responses = run_local_wire_script(
         gate,
@@ -878,13 +952,21 @@ def check_local_btc_signtx_wire_script_oracle(gate: Path) -> None:
         (messages.RequestType.TXFINISHED, None, 1, True),
     ]
     for response, (request_type, request_index, signature_index, expect_serialized_tx) in zip(responses, expected):
-        assert_btc_tx_request(
+        tx_request = assert_btc_tx_request(
             response,
             request_type,
             request_index=request_index,
             signature_index=signature_index,
             expect_serialized_tx=expect_serialized_tx,
         )
+    check_embit_btc_signed_tx_oracle(
+        tx_request.serialized.serialized_tx,
+        version=2,
+        locktime=0,
+        inputs=[(btc_tx_prev_hash(), 0), (bytes.fromhex("22" * 32), 1)],
+        outputs=[(90_000, btc_p2wpkh_script_pubkey), (45_000, btc_p2wpkh_script_pubkey)],
+        witness_pubkeys=[BTC_TEST_COMPRESSED_PUBKEY, BTC_TEST_COMPRESSED_PUBKEY],
+    )
 
     overflow_responses = run_local_wire_script(
         gate,
@@ -1025,16 +1107,28 @@ def check_trezorlib_protocol_oracle(gate: Path, local_vectors: dict[str, str]) -
         raise AssertionError(f"unexpected Ethereum address response: {eth_addr.address}")
 
     btc_address_cases = [
-        (messages.InputScriptType.SPENDADDRESS, "btc_testnet_p2pkh_address"),
-        (messages.InputScriptType.SPENDWITNESS, "btc_testnet_p2wpkh_address"),
-        (messages.InputScriptType.SPENDP2SHWITNESS, "btc_testnet_p2sh_p2wpkh_address"),
+        (
+            messages.InputScriptType.SPENDADDRESS,
+            [0x8000002C, 0x80000001, 0x80000000, 0, 0],
+            "btc_testnet_p2pkh_address",
+        ),
+        (
+            messages.InputScriptType.SPENDWITNESS,
+            [0x80000054, 0x80000001, 0x80000000, 0, 0],
+            "btc_testnet_p2wpkh_address",
+        ),
+        (
+            messages.InputScriptType.SPENDP2SHWITNESS,
+            [0x80000031, 0x80000001, 0x80000000, 0, 0],
+            "btc_testnet_p2sh_p2wpkh_address",
+        ),
     ]
-    for script_type, vector_key in btc_address_cases:
+    for script_type, address_n, vector_key in btc_address_cases:
         response_type, payload = run_local_wire_oracle(
             gate,
             messages.MessageType.GetAddress,
             messages.GetAddress(
-                address_n=[0x8000002C, 0x80000001, 0x80000000, 0, 0],
+                address_n=address_n,
                 coin_name="Testnet",
                 show_display=False,
                 script_type=script_type,

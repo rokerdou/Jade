@@ -621,9 +621,11 @@ static bool trezor_btc_tx_request_has_signed_payload(const uint8_t* const payloa
                 && serialized_value_len >= 2 && serialized_value[serialized_value_len - 1] == 1) {
                 saw_signature = true;
             } else if (serialized_field == 3 && serialized_wire_type == TREZOR_PROTOBUF_WIRE_LEN
-                && serialized_value_len == sizeof(EXPECTED_BTC_TEST_TX_BYTES)
-                && serialized_value[0] == EXPECTED_BTC_TEST_TX_BYTES[0] && serialized_value[6] == expected_tx_inputs
-                && serialized_value[11] == expected_tx_outputs) {
+                && serialized_value_len > sizeof(EXPECTED_BTC_TEST_TX_BYTES)
+                && serialized_value[0] == EXPECTED_BTC_TEST_TX_BYTES[0] && serialized_value[4] == 0
+                && serialized_value[5] == 1 && serialized_value[6] == expected_tx_inputs
+                && serialized_value_len > (size_t)(7U + (41U * expected_tx_inputs))
+                && serialized_value[7U + (41U * expected_tx_inputs)] == expected_tx_outputs) {
                 saw_serialized_tx = true;
             }
         }
@@ -1114,12 +1116,33 @@ int wally_tx_init_alloc(uint32_t version, uint32_t locktime, size_t inputs_alloc
     tx->locktime = locktime;
     tx->inputs_allocation_len = inputs_allocation_len;
     tx->outputs_allocation_len = outputs_allocation_len;
+    tx->inputs = calloc(inputs_allocation_len, sizeof(*tx->inputs));
+    tx->outputs = calloc(outputs_allocation_len, sizeof(*tx->outputs));
+    if (!tx->inputs || !tx->outputs) {
+        free(tx->inputs);
+        free(tx->outputs);
+        free(tx);
+        return WALLY_ENOMEM;
+    }
     *output = tx;
     return WALLY_OK;
 }
 
 int wally_tx_free(struct wally_tx* tx)
 {
+    if (tx) {
+        for (size_t i = 0; i < tx->num_inputs; ++i) {
+            free(tx->inputs[i].script);
+            if (tx->inputs[i].witness) {
+                wally_tx_witness_stack_free(tx->inputs[i].witness);
+            }
+        }
+        for (size_t i = 0; i < tx->num_outputs; ++i) {
+            free(tx->outputs[i].script);
+        }
+        free(tx->inputs);
+        free(tx->outputs);
+    }
     free(tx);
     return WALLY_OK;
 }
@@ -1128,16 +1151,46 @@ int wally_tx_add_raw_input(struct wally_tx* tx, const unsigned char* txhash, siz
     uint32_t sequence, const unsigned char* script, size_t script_len, const struct wally_tx_witness_stack* witness,
     uint32_t flags)
 {
-    (void)utxo_index;
-    (void)sequence;
-    (void)script;
-    (void)script_len;
-    (void)witness;
     if (!tx || !txhash || txhash_len != WALLY_TXHASH_LEN || flags != 0) {
         return WALLY_EINVAL;
     }
     if (tx->num_inputs >= tx->inputs_allocation_len) {
         return WALLY_EINVAL;
+    }
+    struct wally_tx_input* const input = &tx->inputs[tx->num_inputs];
+    memcpy(input->txhash, txhash, WALLY_TXHASH_LEN);
+    input->index = utxo_index;
+    input->sequence = sequence;
+    if (script_len) {
+        if (!script) {
+            return WALLY_EINVAL;
+        }
+        input->script = malloc(script_len);
+        if (!input->script) {
+            return WALLY_ENOMEM;
+        }
+        memcpy(input->script, script, script_len);
+        input->script_len = script_len;
+    }
+    if (witness) {
+        input->witness = calloc(1, sizeof(*input->witness));
+        if (!input->witness) {
+            return WALLY_ENOMEM;
+        }
+        input->witness->items_allocation_len = witness->items_allocation_len;
+        input->witness->num_items = witness->num_items;
+        input->witness->items = calloc(witness->num_items, sizeof(*input->witness->items));
+        if (!input->witness->items) {
+            return WALLY_ENOMEM;
+        }
+        for (size_t i = 0; i < witness->num_items; ++i) {
+            input->witness->items[i].witness = malloc(witness->items[i].witness_len);
+            if (!input->witness->items[i].witness) {
+                return WALLY_ENOMEM;
+            }
+            memcpy(input->witness->items[i].witness, witness->items[i].witness, witness->items[i].witness_len);
+            input->witness->items[i].witness_len = witness->items[i].witness_len;
+        }
     }
     ++tx->num_inputs;
     return WALLY_OK;
@@ -1146,13 +1199,20 @@ int wally_tx_add_raw_input(struct wally_tx* tx, const unsigned char* txhash, siz
 int wally_tx_add_raw_output(
     struct wally_tx* tx, uint64_t satoshi, const unsigned char* script, size_t script_len, uint32_t flags)
 {
-    (void)satoshi;
     if (!tx || !script || script_len == 0 || flags != 0) {
         return WALLY_EINVAL;
     }
     if (tx->num_outputs >= tx->outputs_allocation_len) {
         return WALLY_EINVAL;
     }
+    struct wally_tx_output* const output = &tx->outputs[tx->num_outputs];
+    output->satoshi = satoshi;
+    output->script = malloc(script_len);
+    if (!output->script) {
+        return WALLY_ENOMEM;
+    }
+    memcpy(output->script, script, script_len);
+    output->script_len = script_len;
     ++tx->num_outputs;
     return WALLY_OK;
 }
@@ -1184,14 +1244,89 @@ int wally_tx_get_input_signature_hash(const struct wally_tx* tx, size_t index, c
 
 int wally_tx_to_bytes(const struct wally_tx* tx, uint32_t flags, unsigned char* bytes_out, size_t len, size_t* written)
 {
-    if (!tx || flags != WALLY_TX_FLAG_USE_WITNESS || !bytes_out || len < sizeof(EXPECTED_BTC_TEST_TX_BYTES)
-        || !written || tx->num_inputs == 0 || tx->num_outputs == 0) {
+    if (!tx || flags != WALLY_TX_FLAG_USE_WITNESS || !bytes_out || !written || tx->num_inputs == 0
+        || tx->num_outputs == 0) {
         return WALLY_EINVAL;
     }
-    memcpy(bytes_out, EXPECTED_BTC_TEST_TX_BYTES, sizeof(EXPECTED_BTC_TEST_TX_BYTES));
-    bytes_out[6] = (uint8_t)tx->num_inputs;
-    bytes_out[11] = (uint8_t)tx->num_outputs;
-    *written = sizeof(EXPECTED_BTC_TEST_TX_BYTES);
+    size_t pos = 0;
+#define WRITE_BYTE(value)                                                                                              \
+    do {                                                                                                               \
+        if (pos >= len) {                                                                                              \
+            return WALLY_EINVAL;                                                                                       \
+        }                                                                                                              \
+        bytes_out[pos++] = (uint8_t)(value);                                                                           \
+    } while (false)
+#define WRITE_BYTES(bytes, bytes_len)                                                                                  \
+    do {                                                                                                               \
+        if ((bytes_len) > len - pos) {                                                                                 \
+            return WALLY_EINVAL;                                                                                       \
+        }                                                                                                              \
+        memcpy(bytes_out + pos, (bytes), (bytes_len));                                                                 \
+        pos += (bytes_len);                                                                                            \
+    } while (false)
+#define WRITE_U32_LE(value)                                                                                            \
+    do {                                                                                                               \
+        uint32_t local_value = (uint32_t)(value);                                                                      \
+        WRITE_BYTE(local_value & 0xffU);                                                                               \
+        WRITE_BYTE((local_value >> 8) & 0xffU);                                                                        \
+        WRITE_BYTE((local_value >> 16) & 0xffU);                                                                       \
+        WRITE_BYTE((local_value >> 24) & 0xffU);                                                                       \
+    } while (false)
+#define WRITE_U64_LE(value)                                                                                            \
+    do {                                                                                                               \
+        uint64_t local_value = (uint64_t)(value);                                                                      \
+        for (size_t local_i = 0; local_i < 8; ++local_i) {                                                             \
+            WRITE_BYTE((local_value >> (8U * local_i)) & 0xffU);                                                       \
+        }                                                                                                              \
+    } while (false)
+#define WRITE_COMPACT(value)                                                                                           \
+    do {                                                                                                               \
+        size_t local_value = (size_t)(value);                                                                          \
+        if (local_value >= 0xfdU) {                                                                                    \
+            return WALLY_EINVAL;                                                                                       \
+        }                                                                                                              \
+        WRITE_BYTE(local_value);                                                                                       \
+    } while (false)
+
+    WRITE_U32_LE(tx->version);
+    WRITE_BYTE(0);
+    WRITE_BYTE(1);
+    WRITE_COMPACT(tx->num_inputs);
+    for (size_t i = 0; i < tx->num_inputs; ++i) {
+        const struct wally_tx_input* const input = &tx->inputs[i];
+        WRITE_BYTES(input->txhash, sizeof(input->txhash));
+        WRITE_U32_LE(input->index);
+        WRITE_COMPACT(input->script_len);
+        if (input->script_len) {
+            WRITE_BYTES(input->script, input->script_len);
+        }
+        WRITE_U32_LE(input->sequence);
+    }
+    WRITE_COMPACT(tx->num_outputs);
+    for (size_t i = 0; i < tx->num_outputs; ++i) {
+        const struct wally_tx_output* const output = &tx->outputs[i];
+        WRITE_U64_LE(output->satoshi);
+        WRITE_COMPACT(output->script_len);
+        WRITE_BYTES(output->script, output->script_len);
+    }
+    for (size_t i = 0; i < tx->num_inputs; ++i) {
+        const struct wally_tx_witness_stack* const witness = tx->inputs[i].witness;
+        if (!witness || witness->num_items == 0) {
+            return WALLY_EINVAL;
+        }
+        WRITE_COMPACT(witness->num_items);
+        for (size_t j = 0; j < witness->num_items; ++j) {
+            WRITE_COMPACT(witness->items[j].witness_len);
+            WRITE_BYTES(witness->items[j].witness, witness->items[j].witness_len);
+        }
+    }
+    WRITE_U32_LE(tx->locktime);
+    *written = pos;
+#undef WRITE_COMPACT
+#undef WRITE_U64_LE
+#undef WRITE_U32_LE
+#undef WRITE_BYTES
+#undef WRITE_BYTE
     return WALLY_OK;
 }
 
@@ -1215,12 +1350,30 @@ int wally_tx_witness_stack_add(
     if (!stack || !witness || witness_len == 0 || stack->num_items >= stack->items_allocation_len) {
         return WALLY_EINVAL;
     }
+    if (!stack->items) {
+        stack->items = calloc(stack->items_allocation_len, sizeof(*stack->items));
+        if (!stack->items) {
+            return WALLY_ENOMEM;
+        }
+    }
+    stack->items[stack->num_items].witness = malloc(witness_len);
+    if (!stack->items[stack->num_items].witness) {
+        return WALLY_ENOMEM;
+    }
+    memcpy(stack->items[stack->num_items].witness, witness, witness_len);
+    stack->items[stack->num_items].witness_len = witness_len;
     ++stack->num_items;
     return WALLY_OK;
 }
 
 int wally_tx_witness_stack_free(struct wally_tx_witness_stack* stack)
 {
+    if (stack) {
+        for (size_t i = 0; i < stack->num_items; ++i) {
+            free(stack->items[i].witness);
+        }
+        free(stack->items);
+    }
     free(stack);
     return WALLY_OK;
 }
@@ -2764,7 +2917,7 @@ int main(int argc, char** argv)
     };
     uint8_t session_request_chunks[2304];
     uint8_t session_response_chunks[512];
-    uint8_t session_response_payload[256];
+    uint8_t session_response_payload[TREZOR_SESSION_MAX_RESPONSE_PAYLOAD_LEN];
     size_t session_request_len = 0;
     size_t session_response_len = 0;
     size_t session_response_payload_len = 0;
