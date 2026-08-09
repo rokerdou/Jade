@@ -37,6 +37,12 @@ They also include external-oracle checks against mainstream community libraries:
   with `EthereumDefinitions`, and BTC `SignTx`; the test wraps those payloads in
   local Trezor Protocol v1 wire frames, feeds them into the local session
   handler, and decodes the response with `trezorlib`.
+- BTC `SignTx` is also covered by a trezorlib host-flow oracle that calls
+  `trezorlib.btc.sign_tx()` directly. The scripted device side requires the
+  official interactive sequence:
+  `SignTx -> TxRequest(TXMETA) -> TxAck(meta) -> TxRequest(TXINPUT) ->
+  TxAck(input) -> TxRequest(TXOUTPUT) -> TxAck(output) ->
+  TxRequest(TXFINISHED)`.
 
 These Python packages are development-test dependencies only. They are installed
 into `.host-oracle-venv/` and are not linked into firmware or ESP-IDF builds.
@@ -65,12 +71,14 @@ Current host-gate coverage:
 - Fake hardware confirmation UI rejects summaries that cannot be rendered within
   the T-Display-S3/Jade message line limits.
 - Sensitive or unsupported Trezor messages such as `GetEntropy`, `LoadDevice`,
-  `ResetDevice`, BTC `SignTx`, `CipherKeyValue`, `BackupDevice`,
-  `RecoveryDevice`, and `UnlockPath` are rejected before reaching key material.
+  `ResetDevice`, BTC `SignTx`, BTC `TxAck`, `TxAckPaymentRequest`,
+  `CipherKeyValue`, `BackupDevice`, `RecoveryDevice`, and `UnlockPath` are
+  rejected before reaching key material.
 - The same sensitive/unsupported messages are also checked through the full
   Trezor wire/session path. Until BTC `SignTx` is implemented as the complete
-  Trezor interactive transaction protocol, it must remain a wire-level
-  `Failure(UnexpectedMessage)` and must not reach wallet signing code.
+  Trezor interactive transaction protocol, `SignTx`, `TxAck`, and
+  `TxAckPaymentRequest` must remain wire-level `Failure(UnexpectedMessage)`
+  responses and must not reach wallet signing code.
 - Malformed wire packets are checked to return `Failure(InvalidProtocol)` rather
   than crashing, hanging, or leaking parser state.
 

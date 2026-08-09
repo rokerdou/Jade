@@ -2728,6 +2728,8 @@ int main(int argc, char** argv)
     CHECK(trezor_dispatcher_message_sensitive_or_unsupported(TREZOR_MSG_RECOVERY_DEVICE));
     CHECK(trezor_dispatcher_message_sensitive_or_unsupported(TREZOR_MSG_GET_ENTROPY));
     CHECK(trezor_dispatcher_message_sensitive_or_unsupported(TREZOR_MSG_SIGN_TX));
+    CHECK(trezor_dispatcher_message_sensitive_or_unsupported(TREZOR_MSG_TX_ACK));
+    CHECK(trezor_dispatcher_message_sensitive_or_unsupported(TREZOR_MSG_TX_ACK_PAYMENT_REQUEST));
     CHECK(trezor_dispatcher_message_sensitive_or_unsupported(TREZOR_MSG_CIPHER_KEY_VALUE));
     CHECK(trezor_dispatcher_message_sensitive_or_unsupported(TREZOR_MSG_BACKUP_DEVICE));
     CHECK(trezor_dispatcher_message_sensitive_or_unsupported(TREZOR_MSG_SIGN_MESSAGE));
@@ -2740,6 +2742,8 @@ int main(int argc, char** argv)
     CHECK(!trezor_check_rejected_message(&trezor_session, TREZOR_MSG_LOAD_DEVICE, "LoadDevice"));
     CHECK(!trezor_check_rejected_message(&trezor_session, TREZOR_MSG_RESET_DEVICE, "ResetDevice"));
     CHECK(!trezor_check_rejected_message(&trezor_session, TREZOR_MSG_SIGN_TX, "SignTx"));
+    CHECK(!trezor_check_rejected_message(&trezor_session, TREZOR_MSG_TX_ACK, "TxAck"));
+    CHECK(!trezor_check_rejected_message(&trezor_session, TREZOR_MSG_TX_ACK_PAYMENT_REQUEST, "TxAckPaymentRequest"));
     CHECK(!trezor_check_rejected_message(&trezor_session, TREZOR_MSG_CIPHER_KEY_VALUE, "CipherKeyValue"));
     CHECK(!trezor_check_rejected_message(&trezor_session, TREZOR_MSG_BACKUP_DEVICE, "BackupDevice"));
     CHECK(!trezor_check_rejected_message(&trezor_session, TREZOR_MSG_SIGN_MESSAGE, "SignMessage"));
@@ -2753,6 +2757,9 @@ int main(int argc, char** argv)
     CHECK(!trezor_check_rejected_wire_message(&trezor_session, TREZOR_MSG_LOAD_DEVICE, "LoadDevice"));
     CHECK(!trezor_check_rejected_wire_message(&trezor_session, TREZOR_MSG_RESET_DEVICE, "ResetDevice"));
     CHECK(!trezor_check_rejected_wire_message(&trezor_session, TREZOR_MSG_SIGN_TX, "SignTx"));
+    CHECK(!trezor_check_rejected_wire_message(&trezor_session, TREZOR_MSG_TX_ACK, "TxAck"));
+    CHECK(!trezor_check_rejected_wire_message(
+        &trezor_session, TREZOR_MSG_TX_ACK_PAYMENT_REQUEST, "TxAckPaymentRequest"));
     CHECK(!trezor_check_rejected_wire_message(&trezor_session, TREZOR_MSG_CIPHER_KEY_VALUE, "CipherKeyValue"));
     CHECK(!trezor_check_rejected_wire_message(&trezor_session, TREZOR_MSG_BACKUP_DEVICE, "BackupDevice"));
     CHECK(!trezor_check_rejected_wire_message(&trezor_session, TREZOR_MSG_RECOVERY_DEVICE, "RecoveryDevice"));

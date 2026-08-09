@@ -22,6 +22,8 @@ bool trezor_dispatcher_message_sensitive_or_unsupported(const uint32_t message_t
     case TREZOR_MSG_LOAD_DEVICE:
     case TREZOR_MSG_RESET_DEVICE:
     case TREZOR_MSG_SIGN_TX:
+    case TREZOR_MSG_TX_ACK:
+    case TREZOR_MSG_TX_ACK_PAYMENT_REQUEST:
     case TREZOR_MSG_CIPHER_KEY_VALUE:
     case TREZOR_MSG_BACKUP_DEVICE:
     case TREZOR_MSG_SIGN_MESSAGE:

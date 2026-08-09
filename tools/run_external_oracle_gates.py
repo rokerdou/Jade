@@ -8,6 +8,7 @@ import hashlib
 import io
 import subprocess
 import sys
+from dataclasses import dataclass
 from pathlib import Path
 
 import base58
@@ -142,6 +143,160 @@ def run_local_wire_oracle(gate: Path, message_type: int, message: messages.Messa
     output = subprocess.check_output([str(gate), "--trezor-wire-oracle", wire.hex()], text=True)
     parsed = parse_vectors(output)
     return int(parsed["response_type"]), bytes.fromhex(parsed["response_payload"])
+
+
+@dataclass(frozen=True)
+class BtcSignTxHostStep:
+    request_type: messages.RequestType
+    ack_kind: str
+    request_index: int | None = None
+
+
+class ScriptedBtcSignTxClient:
+    def __init__(self, script: list[BtcSignTxHostStep], final_signature: bytes, final_tx: bytes) -> None:
+        self.script = script
+        self.final_signature = final_signature
+        self.final_tx = final_tx
+        self.calls: list[messages.MessageType] = []
+        self.ack_index = 0
+        self.started = False
+        self.opened = False
+        self.closed = False
+
+    def call(self, message: messages.MessageType, expect: type[messages.MessageType] | None = None) -> messages.TxRequest:
+        if not self.opened or self.closed:
+            raise AssertionError("trezorlib BTC SignTx call happened outside an open session")
+        self.calls.append(message)
+        if not self.started:
+            if not isinstance(message, messages.SignTx):
+                raise AssertionError(f"first BTC SignTx call was {type(message).__name__}")
+            if expect is not messages.TxRequest:
+                raise AssertionError(f"unexpected SignTx expect type: {expect}")
+            if message.coin_name != "Testnet" or message.inputs_count != 1 or message.outputs_count != 1:
+                raise AssertionError(f"unexpected SignTx message: {message}")
+            if message.version != 2 or message.lock_time != 0:
+                raise AssertionError(f"unexpected SignTx version/lock_time: {message}")
+            self.started = True
+            return self._next_request()
+
+        if not isinstance(message, messages.TxAck):
+            raise AssertionError(f"BTC host flow expected TxAck, got {type(message).__name__}")
+        if expect is not messages.TxRequest:
+            raise AssertionError(f"unexpected TxAck expect type: {expect}")
+        if message.tx is None:
+            raise AssertionError("TxAck missing TransactionType")
+
+        previous = self.script[self.ack_index]
+        if previous.ack_kind == "meta":
+            if message.tx.inputs or message.tx.outputs or message.tx.bin_outputs:
+                raise AssertionError(f"TXMETA ack leaked full transaction data: {message.tx}")
+            if message.tx.inputs_cnt != 1 or message.tx.outputs_cnt != 1:
+                raise AssertionError(f"unexpected TXMETA counts: {message.tx}")
+        elif previous.ack_kind == "input":
+            if len(message.tx.inputs) != 1 or message.tx.inputs[0].prev_hash != btc_tx_prev_hash():
+                raise AssertionError(f"unexpected TXINPUT ack: {message.tx}")
+            if message.tx.inputs[0].script_type != messages.InputScriptType.SPENDWITNESS:
+                raise AssertionError(f"unexpected BTC input script type: {message.tx.inputs[0].script_type}")
+            if message.tx.inputs[0].amount != 100_000:
+                raise AssertionError(f"unexpected BTC input amount: {message.tx.inputs[0].amount}")
+        elif previous.ack_kind == "output":
+            if len(message.tx.outputs) != 1:
+                raise AssertionError(f"unexpected TXOUTPUT ack: {message.tx}")
+            if message.tx.outputs[0].address != btc_tx_output_address() or message.tx.outputs[0].amount != 90_000:
+                raise AssertionError(f"unexpected BTC output: {message.tx.outputs[0]}")
+        else:
+            raise AssertionError(f"unhandled BTC ack kind: {previous.ack_kind}")
+
+        self.ack_index += 1
+        return self._next_request()
+
+    def open(self) -> None:
+        if self.opened or self.closed:
+            raise AssertionError("trezorlib BTC SignTx session opened more than once")
+        self.opened = True
+
+    def close(self) -> None:
+        if not self.opened or self.closed:
+            raise AssertionError("trezorlib BTC SignTx session closed out of order")
+        self.closed = True
+
+    def _next_request(self) -> messages.TxRequest:
+        if self.ack_index > len(self.script):
+            raise AssertionError("BTC host script advanced past the end")
+
+        if self.ack_index == len(self.script):
+            return messages.TxRequest(
+                request_type=messages.RequestType.TXFINISHED,
+                serialized=messages.TxRequestSerializedType(
+                    signature_index=0,
+                    signature=self.final_signature,
+                    serialized_tx=self.final_tx,
+                ),
+            )
+
+        step = self.script[self.ack_index]
+        return messages.TxRequest(
+            request_type=step.request_type,
+            details=messages.TxRequestDetailsType(request_index=step.request_index),
+        )
+
+
+def btc_tx_prev_hash() -> bytes:
+    return bytes.fromhex("11" * 32)
+
+
+def btc_tx_output_address() -> str:
+    return "tb1qw508d6qejxtdg4y5r3zarvary0c5xw7kxpjzsx"
+
+
+def check_trezorlib_btc_signtx_host_flow_oracle() -> None:
+    from trezorlib import btc
+
+    input_path = [0x80000054, 0x80000001, 0x80000000, 0, 0]
+    tx_input = messages.TxInputType(
+        address_n=input_path,
+        prev_hash=btc_tx_prev_hash(),
+        prev_index=0,
+        script_type=messages.InputScriptType.SPENDWITNESS,
+        amount=100_000,
+        sequence=0xFFFFFFFF,
+    )
+    tx_output = messages.TxOutputType(
+        address=btc_tx_output_address(),
+        amount=90_000,
+        script_type=messages.OutputScriptType.PAYTOADDRESS,
+    )
+
+    signature = bytes.fromhex("30" + "44" * 70)
+    serialized_tx = bytes.fromhex("02000000000100")
+    client = ScriptedBtcSignTxClient(
+        [
+            BtcSignTxHostStep(messages.RequestType.TXMETA, "meta"),
+            BtcSignTxHostStep(messages.RequestType.TXINPUT, "input", request_index=0),
+            BtcSignTxHostStep(messages.RequestType.TXOUTPUT, "output", request_index=0),
+        ],
+        signature,
+        serialized_tx,
+    )
+
+    signatures, signed_tx = btc.sign_tx(
+        client,
+        "Testnet",
+        [tx_input],
+        [tx_output],
+        version=2,
+        lock_time=0,
+    )
+    if signatures != [signature]:
+        raise AssertionError(f"trezorlib BTC SignTx signatures mismatch: {signatures}")
+    if signed_tx != serialized_tx:
+        raise AssertionError(f"trezorlib BTC SignTx serialized tx mismatch: {signed_tx.hex()}")
+
+    call_types = [type(call).__name__ for call in client.calls]
+    if call_types != ["SignTx", "TxAck", "TxAck", "TxAck"]:
+        raise AssertionError(f"unexpected trezorlib BTC host call sequence: {call_types}")
+    if not client.closed:
+        raise AssertionError("trezorlib BTC SignTx session did not close")
 
 
 def check_trezorlib_protocol_oracle(gate: Path, local_vectors: dict[str, str]) -> None:
@@ -296,6 +451,20 @@ def check_trezorlib_protocol_oracle(gate: Path, local_vectors: dict[str, str]) -
     if failure.code != messages.FailureType.UnexpectedMessage:
         raise AssertionError(f"BTC SignTx unexpected failure code: {failure.code}")
 
+    for message_type, message in (
+        (messages.MessageType.TxAck, messages.TxAck(tx=messages.TransactionType())),
+        (
+            messages.MessageType.TxAckPaymentRequest,
+            messages.TxAckPaymentRequest(recipient_name="merchant", signature=b"\x00" * 64),
+        ),
+    ):
+        response_type, payload = run_local_wire_oracle(gate, message_type, message)
+        if response_type != messages.MessageType.Failure:
+            raise AssertionError(f"{message_type.name} must be rejected until BTC signing is implemented: {response_type}")
+        failure = protobuf.load_message(io.BytesIO(payload), messages.Failure)
+        if failure.code != messages.FailureType.UnexpectedMessage:
+            raise AssertionError(f"{message_type.name} unexpected failure code: {failure.code}")
+
 
 def main() -> int:
     parser = argparse.ArgumentParser()
@@ -329,6 +498,7 @@ def main() -> int:
             print(f"  external: {expected_value}", file=sys.stderr)
             return 1
 
+    check_trezorlib_btc_signtx_host_flow_oracle()
     check_trezorlib_protocol_oracle(gate, local)
     print("PASS external_oracle_gates")
     return 0
