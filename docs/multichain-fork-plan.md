@@ -21,6 +21,8 @@
 - 小步修改、小步验证：每次变更先做静态检查、格式检查和可构建性验证，再继续扩大范围。
 - ETH/TRON 签名前必须先做本机派生地址校验；地址/私钥对应关系必须有正反向门禁测试，测试不过不得接入 USB/RPC 签名入口。
 - 多链签名必须以硬件屏幕确认为准：主机 UI 只能辅助展示，不能替代设备屏幕上的链名、路径、from/owner、to、金额、token 合约、fee 上限和未知合约风险确认。
+- 链负责“算出该签什么”，wallet core/crypto 只负责“对已授权 digest 签名”。链层不得获取裸私钥、seed、mnemonic、xprv 或任何可还原私钥的中间态。
+- USB/protobuf 主机输入必须按恶意输入处理。畸形长度、未知 enum、缺失字段、超深/超长嵌套、超长 calldata、异常 derivation path 只能导致拒绝请求，不能导致越界、整数溢出、重启循环或敏感内存残留。
 
 ## 核心判断
 
@@ -137,17 +139,43 @@ typedef struct {
     size_t path_len;
 } derivation_path_t;
 
+typedef struct {
+    derivation_path_t path;
+    uint32_t allowed_usage;
+    uint32_t chain_id;
+} wallet_key_handle_t;
+
 bool wallet_core_is_unlocked(void);
 bool wallet_core_is_initialized(void);
 bool wallet_core_is_ready(void);
-bool wallet_core_get_public_key(const derivation_path_t* path, uint8_t* pubkey, size_t pubkey_len);
-bool wallet_core_sign_digest(const derivation_path_t* path, const uint8_t* digest, size_t digest_len,
+bool wallet_core_get_public_key(const wallet_key_handle_t* key, uint8_t* pubkey, size_t pubkey_len);
+bool wallet_core_sign_digest(const wallet_key_handle_t* key, const uint8_t digest[32],
                              uint8_t* signature, size_t signature_len);
 bool wallet_core_derive_shared_secret(const derivation_path_t* path, const uint8_t* peer_pubkey,
                                       size_t peer_pubkey_len, uint8_t* out, size_t out_len);
 ```
 
 后续 BTC/ETH/TRON 都只能通过这层派生公钥、签 digest、导出地址需要的公钥信息。私钥不跨出 wallet core。
+
+禁止形态：
+
+```c
+uint8_t* wallet_core_get_private_key(const derivation_path_t* path);
+bool chain_sign_with_private_key(const uint8_t* private_key, ...);
+```
+
+目标形态：
+
+```c
+bool sign_digest(wallet_key_handle_t key, const uint8_t digest[32], uint8_t signature[65]);
+```
+
+安全含义：
+
+- 链层负责规范化交易、校验路径/from/owner、生成待签 payload 和 digest。
+- 授权层负责把“用户在屏幕看到的摘要”和“实际待签 digest”绑定。
+- wallet core 负责根据 key handle 在内部派生私钥、调用 crypto primitive、清理 sensitive stack。
+- crypto primitive 只看 digest 和内部私钥材料，不解析 ETH/TRON/BTC 交易，也不接触 USB/protobuf 消息。
 
 ## Chain API
 
@@ -250,6 +278,8 @@ USB 主机必须按完全不可信处理。后续任何 Jade RPC 或 Trezor-comp
 - 解锁状态必须绑定消息来源。USB 发起的敏感操作只能使用由同一 USB source 解锁的 keychain，不允许 BLE/QR/内部来源解锁后被 USB 复用。
 - USB 可被嗅探，因此协议返回中不得包含秘密；host 能看到的签名、公钥、地址和交易明文都必须被视为公开或用户已同意公开。
 - USB 可被注入，因此所有 parser 都需要固定最大长度、结构化解析、错误退出和不信任长度字段；异常输入只能导致拒绝请求，不能导致重启循环、内存破坏或密钥材料留存。
+- Protobuf/Trezor parser 是攻击面。优先采用成熟、可配置上限的 protobuf/nanopb 类实现；若保留本项目轻量 parser，则只允许解析必要子集，并必须有 malformed corpus 门禁覆盖：`length=0xffffffff`、超长 varint、截断字段、未知 enum、重复字段、缺失必填语义、嵌套 definitions、超长 bytes/string、超长 calldata、超长/异常 path。
+- parser 输出必须复制到固定上限的固件-owned 结构中，链层不得持有指向 USB RX buffer 的长期指针；解析失败必须清零临时 buffer 并返回 `Failure/DataError` 或等价错误。
 - OTA 只能在新设备或已解锁设备上进入，固件必须校验 chip、board/features、secure version、hash，并要求用户在屏幕确认。
 - Hardened build 必须关闭 debug RPC、console、USB DFU、USB MSC、USB networking、敏感日志和 BLE，除非某个功能明确需要并经过单独威胁建模。
 - 真正存放资产前，必须完成 secure boot、flash encryption、JTAG/ROM download 限制、anti-rollback 和生产烧录流程审计；T-Display-S3 本身没有安全芯片，物理攻击仍是主要残余风险。
@@ -271,6 +301,8 @@ USB 主机必须按完全不可信处理。后续任何 Jade RPC 或 Trezor-comp
 - 交易报文 signing payload/digest：ETH legacy/EIP-155、EIP-1559、ERC20/TRC20 transfer/approve、TRON raw transaction protobuf/sha256。
 - UI 授权绑定：同一个硬件确认摘要必须绑定同一个规范化请求和 digest，不能确认 A 后签 B。
 - USB 签名入口：不得存在 host-supplied digest blind signing；所有输入长度和结构字段必须有边界测试。
+- USB/protobuf parser 恶意输入：长度溢出、varint 溢出、截断消息、未知/重复字段、错误 wire type、异常 enum、超长 calldata、超长 definitions、异常 derivation path 必须拒绝且不能 crash/reset。
+- Key boundary：链层和协议层不得链接或调用任何 `get_private_key` 类 API；签名只能经由 `wallet_core_sign_digest(key_handle, digest, signature)` 形态的内部接口完成，私钥派生和清理由 wallet core 独占。
 
 暂不作为第一批硬门禁的内容：
 

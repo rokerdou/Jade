@@ -58,6 +58,18 @@ static jade_msg_source_t initialisation_source = SOURCE_NONE;
 static jade_msg_source_t internal_relogin_source = SOURCE_NONE;
 static bool tolerate_usb_disconnection = false;
 static bool show_connect_screen = false;
+static volatile bool dashboard_redraw_requested = false;
+
+void dashboard_request_redraw(void) { dashboard_redraw_requested = true; }
+
+static bool dashboard_take_redraw_request(void)
+{
+    if (!dashboard_redraw_requested) {
+        return false;
+    }
+    dashboard_redraw_requested = false;
+    return true;
+}
 
 // The dynamic home screen menu
 #define HOME_SCREEN_TYPE_UNINIT 0
@@ -2044,6 +2056,20 @@ static void handle_display_usb_history(void)
     handle_info_detail_screen("USB History", trace);
 }
 
+static void handle_clear_usb_logs(void)
+{
+    const char* question[] = { "Clear USB trace", "diagnostic logs?" };
+    if (!await_yesno_activity("Clear USB Logs", question, 2, false, NULL)) {
+        return;
+    }
+
+    if (trezor_trace_clear()) {
+        await_message("USB logs cleared");
+    } else {
+        await_error("Failed to clear logs");
+    }
+}
+
 static void handle_display_mac_address(void)
 {
     char mac[18] = "NO BLE";
@@ -2293,6 +2319,10 @@ static void handle_settings(const bool startup_menu)
 
         case BTN_SETTINGS_INFO_USB_HISTORY:
             handle_display_usb_history();
+            break;
+
+        case BTN_SETTINGS_INFO_USB_CLEAR:
+            handle_clear_usb_logs();
             break;
 
         case BTN_SETTINGS_DEVICE_INFO_MAC:
@@ -2660,10 +2690,15 @@ static void do_dashboard(jade_process_t* process, const keychain_t* const initia
 
         // Fresh iteration
         acted = false;
+        if (dashboard_take_redraw_request()) {
+            acted = true;
+        }
 
         // 1. Process any message if available (do not block if no message available)
-        jade_process_load_in_message(process, false);
-        if (process->ctx.cbor) {
+        if (!acted) {
+            jade_process_load_in_message(process, false);
+        }
+        if (!acted && process->ctx.cbor) {
             main_thread_action = MAIN_THREAD_ACTIVITY_MESSAGE;
             dispatch_message(process);
             acted = true;

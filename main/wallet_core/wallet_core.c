@@ -3,6 +3,12 @@
 #include "../jade_wally_verify.h"
 #include "../keychain.h"
 #include "../sensitive.h"
+#ifdef CONFIG_TREZOR_USB_HID
+#include "../protocols/trezor/trace.h"
+#define WALLET_CORE_TRACE(stage) trezor_trace_set_stage(stage)
+#else
+#define WALLET_CORE_TRACE(stage) ((void)0)
+#endif
 #include "../utils/util.h"
 #include "../wallet.h"
 
@@ -38,14 +44,18 @@ static bool derive_private_key(const wallet_core_path_t* const path, uint8_t* co
     }
 
     struct ext_key derived;
+    WALLET_CORE_TRACE("wcore:derive_push");
     SENSITIVE_PUSH(&derived, sizeof(derived));
 
+    WALLET_CORE_TRACE("wcore:derive_hdkey");
     const bool ok = wallet_get_hdkey(path->parts, path->len, BIP32_FLAG_KEY_PRIVATE | BIP32_FLAG_SKIP_HASH, &derived);
     if (ok) {
         memcpy(private_key, derived.priv_key + 1, key_len);
     }
 
+    WALLET_CORE_TRACE("wcore:derive_pop");
     SENSITIVE_POP(&derived);
+    WALLET_CORE_TRACE(ok ? "wcore:derive_ok" : "wcore:derive_fail");
     return ok;
 }
 
@@ -58,24 +68,31 @@ bool wallet_core_get_public_key(const wallet_core_path_t* const path, const wall
 
     if (format == WALLET_CORE_PUBKEY_COMPRESSED) {
         struct ext_key derived;
+        WALLET_CORE_TRACE("wcore:pubc_hdkey");
         if (!wallet_get_hdkey(path->parts, path->len, BIP32_FLAG_KEY_PUBLIC | BIP32_FLAG_SKIP_HASH, &derived)) {
+            WALLET_CORE_TRACE("wcore:pubc_fail");
             return false;
         }
         memcpy(output, derived.pub_key, output_len);
         JADE_WALLY_VERIFY(wally_bzero(&derived, sizeof(derived)));
+        WALLET_CORE_TRACE("wcore:pubc_ok");
         return true;
     }
 
     if (format == WALLET_CORE_PUBKEY_UNCOMPRESSED) {
         uint8_t compressed_pubkey[EC_PUBLIC_KEY_LEN];
+        WALLET_CORE_TRACE("wcore:pubu_push");
         SENSITIVE_PUSH(compressed_pubkey, sizeof(compressed_pubkey));
 
+        WALLET_CORE_TRACE("wcore:pubu_core");
         const bool ok = wallet_core_get_public_key(
                             path, WALLET_CORE_PUBKEY_COMPRESSED, compressed_pubkey, sizeof(compressed_pubkey))
             && wally_ec_public_key_decompress(compressed_pubkey, sizeof(compressed_pubkey), output, output_len)
                 == WALLY_OK;
 
+        WALLET_CORE_TRACE("wcore:pubu_pop");
         SENSITIVE_POP(compressed_pubkey);
+        WALLET_CORE_TRACE(ok ? "wcore:pubu_ok" : "wcore:pubu_fail");
         return ok;
     }
 
@@ -147,13 +164,18 @@ bool wallet_core_sign_digest_ecdsa_recoverable(const wallet_core_path_t* const p
     }
 
     uint8_t private_key[EC_PRIVATE_KEY_LEN];
+    WALLET_CORE_TRACE("wcore:sign_priv_push");
     SENSITIVE_PUSH(private_key, sizeof(private_key));
 
+    WALLET_CORE_TRACE("wcore:sign_derive");
     const bool ok = derive_private_key(path, private_key, sizeof(private_key))
+        && (WALLET_CORE_TRACE("wcore:sign_crypto"), true)
         && wally_ec_sig_from_bytes(private_key, sizeof(private_key), digest, digest_len,
                EC_FLAG_ECDSA | EC_FLAG_RECOVERABLE, signature, signature_len)
             == WALLY_OK;
 
+    WALLET_CORE_TRACE("wcore:sign_pop");
     SENSITIVE_POP(private_key);
+    WALLET_CORE_TRACE(ok ? "wcore:sign_ok" : "wcore:sign_fail");
     return ok;
 }

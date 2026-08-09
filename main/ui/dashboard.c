@@ -646,7 +646,8 @@ gui_activity_t* make_device_info_activity(void)
 #ifdef CONFIG_HAS_BATTERY
         { .txt = "Battery Volts", .font = GUI_DEFAULT_FONT, .ev_id = BTN_SETTINGS_DEVICE_INFO_BATTERY },
 #endif
-        { .txt = "Storage", .font = GUI_DEFAULT_FONT, .ev_id = BTN_SETTINGS_DEVICE_INFO_STORAGE } };
+        { .txt = "Storage", .font = GUI_DEFAULT_FONT, .ev_id = BTN_SETTINGS_DEVICE_INFO_STORAGE },
+        { .txt = "Clear USB Logs", .font = GUI_DEFAULT_FONT, .ev_id = BTN_SETTINGS_INFO_USB_CLEAR } };
 
     return make_menu_activity("Device Info", hdrbtns, 2, menubtns, sizeof(menubtns) / sizeof(btn_data_t));
 }

@@ -4,6 +4,13 @@
 #include "../../crypto/keccak256.h"
 #include "confirm.h"
 
+#ifdef CONFIG_TREZOR_USB_HID
+#include "../../protocols/trezor/trace.h"
+#define ETH_DIGEST_TRACE(stage) trezor_trace_set_stage(stage)
+#else
+#define ETH_DIGEST_TRACE(stage) ((void)0)
+#endif
+
 #include <stdlib.h>
 #include <string.h>
 #include <wally_crypto.h>
@@ -259,17 +266,35 @@ bool ethereum_tx_build_authorized_digest(const ethereum_tx_preflight_request_t* 
     bool bindings_match = false;
     bool digest_ok = false;
 
-    if (ethereum_tx_preflight(request, &result)
-        && ethereum_confirm_summary_from_preflight(request, &result, &recomputed_authorization.summary)) {
+    ETH_DIGEST_TRACE("digest:preflight");
+    bool recompute_ok = ethereum_tx_preflight(request, &result);
+    ETH_DIGEST_TRACE(recompute_ok ? "digest:preflight_ok" : "digest:preflight_fail");
+    if (recompute_ok) {
+        ETH_DIGEST_TRACE("digest:summary");
+        recompute_ok = ethereum_confirm_summary_from_preflight(request, &result, &recomputed_authorization.summary);
+        ETH_DIGEST_TRACE(recompute_ok ? "digest:summary_ok" : "digest:summary_fail");
+    }
+
+    if (recompute_ok) {
         memcpy(recomputed_authorization.path.parts, request->path, request->path_len * sizeof(request->path[0]));
         recomputed_authorization.path.len = request->path_len;
+        ETH_DIGEST_TRACE("digest:binding");
         bindings_match
             = chain_authorization_compute_binding(&recomputed_authorization, expected_binding, sizeof(expected_binding))
             && chain_authorization_compute_binding(authorization, actual_binding, sizeof(actual_binding))
             && memcmp(expected_binding, actual_binding, sizeof(expected_binding)) == 0;
+        ETH_DIGEST_TRACE(bindings_match ? "digest:binding_ok" : "digest:binding_fail");
 
-        digest_ok = bindings_match && ethereum_tx_signing_hash(request, digest, sizeof(digest))
-            && chain_authorized_digest_init(authorization, digest, sizeof(digest), output);
+        if (bindings_match) {
+            ETH_DIGEST_TRACE("digest:hash");
+            digest_ok = ethereum_tx_signing_hash(request, digest, sizeof(digest));
+            ETH_DIGEST_TRACE(digest_ok ? "digest:hash_ok" : "digest:hash_fail");
+        }
+        if (digest_ok) {
+            ETH_DIGEST_TRACE("digest:init_auth");
+            digest_ok = chain_authorized_digest_init(authorization, digest, sizeof(digest), output);
+            ETH_DIGEST_TRACE(digest_ok ? "digest:init_ok" : "digest:init_fail");
+        }
     }
 
     wally_bzero(&result, sizeof(result));

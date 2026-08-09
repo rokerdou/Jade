@@ -26,6 +26,7 @@ typedef struct {
 } trezor_protobuf_writer_t;
 
 void trezor_protobuf_reader_init(trezor_protobuf_reader_t* reader, const uint8_t* bytes, size_t len);
+// Returns false on malformed input and at EOF. Callers that scan all fields must loop on reader.pos < reader.len.
 bool trezor_protobuf_reader_next(trezor_protobuf_reader_t* reader, uint32_t* field_number, uint8_t* wire_type,
     const uint8_t** value, size_t* value_len);
 bool trezor_protobuf_skip_value(

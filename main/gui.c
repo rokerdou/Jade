@@ -25,6 +25,9 @@
 #include "utils/event.h"
 #include "utils/malloc_ext.h"
 #include "utils/util.h"
+#ifdef CONFIG_TREZOR_USB_HID
+#include "protocols/trezor/trace.h"
+#endif
 
 // A genuine production v2 Jade may be awaiting mandatory attestation data
 #if defined(CONFIG_BOARD_TYPE_JADE_V2_ANY) && defined(CONFIG_SECURE_BOOT)                                              \
@@ -562,9 +565,30 @@ static void select_action(gui_activity_t* activity)
     selectable_t* const current = activity->selectables;
     if (current && current->node->is_selected && current->node->button->click_event_id != GUI_BUTTON_EVENT_NONE) {
         JADE_ASSERT(current->node->activity == activity);
+	#ifdef CONFIG_TREZOR_USB_HID
+        trezor_trace_set_note("gui click=%ld", (long)current->node->button->click_event_id);
+        switch (current->node->button->click_event_id) {
+        case BTN_BACK:
+            trezor_trace_set_stage("gui:btn_back");
+            break;
+        case BTN_YES:
+            trezor_trace_set_stage("gui:btn_yes");
+            break;
+        case BTN_NO:
+            trezor_trace_set_stage("gui:btn_no");
+            break;
+        default:
+            trezor_trace_set_stage("gui:btn_other");
+            break;
+        }
+#endif
         const esp_err_t rc = esp_event_post(GUI_BUTTON_EVENT, current->node->button->click_event_id,
             &current->node->button->args, sizeof(void*), 100 / portTICK_PERIOD_MS);
         JADE_ASSERT(rc == ESP_OK);
+#ifdef CONFIG_TREZOR_USB_HID
+    } else {
+        trezor_trace_set_stage("gui:no_select");
+#endif
     }
 }
 
@@ -2047,6 +2071,10 @@ static void render_text(gui_view_node_t* node, dispWin_t cs)
             }
         } else { // without noise
             _fg = node->is_selected ? node->text->selected_color : node->text->color;
+            if (node->parent && node->parent->kind == FILL && node->parent->fill
+                && node->parent->fill->fill_type == FILL_PLAIN && node->parent->fill->color == TFT_BLACK) {
+                display_fill_rect(cs.x1, cs.y1, cs.x2 - cs.x1, cs.y2 - cs.y1, TFT_BLACK);
+            }
 
             display_print_in_area(node->render_data.resolved_text, resolve_halign(0, node->text->halign),
                 resolve_valign(0, node->text->valign), cs, 1);
@@ -2560,11 +2588,18 @@ void gui_wheel_click(void)
 
 void gui_front_click(void)
 {
+#ifdef CONFIG_TREZOR_USB_HID
+    trezor_trace_set_stage("gui:front");
+#endif
     if (!idletimer_register_activity(true)) {
         if (gui_click_event == GUI_FRONT_CLICK_EVENT) {
             select_action(current_activity);
         }
         esp_event_post(GUI_EVENT, GUI_FRONT_CLICK_EVENT, NULL, 0, 50 / portTICK_PERIOD_MS);
+#ifdef CONFIG_TREZOR_USB_HID
+    } else {
+        trezor_trace_set_stage("gui:front_dim");
+#endif
     }
 }
 

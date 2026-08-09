@@ -18,6 +18,10 @@
 #endif
 #include "process_utils.h"
 
+#ifdef CONFIG_TREZOR_USB_HID
+#include "../protocols/trezor/trace.h"
+#endif
+
 // Wallet initialisation functions
 void initialise_with_mnemonic(bool temporary_restore, bool force_qr_scan, bool* offer_qr_temporary);
 void get_passphrase(char* passphrase, size_t passphrase_len);
@@ -278,6 +282,10 @@ bool auth_user_unlock_wallet_with_pin(const jade_msg_source_t source)
     JADE_ASSERT(!keychain_get());
     JADE_ASSERT(keychain_has_pin());
     bool rslt = false;
+#ifdef CONFIG_TREZOR_USB_HID
+    trezor_trace_set_stage("auth:pin_start");
+    trezor_trace_set_note("pin attempts=%u", keychain_pin_attempts_remaining());
+#endif
 
     uint8_t pin[DIGIT_ENTRY_SIZE];
     SENSITIVE_PUSH(pin, sizeof(pin));
@@ -285,17 +293,33 @@ bool auth_user_unlock_wallet_with_pin(const jade_msg_source_t source)
     SENSITIVE_PUSH(aeskey, sizeof(aeskey));
 
     if (!get_pin_get_aeskey(NULL, "Unlock Jade", pin, sizeof(pin), aeskey, sizeof(aeskey))) {
+#ifdef CONFIG_TREZOR_USB_HID
+        trezor_trace_set_stage("auth:pin_cancel");
+#endif
         goto cleanup;
     }
+#ifdef CONFIG_TREZOR_USB_HID
+    trezor_trace_set_stage("auth:aes_ready");
+#endif
 
     if (!keychain_load(aeskey, sizeof(aeskey))) {
         JADE_LOGE("Failed to load keys - Incorrect PIN");
+#ifdef CONFIG_TREZOR_USB_HID
+        trezor_trace_set_stage("auth:load_fail");
+        trezor_trace_set_note("pin attempts=%u", keychain_pin_attempts_remaining());
+#endif
         check_wallet_erase_pin(NULL, pin, sizeof(pin));
         await_error("Incorrect PIN!");
         goto cleanup;
     }
+#ifdef CONFIG_TREZOR_USB_HID
+    trezor_trace_set_stage("auth:load_ok");
+#endif
 
     if (keychain_requires_passphrase()) {
+#ifdef CONFIG_TREZOR_USB_HID
+        trezor_trace_set_stage("auth:passphrase");
+#endif
         char passphrase[PASSPHRASE_MAX_LEN + 1];
         SENSITIVE_PUSH(passphrase, sizeof(passphrase));
         passphrase[0] = '\0';
@@ -306,14 +330,23 @@ bool auth_user_unlock_wallet_with_pin(const jade_msg_source_t source)
         if (!keychain_complete_derivation_with_passphrase(passphrase)) {
             SENSITIVE_POP(passphrase);
             JADE_LOGE("Failed to derive wallet");
+#ifdef CONFIG_TREZOR_USB_HID
+            trezor_trace_set_stage("auth:derive_fail");
+#endif
             await_error("Failed to derive wallet");
             goto cleanup;
         }
         SENSITIVE_POP(passphrase);
+#ifdef CONFIG_TREZOR_USB_HID
+        trezor_trace_set_stage("auth:derive_ok");
+#endif
     }
 
     keychain_set(keychain_get(), source, false);
     rslt = true;
+#ifdef CONFIG_TREZOR_USB_HID
+    trezor_trace_set_stage("auth:done");
+#endif
     JADE_LOGI("Success");
 
 cleanup:

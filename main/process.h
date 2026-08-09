@@ -87,6 +87,7 @@ void jade_process_free_current_message(jade_process_t* process);
 // Push messages to/from a process
 WARN_UNUSED_RESULT bool jade_process_push_in_message(const uint8_t* data, size_t size);
 void jade_process_push_out_message(const uint8_t* data, size_t length, jade_msg_source_t source);
+void dashboard_request_redraw(void);
 
 // Send message replies
 void jade_process_reply_to_message_result_with_id(const char* id, uint8_t* output, size_t output_size,

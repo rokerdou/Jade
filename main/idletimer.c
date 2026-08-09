@@ -8,6 +8,9 @@
 #include "storage.h"
 #include "ui.h"
 #include "utils/event.h"
+#ifdef CONFIG_TREZOR_USB_HID
+#include "protocols/trezor/trace.h"
+#endif
 #include <esp_system.h>
 
 #define DEFAULT_IDLE_TIMEOUT_SECS 600
@@ -159,17 +162,26 @@ static void idletimer_task(void* ignore)
             idle_state = IDLE;
             switch (action) {
             case POWER_OFF:
+#ifdef CONFIG_TREZOR_USB_HID
+                trezor_trace_set_stage("idle:poweroff");
+#endif
                 power_backlight_off();
                 keychain_clear();
                 power_shutdown();
                 break;
             case REBOOT:
+#ifdef CONFIG_TREZOR_USB_HID
+                trezor_trace_set_stage("idle:reboot");
+#endif
                 power_backlight_off();
                 keychain_clear();
                 esp_restart();
                 break;
             default:
                 if (!screen_dimmed) {
+#ifdef CONFIG_TREZOR_USB_HID
+                    trezor_trace_set_stage("idle:dim");
+#endif
                     set_screen_dimmed(true);
                 }
             }
@@ -177,8 +189,12 @@ static void idletimer_task(void* ignore)
 
         // If we did not idle time-out entirely we may still dim the screen if no physical interaction
         if (!screen_dimmed) {
+            uint16_t ui_timeout_secs = UI_SCREEN_IDLE_TIMEOUT_SECS;
+            if (ui_timeout_secs < min_timeout_override_secs) {
+                ui_timeout_secs = min_timeout_override_secs;
+            }
             const TickType_t last_ui_activity = get_last_registered_activity(true);
-            const TickType_t projected_ui_timeout_time = last_ui_activity + SECS_TO_TICKS(UI_SCREEN_IDLE_TIMEOUT_SECS);
+            const TickType_t projected_ui_timeout_time = last_ui_activity + SECS_TO_TICKS(ui_timeout_secs);
             if (projected_ui_timeout_time <= checktime) {
                 // deactivate the screen
                 JADE_LOGW("Idle-timeout - dimming screen");

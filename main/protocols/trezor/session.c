@@ -73,6 +73,8 @@ static bool trezor_session_store_pending_local_unlock(const trezor_session_t* co
         return false;
     }
 
+    trezor_trace_set_stage("unlock:defer");
+    trezor_trace_set_note("unlock defer req=%u payload=%lu", (unsigned int)request_type, (unsigned long)request_payload_len);
     trezor_session_clear_pending(session->state);
     session->state->pending_request_type = request_type;
     session->state->pending_request_payload_len = request_payload_len;
@@ -117,29 +119,36 @@ static bool trezor_session_handle_button_ack(const trezor_session_t* const sessi
             response_payload, response_payload_len, response_payload_written);
     }
     if (!session || !session->state || !session->state->has_pending_local_unlock || !session->perform_local_unlock) {
+        trezor_trace_set_stage("unlock:unexpected_ack");
         return trezor_session_failure_payload(TREZOR_FAILURE_UNEXPECTED_MESSAGE, "Button not expected", response_type,
             response_payload, response_payload_len, response_payload_written);
     }
 
+    trezor_trace_set_stage("unlock:ack");
     const uint16_t pending_type = session->state->pending_request_type;
     uint8_t* const pending_payload = s_trezor_session_pending_payload;
     const size_t pending_payload_len = session->state->pending_request_payload_len;
     if (pending_payload_len > TREZOR_SESSION_MAX_REQUEST_PAYLOAD_LEN) {
         trezor_session_clear_pending(session->state);
+        trezor_trace_set_stage("unlock:pending_big");
         return trezor_session_failure_payload(TREZOR_FAILURE_DATA_ERROR, "Pending request too big", response_type,
             response_payload, response_payload_len, response_payload_written);
     }
     memcpy(pending_payload, session->state->pending_request_payload, pending_payload_len);
     trezor_session_clear_pending(session->state);
 
+    trezor_trace_set_stage("unlock:perform");
     if (!session->perform_local_unlock(session->perform_local_unlock_ctx)) {
         wally_bzero(pending_payload, TREZOR_SESSION_MAX_REQUEST_PAYLOAD_LEN);
+        trezor_trace_set_stage("unlock:rejected");
         return trezor_session_failure_payload(TREZOR_FAILURE_ACTION_CANCELLED, "Local unlock rejected", response_type,
             response_payload, response_payload_len, response_payload_written);
     }
 
+    trezor_trace_set_stage("unlock:replay");
     const bool ok = trezor_session_handle_payload(session, pending_type, pending_payload, pending_payload_len,
         response_type, response_payload, response_payload_len, response_payload_written);
+    trezor_trace_set_stage(ok ? "unlock:replay_ok" : "unlock:replay_fail");
     wally_bzero(pending_payload, TREZOR_SESSION_MAX_REQUEST_PAYLOAD_LEN);
     return ok;
 }
@@ -201,13 +210,16 @@ static bool trezor_session_initialize_payload_read_session_id(const uint8_t* con
 static bool trezor_session_eth_signing_continue(const trezor_session_t* const session, uint16_t* const response_type,
     uint8_t* const response_payload, const size_t response_payload_len, size_t* const response_payload_written)
 {
+    trezor_trace_set_stage("ethsign:cont");
     if (!session || !session->state || !response_type || !response_payload || !response_payload_written
         || !session->state->has_pending_eth_signing) {
+        trezor_trace_set_stage("ethsign:no_pending");
         return trezor_session_failure_payload(TREZOR_FAILURE_UNEXPECTED_MESSAGE, "Ethereum signing not active",
             response_type, response_payload, response_payload_len, response_payload_written);
     }
 
     if (!trezor_ethereum_signing_state_ready(&session->state->pending_eth_signing)) {
+        trezor_trace_set_stage("ethsign:need_data");
         *response_type = TREZOR_MSG_ETHEREUM_TX_REQUEST;
         return trezor_ethereum_tx_request_encode_data(session->state->pending_eth_signing.next_chunk_len,
             response_payload, response_payload_len, response_payload_written);
@@ -218,9 +230,15 @@ static bool trezor_session_eth_signing_continue(const trezor_session_t* const se
     wally_bzero(&request, sizeof(request));
     wally_bzero(&signature, sizeof(signature));
 
-    const bool ok = session->sign_eth_tx
-        && trezor_ethereum_signing_state_to_request(&session->state->pending_eth_signing, &request)
-        && session->sign_eth_tx(session->sign_eth_tx_ctx, &request, &signature);
+    trezor_trace_set_stage("ethsign:to_req");
+    bool ok = session->sign_eth_tx && trezor_ethereum_signing_state_to_request(&session->state->pending_eth_signing, &request);
+    trezor_trace_set_note("ethsign to_req ok=%u path_len=%lu data=%lu", ok ? 1 : 0, (unsigned long)request.path_len,
+        (unsigned long)request.data_len);
+    if (ok) {
+        trezor_trace_set_stage("ethsign:sign");
+        ok = session->sign_eth_tx(session->sign_eth_tx_ctx, &request, &signature);
+    }
+    trezor_trace_set_stage(ok ? "ethsign:signed" : "ethsign:sign_fail");
 
     session->state->has_pending_eth_signing = false;
     wally_bzero(&session->state->pending_eth_signing, sizeof(session->state->pending_eth_signing));
@@ -233,9 +251,15 @@ static bool trezor_session_eth_signing_continue(const trezor_session_t* const se
     }
 
     *response_type = TREZOR_MSG_ETHEREUM_TX_REQUEST;
+    trezor_trace_set_stage("ethsign:encode_sig");
     const bool encoded
         = trezor_ethereum_tx_request_encode_signature(&signature, response_payload, response_payload_len,
             response_payload_written);
+    trezor_trace_set_note("ethsign encode_sig ok=%u out=%lu", encoded ? 1 : 0,
+        (unsigned long)(response_payload_written ? *response_payload_written : 0));
+    trezor_trace_set_stage(encoded ? "ethsign:encoded" : "ethsign:encode_fail");
+    trezor_trace_checkpoint(encoded ? "ethsign:encoded" : "ethsign:encode_fail", "out=%lu",
+        (unsigned long)(response_payload_written ? *response_payload_written : 0));
     wally_bzero(&signature, sizeof(signature));
     return encoded;
 }
@@ -382,27 +406,35 @@ bool trezor_session_handle_payload(const trezor_session_t* const session, const 
     }
 
     if (request_type == TREZOR_MSG_ETHEREUM_SIGN_TX || request_type == TREZOR_MSG_ETHEREUM_SIGN_TX_EIP1559) {
-        trezor_ethereum_signing_state_t signing_state;
-        if (!session->state || !session->sign_eth_tx
-            || !trezor_ethereum_sign_tx_init(&signing_state, request_type, request_payload, request_payload_len)) {
+        trezor_trace_set_stage("ethsign:init");
+        if (!session->state || !session->sign_eth_tx) {
             return trezor_session_failure_payload(TREZOR_FAILURE_DATA_ERROR, "Invalid Ethereum signing request",
                 response_type, response_payload, response_payload_len, response_payload_written);
         }
 
+        session->state->has_pending_eth_signing = false;
+        wally_bzero(&session->state->pending_eth_signing, sizeof(session->state->pending_eth_signing));
+        if (!trezor_ethereum_sign_tx_init(
+                &session->state->pending_eth_signing, request_type, request_payload, request_payload_len)) {
+            trezor_trace_set_stage("ethsign:init_fail");
+            return trezor_session_failure_payload(TREZOR_FAILURE_DATA_ERROR, "Invalid Ethereum signing request",
+                response_type, response_payload, response_payload_len, response_payload_written);
+        }
+        trezor_trace_set_stage("ethsign:inited");
+
         bool deferred = false;
         if (!trezor_session_maybe_defer_for_local_unlock(session, request_type, request_payload, request_payload_len,
                 response_type, response_payload, response_payload_len, response_payload_written, &deferred)) {
-            wally_bzero(&signing_state, sizeof(signing_state));
+            wally_bzero(&session->state->pending_eth_signing, sizeof(session->state->pending_eth_signing));
             return false;
         }
         if (deferred) {
-            wally_bzero(&signing_state, sizeof(signing_state));
+            wally_bzero(&session->state->pending_eth_signing, sizeof(session->state->pending_eth_signing));
             return true;
         }
 
         session->state->has_pending_eth_signing = true;
-        memcpy(&session->state->pending_eth_signing, &signing_state, sizeof(session->state->pending_eth_signing));
-        wally_bzero(&signing_state, sizeof(signing_state));
+        trezor_trace_set_stage("ethsign:continue");
         return trezor_session_eth_signing_continue(
             session, response_type, response_payload, response_payload_len, response_payload_written);
     }
@@ -485,12 +517,17 @@ bool trezor_session_handle_wire(const trezor_session_t* const session, const uin
     if (trezor_wire_decode_message(request_chunks, request_chunks_len, &request_type, request_payload,
             TREZOR_SESSION_MAX_REQUEST_PAYLOAD_LEN, &request_payload_len)) {
         wire_ok = true;
+        trezor_trace_set_note("wire req=%u payload=%lu", (unsigned int)request_type, (unsigned long)request_payload_len);
         trezor_trace_set_stage("wire:trace_start");
         trezor_trace_record_request_start(request_type, request_payload, request_payload_len);
         trezor_trace_set_stage("wire:payload");
         ok = trezor_session_handle_payload(session, request_type, request_payload, request_payload_len, &response_type,
             response_payload, TREZOR_SESSION_MAX_RESPONSE_PAYLOAD_LEN, &response_payload_len);
+        trezor_trace_set_note("wire handled ok=%u resp=%u payload=%lu", ok ? 1 : 0, (unsigned int)response_type,
+            (unsigned long)response_payload_len);
+        trezor_trace_set_stage(ok ? "wire:handled_ok" : "wire:handled_fail");
     } else {
+        trezor_trace_set_stage("wire:decode_fail");
         ok = trezor_session_failure_payload(TREZOR_FAILURE_INVALID_PROTOCOL, "Invalid wire message", &response_type,
             response_payload, TREZOR_SESSION_MAX_RESPONSE_PAYLOAD_LEN, &response_payload_len);
     }
@@ -506,6 +543,14 @@ bool trezor_session_handle_wire(const trezor_session_t* const session, const uin
 
     ok = trezor_wire_encode_message(response_type, response_payload, response_payload_len, response_chunks,
         response_chunks_len, response_chunks_written);
+    trezor_trace_set_note("wire encode ok=%u resp=%u chunks=%lu", ok ? 1 : 0, (unsigned int)response_type,
+        (unsigned long)(response_chunks_written ? *response_chunks_written : 0));
+    trezor_trace_set_stage(ok ? "wire:encode_ok" : "wire:encode_fail");
+    if (response_type == TREZOR_MSG_ETHEREUM_TX_REQUEST) {
+        trezor_trace_checkpoint(ok ? "wire:encode_ok" : "wire:encode_fail", "resp=%u payload=%lu chunks=%lu",
+            (unsigned int)response_type, (unsigned long)response_payload_len,
+            (unsigned long)(response_chunks_written ? *response_chunks_written : 0));
+    }
     wally_bzero(response_payload, TREZOR_SESSION_MAX_RESPONSE_PAYLOAD_LEN);
     return ok;
 }

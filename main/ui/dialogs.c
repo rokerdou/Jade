@@ -1,9 +1,33 @@
 #ifndef AMALGAMATED_BUILD
 #include "../button_events.h"
 #include "../jade_assert.h"
+#ifdef CONFIG_TREZOR_USB_HID
+#include "../protocols/trezor/trace.h"
+#endif
 #include "../ui.h"
 
 void await_qr_help_activity(const char* url);
+
+#ifdef CONFIG_TREZOR_USB_HID
+static void copy_trace_title(char* const output, const size_t output_len, const char* const title)
+{
+    if (!output || output_len == 0) {
+        return;
+    }
+
+    const char* const input = title && title[0] != '\0' ? title : "untitled";
+    size_t output_pos = 0;
+    for (size_t input_pos = 0; input[input_pos] != '\0' && output_pos + 1 < output_len; ++input_pos) {
+        const char c = input[input_pos];
+        if ((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9')) {
+            output[output_pos++] = c;
+        } else if (output_pos == 0 || output[output_pos - 1] != '_') {
+            output[output_pos++] = '_';
+        }
+    }
+    output[output_pos] = '\0';
+}
+#endif
 
 // releative
 #define TITLE_BAR_HEIGHT_PCNT 20
@@ -303,6 +327,15 @@ gui_activity_t* make_show_message_activity(const char* message[], const size_t m
 {
     JADE_ASSERT(message);
     JADE_ASSERT(message_size);
+#ifdef CONFIG_TREZOR_USB_HID
+    if (message_size >= 5) {
+        char trace_title[16];
+        char stage[32];
+        copy_trace_title(trace_title, sizeof(trace_title), title);
+        const int ret = snprintf(stage, sizeof(stage), "dlg:%s:%u", trace_title, (unsigned int)message_size);
+        trezor_trace_set_crash_stage(ret > 0 && ret < sizeof(stage) ? stage : "dlg:lines");
+    }
+#endif
     JADE_ASSERT(message_size < 5);
     // Header and footer are optional
     JADE_ASSERT(hdrbtns || !num_hdrbtns);
@@ -353,10 +386,13 @@ gui_activity_t* make_show_message_activity(const char* message[], const size_t m
             if (strchr(message[i], '\n')) {
                 JADE_LOGW("Multiline message includes explicit \n!!");
             }
+            gui_view_node_t* linefill;
+            gui_make_fill(&linefill, TFT_BLACK, FILL_PLAIN, NULL);
+            gui_set_parent(linefill, msgnode);
             gui_view_node_t* linenode;
             gui_make_text(&linenode, message[i], TFT_WHITE);
             gui_set_align(linenode, GUI_ALIGN_CENTER, GUI_ALIGN_MIDDLE);
-            gui_set_parent(linenode, msgnode);
+            gui_set_parent(linenode, linefill);
         }
     } else {
         // Just create a single text node
@@ -371,12 +407,16 @@ gui_activity_t* make_show_message_activity(const char* message[], const size_t m
         }
     }
 
+    gui_view_node_t* msgcontainer = NULL;
+    gui_make_fill(&msgcontainer, TFT_BLACK, FILL_PLAIN, NULL);
+    gui_set_parent(msgnode, msgcontainer);
+
     // Apply any padding above the message, and a small offset from the screen edges
     gui_set_padding(msgnode, GUI_MARGIN_ALL_DIFFERENT, toppad, 2, 0, 2);
 
     if (!num_ftrbtns) {
         // Just a message, no buttons - just apply straight to the parent
-        gui_set_parent(msgnode, parent);
+        gui_set_parent(msgcontainer, parent);
     } else {
         // Relative height of buttons depends on whether there is a header
         gui_view_node_t* vsplit;
@@ -385,7 +425,7 @@ gui_activity_t* make_show_message_activity(const char* message[], const size_t m
         gui_set_parent(vsplit, parent);
 
         // Add message to top of vsplit
-        gui_set_parent(msgnode, vsplit);
+        gui_set_parent(msgcontainer, vsplit);
 
         // Add buttons to below
         add_buttons(vsplit, UI_ROW, ftrbtns, num_ftrbtns);
@@ -442,15 +482,45 @@ static bool await_yesno_activity_loop(gui_activity_t* const act, const char* hel
     // help_url is optional (but should be present if a BTN_HELP btn is present)
 
     while (true) {
+#ifdef CONFIG_TREZOR_USB_HID
+        trezor_trace_set_stage("dlg:set_current");
+#endif
         gui_set_current_activity(act);
 
+#ifdef CONFIG_TREZOR_USB_HID
+        trezor_trace_set_stage("dlg:wait_btn");
+#endif
         const int32_t ev_id = gui_activity_wait_button(act, BTN_YES);
+#ifdef CONFIG_TREZOR_USB_HID
+        trezor_trace_set_note("dlg ev=%ld", (long)ev_id);
+        trezor_trace_checkpoint("dlg:event", "ev=%ld", (long)ev_id);
+        if (ev_id == BTN_BACK) {
+            trezor_trace_set_stage("dlg:btn_back");
+        } else if (ev_id == BTN_YES) {
+            trezor_trace_set_stage("dlg:btn_yes");
+        } else if (ev_id == BTN_NO) {
+            trezor_trace_set_stage("dlg:btn_no");
+        } else if (ev_id == BTN_HELP) {
+            trezor_trace_set_stage("dlg:btn_help");
+        } else if (ev_id == BTN_EVENT_TIMEOUT) {
+            trezor_trace_set_stage("dlg:btn_timeout");
+        } else {
+            trezor_trace_set_stage("dlg:btn_other");
+        }
+#endif
         // Return true if 'Yes' was pressed, false if 'No'
         switch (ev_id) {
         case BTN_YES:
+#ifdef CONFIG_TREZOR_USB_HID
+            trezor_trace_checkpoint("dlg:return_yes", "ev=%ld", (long)ev_id);
+#endif
             return true;
 
+        case BTN_BACK:
         case BTN_NO:
+#ifdef CONFIG_TREZOR_USB_HID
+            trezor_trace_checkpoint("dlg:return_no", "ev=%ld", (long)ev_id);
+#endif
             return false;
 
         case BTN_HELP:
@@ -554,13 +624,33 @@ bool await_skipyes_activity(const char* title, const char* message[], const size
     return await_yesno_activity_impl(title, message, message_size, "Yes", "Skip", default_selection, help_url);
 }
 
+bool await_signback_activity(const char* title, const char* message[], const size_t message_size,
+    const bool default_selection, const char* help_url)
+{
+    return await_yesno_activity_impl(title, message, message_size, "Sign", "Back", default_selection, help_url);
+}
+
+bool await_signcancel_activity(const char* title, const char* message[], const size_t message_size,
+    const bool default_selection, const char* help_url)
+{
+    return await_yesno_activity_impl(title, message, message_size, "Sign", "Cancel", default_selection, help_url);
+}
+
 // Variant of the Yes/No activity that is instead Continue/Back (latter in title bar)
 bool await_continueback_activity(const char* title, const char* message[], const size_t message_size,
     const bool default_selection, const char* help_url)
 {
+    return await_continueback_activity_with_continue_text(title, message, message_size, default_selection, help_url,
+        "Continue");
+}
+
+bool await_continueback_activity_with_continue_text(const char* title, const char* message[], const size_t message_size,
+    const bool default_selection, const char* help_url, const char* continue_text)
+{
     // title is optional
     JADE_ASSERT(message);
     JADE_ASSERT(message_size);
+    JADE_ASSERT(continue_text);
     // help_url is optional - '?' button shown if passed
 
     btn_data_t hdrbtns[] = { { .txt = "=", .font = JADE_SYMBOLS_16x16_FONT, .ev_id = BTN_NO },
@@ -573,7 +663,7 @@ bool await_continueback_activity(const char* title, const char* message[], const
         hdrbtns[1].ev_id = BTN_HELP;
     }
 
-    btn_data_t ftrbtn = { .txt = "Continue", .font = GUI_DEFAULT_FONT, .ev_id = BTN_YES, .borders = GUI_BORDER_TOP };
+    btn_data_t ftrbtn = { .txt = continue_text, .font = GUI_DEFAULT_FONT, .ev_id = BTN_YES, .borders = GUI_BORDER_TOP };
 
     gui_activity_t* const act = make_show_message_activity(message, message_size, title, hdrbtns, 2, &ftrbtn, 1);
     gui_set_activity_initial_selection((default_selection ? ftrbtn : hdrbtns[0]).btn);

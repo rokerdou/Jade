@@ -111,11 +111,7 @@ bool trezor_protobuf_reader_next(trezor_protobuf_reader_t* const reader, uint32_
         return false;
     }
     if (reader->pos == reader->len) {
-        *field_number = 0;
-        *wire_type = 0;
-        *value = NULL;
-        *value_len = 0;
-        return true;
+        return false;
     }
 
     size_t consumed = 0;

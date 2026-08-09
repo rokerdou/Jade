@@ -1,12 +1,16 @@
 #ifndef AMALGAMATED_BUILD
 #include "jade_assert.h"
 #include "jade_wally_verify.h"
+#ifdef CONFIG_TREZOR_USB_HID
+#include "protocols/trezor/trace.h"
+#endif
 #include "utils/malloc_ext.h"
 
 #include <wally_crypto.h>
 
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
+#include <stdio.h>
 
 // Keep this size as small as possible for memory-constrained devices
 #define SENS_STACK_SIZE 32
@@ -40,6 +44,11 @@ static bool sensitive_clear_stack_impl(struct sens_stack* stack)
         JADE_LOGD("sensitive_clear_stack_impl() stack->top = %p, stack->elems = %p", stack->top, stack->elems);
         while (stack->top > stack->elems) {
             stack->top--;
+#ifdef CONFIG_TREZOR_USB_HID
+            char stage[32];
+            const int ret = snprintf(stage, sizeof(stage), "sens:%s:%d", stack->top->file, stack->top->line);
+            trezor_trace_set_crash_stage(ret > 0 && ret < sizeof(stage) ? stage : "sens:leak");
+#endif
             JADE_LOGW("sensitive_clear_stack_impl() clearing %p %d bytes from %s:%d", stack->top->addr,
                 stack->top->size, stack->top->file, stack->top->line);
             JADE_WALLY_VERIFY(wally_bzero(stack->top->addr, stack->top->size));

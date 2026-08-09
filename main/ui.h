@@ -165,8 +165,14 @@ bool await_yesno_activity(
     const char* title, const char* message[], size_t message_size, bool default_selection, const char* help_url);
 bool await_skipyes_activity(
     const char* title, const char* message[], size_t message_size, bool default_selection, const char* help_url);
+bool await_signback_activity(
+    const char* title, const char* message[], size_t message_size, bool default_selection, const char* help_url);
+bool await_signcancel_activity(
+    const char* title, const char* message[], size_t message_size, bool default_selection, const char* help_url);
 bool await_continueback_activity(
     const char* title, const char* message[], size_t message_size, bool default_selection, const char* help_url);
+bool await_continueback_activity_with_continue_text(const char* title, const char* message[], size_t message_size,
+    bool default_selection, const char* help_url, const char* continue_text);
 
 // Updatable label with left/right arrows
 gui_activity_t* make_carousel_activity(const char* title, gui_view_node_t** label, gui_view_node_t** item);

@@ -4,6 +4,9 @@
 #include "keychain.h"
 #include "sensitive.h"
 #include "ui.h"
+#ifdef CONFIG_TREZOR_USB_HID
+#include "protocols/trezor/trace.h"
+#endif
 
 #include <freertos/task.h>
 
@@ -13,6 +16,15 @@ extern void __real_abort(void);
 
 void jade_abort(const char* file, const int line_n)
 {
+#ifdef CONFIG_TREZOR_USB_HID
+    char abort_stage[32];
+    const int stage_ret = snprintf(abort_stage, sizeof(abort_stage), "abort:%s:%d", file, line_n);
+    if (stage_ret > 0 && stage_ret < sizeof(abort_stage)) {
+        trezor_trace_set_crash_stage(abort_stage);
+    } else {
+        trezor_trace_set_crash_stage("abort");
+    }
+#endif
     // Clear senstitive data
     keychain_clear();
     sensitive_clear_stack();

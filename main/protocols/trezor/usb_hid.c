@@ -4,6 +4,7 @@
 #ifdef CONFIG_TREZOR_USB_HID
 
 #include "messages.h"
+#include "protobuf.h"
 #include "public_key.h"
 #include "session.h"
 #include "trace.h"
@@ -15,6 +16,7 @@
 #include "../../chains/ethereum/path.h"
 #include "../../chains/ethereum/sign.h"
 #include "../../chains/ethereum/wallet.h"
+#include "../../idletimer.h"
 #include "../../jade_assert.h"
 #include "../../jade_tasks.h"
 #include "../../process/auth_user.h"
@@ -40,11 +42,13 @@
 #define TREZOR_USB_HID_PID 0x53C1
 #define TREZOR_USB_HID_RELEASE 0x0200
 #define TREZOR_USB_HID_ENDPOINT 0x01
-#define TREZOR_USB_HID_QUEUE_LEN 4
+#define TREZOR_USB_HID_QUEUE_LEN 16
 #define TREZOR_USB_HID_TASK_STACK 16384
 #define TREZOR_USB_HID_TASK_PRIORITY 5
 #define TREZOR_USB_HID_RX_BUF_LEN 2304
 #define TREZOR_USB_HID_TX_BUF_LEN 2304
+#define TREZOR_USB_HID_INTERACTIVE_TIMEOUT_SECS 600
+#define TREZOR_USB_HID_SIGNED_NOTICE_MS 1200
 #define TREZOR_USB_WEBUSB_VENDOR_CODE 0x01
 #define TREZOR_USB_WEBUSB_GET_URL 0x02
 #define TREZOR_USB_WEBUSB_URL_INDEX 0x01
@@ -63,6 +67,7 @@ static uint8_t s_trezor_session_id[TREZOR_FEATURES_SESSION_ID_LEN];
 static bool s_trezor_session_id_initialized = false;
 static trezor_session_state_t s_trezor_session_state;
 static char s_trezor_device_id[13];
+static volatile bool s_signed_notice_active = false;
 
 static const tusb_desc_device_t TREZOR_USB_HID_DEVICE_DESCRIPTOR = {
     .bLength = sizeof(tusb_desc_device_t),
@@ -201,8 +206,15 @@ void tud_vendor_rx_cb(const uint8_t instance, const uint8_t* const buffer, const
     trezor_usb_hid_chunk_t chunk;
     memcpy(chunk.bytes, buffer, sizeof(chunk.bytes));
     trezor_trace_set_stage("usb:rx_queue");
-    (void)xQueueSend(s_hid_rx_queue, &chunk, 0);
+    const UBaseType_t spaces_before = uxQueueSpacesAvailable(s_hid_rx_queue);
+    const BaseType_t queued = xQueueSend(s_hid_rx_queue, &chunk, 0);
     tud_vendor_read_flush();
+    if (queued != pdTRUE) {
+        trezor_trace_set_stage("usb:rx_qfull");
+        trezor_trace_set_note("rx qfull spaces=%lu", (unsigned long)spaces_before);
+        return;
+    }
+    trezor_trace_set_note("rx queued spaces=%lu", (unsigned long)spaces_before);
     trezor_trace_set_stage("usb:rx_done");
 }
 
@@ -223,8 +235,8 @@ static bool trezor_usb_hid_expected_wire_len(const uint8_t chunk[TREZOR_WIRE_CHU
         && *output_len <= TREZOR_USB_HID_RX_BUF_LEN;
 }
 
-static bool trezor_usb_hid_send_chunks(
-    const uint8_t* const chunks, const size_t chunks_len, uint32_t* const last_available, uint32_t* const last_written)
+static bool trezor_usb_hid_send_chunks(const uint8_t* const chunks, const size_t chunks_len,
+    uint32_t* const last_available, uint32_t* const last_written, const bool checkpoint)
 {
     if (!chunks || chunks_len == 0 || chunks_len % TREZOR_WIRE_CHUNK_SIZE != 0) {
         return false;
@@ -240,6 +252,11 @@ static bool trezor_usb_hid_send_chunks(
         bool sent = false;
         for (size_t retry = 0; retry < 200; ++retry) {
             const uint32_t available = tud_vendor_mounted() ? tud_vendor_n_write_available(0) : 0;
+            if (checkpoint) {
+                trezor_trace_checkpoint("usb:chunk_try", "off=%lu retry=%lu av=%lu mounted=%u",
+                    (unsigned long)offset, (unsigned long)retry, (unsigned long)available,
+                    tud_vendor_mounted() ? 1U : 0U);
+            }
             if (last_available) {
                 *last_available = available;
             }
@@ -248,7 +265,15 @@ static bool trezor_usb_hid_send_chunks(
                 continue;
             }
 
+            if (checkpoint) {
+                trezor_trace_checkpoint("usb:write_before", "off=%lu av=%lu", (unsigned long)offset,
+                    (unsigned long)available);
+            }
             const uint32_t written = tud_vendor_write(chunks + offset, TREZOR_WIRE_CHUNK_SIZE);
+            if (checkpoint) {
+                trezor_trace_checkpoint("usb:write_after", "off=%lu wr=%lu", (unsigned long)offset,
+                    (unsigned long)written);
+            }
             if (last_written) {
                 *last_written = written;
             }
@@ -257,16 +282,101 @@ static bool trezor_usb_hid_send_chunks(
                 continue;
             }
 #if CFG_TUD_VENDOR_TX_BUFSIZE > 0
-            (void)tud_vendor_write_flush();
+            if (checkpoint) {
+                trezor_trace_checkpoint("usb:flush_before", "off=%lu", (unsigned long)offset);
+            }
+            const uint32_t flushed = tud_vendor_write_flush();
+            if (checkpoint) {
+                trezor_trace_checkpoint("usb:flush_after", "off=%lu fl=%lu", (unsigned long)offset,
+                    (unsigned long)flushed);
+            }
 #endif
             sent = true;
+            if (checkpoint) {
+                trezor_trace_checkpoint("usb:chunk_done", "off=%lu", (unsigned long)offset);
+            }
             break;
         }
         if (!sent) {
+            if (checkpoint) {
+                trezor_trace_checkpoint("usb:chunk_fail", "off=%lu", (unsigned long)offset);
+            }
             return false;
         }
     }
+    if (checkpoint) {
+        trezor_trace_checkpoint("usb:send_done", "len=%lu", (unsigned long)chunks_len);
+    }
     return true;
+}
+
+static bool trezor_usb_hid_response_header(
+    const uint8_t* const chunks, const size_t chunks_len, uint16_t* const message_type, size_t* const payload_len)
+{
+    if (!chunks || chunks_len < TREZOR_WIRE_CHUNK_SIZE || !message_type || !payload_len || chunks[0] != TREZOR_WIRE_MARKER
+        || chunks[1] != TREZOR_WIRE_MAGIC || chunks[2] != TREZOR_WIRE_MAGIC) {
+        return false;
+    }
+
+    *message_type = (uint16_t)(((uint16_t)chunks[3] << 8) | chunks[4]);
+    *payload_len = ((size_t)chunks[5] << 24) | ((size_t)chunks[6] << 16) | ((size_t)chunks[7] << 8) | chunks[8];
+    return true;
+}
+
+static bool trezor_usb_hid_response_is_eth_signature(const uint8_t* const chunks, const size_t chunks_len)
+{
+    if (!chunks || chunks_len == 0) {
+        return false;
+    }
+
+    uint16_t message_type = 0;
+    uint8_t payload[96];
+    size_t payload_len = 0;
+    bool is_signature = false;
+    if (!trezor_wire_decode_message(chunks, chunks_len, &message_type, payload, sizeof(payload), &payload_len)
+        || message_type != TREZOR_MSG_ETHEREUM_TX_REQUEST) {
+        wally_bzero(payload, sizeof(payload));
+        return false;
+    }
+
+    bool has_v = false;
+    bool has_r = false;
+    bool has_s = false;
+    trezor_protobuf_reader_t reader;
+    trezor_protobuf_reader_init(&reader, payload, payload_len);
+    uint32_t field_number = 0;
+    uint8_t wire_type = 0;
+    const uint8_t* value = NULL;
+    size_t value_len = 0;
+    while (reader.pos < reader.len) {
+        if (!trezor_protobuf_reader_next(&reader, &field_number, &wire_type, &value, &value_len)) {
+            wally_bzero(payload, sizeof(payload));
+            return false;
+        }
+        if (field_number == 2 && wire_type == TREZOR_PROTOBUF_WIRE_VARINT) {
+            has_v = true;
+        } else if (field_number == 3 && wire_type == TREZOR_PROTOBUF_WIRE_LEN && value_len == 32) {
+            has_r = true;
+        } else if (field_number == 4 && wire_type == TREZOR_PROTOBUF_WIRE_LEN && value_len == 32) {
+            has_s = true;
+        }
+    }
+
+    is_signature = has_v && has_r && has_s;
+    wally_bzero(payload, sizeof(payload));
+    return is_signature;
+}
+
+static void trezor_usb_hid_show_signed_notice(void)
+{
+    if (s_signed_notice_active) {
+        return;
+    }
+    s_signed_notice_active = true;
+    trezor_trace_set_stage("usb:signed_notice");
+    dashboard_request_redraw();
+    trezor_trace_set_stage("usb:signed_done");
+    s_signed_notice_active = false;
 }
 
 static bool trezor_usb_hid_ensure_wallet_ready(void)
@@ -283,7 +393,12 @@ static bool trezor_usb_hid_needs_local_unlock(void* ctx)
 static bool trezor_usb_hid_perform_local_unlock(void* ctx)
 {
     (void)ctx;
-    return auth_user_unlock_wallet_with_pin(SOURCE_SERIAL) && wallet_core_is_ready();
+    trezor_trace_set_stage("unlock:pin_ui");
+    const bool auth_ok = auth_user_unlock_wallet_with_pin(SOURCE_SERIAL);
+    const bool ready = wallet_core_is_ready();
+    trezor_trace_set_note("unlock auth=%u ready=%u", auth_ok ? 1U : 0U, ready ? 1U : 0U);
+    trezor_trace_set_stage(auth_ok && ready ? "unlock:pin_ok" : "unlock:pin_fail");
+    return auth_ok && ready;
 }
 
 static bool trezor_usb_hid_get_eth_address(
@@ -317,15 +432,16 @@ static bool trezor_usb_hid_get_eth_address(
     }
 
     trezor_trace_set_stage("eth:display");
-    if (request->has_show_display && request->show_display && !show_confirm_address_activity(address, false)) {
-        wally_bzero(address, address_len);
-        trezor_trace_set_stage("eth:cancel");
-        return false;
-    }
     if (request->has_show_display && request->show_display) {
-        display_processing_message_activity();
+        idletimer_set_min_timeout_secs(TREZOR_USB_HID_INTERACTIVE_TIMEOUT_SECS);
+        const bool accepted = show_confirm_address_activity(address, false);
+        idletimer_set_min_timeout_secs(0);
+        if (!accepted) {
+            wally_bzero(address, address_len);
+            trezor_trace_set_stage("eth:cancel");
+            return false;
+        }
     }
-
     trezor_trace_set_stage("eth:done");
     return true;
 }
@@ -404,12 +520,14 @@ static bool trezor_usb_hid_sign_eth_tx(
 {
     (void)ctx;
     if (!request || !signature || !trezor_usb_hid_ensure_wallet_ready()) {
+        trezor_trace_set_stage("ethsign:reject");
         return false;
     }
+    trezor_trace_set_stage("ethsign:core");
+    idletimer_set_min_timeout_secs(TREZOR_USB_HID_INTERACTIVE_TIMEOUT_SECS);
     const bool ok = ethereum_sign_tx(request, signature);
-    if (ok) {
-        display_processing_message_activity();
-    }
+    idletimer_set_min_timeout_secs(0);
+    trezor_trace_set_stage(ok ? "ethsign:core_ok" : "ethsign:core_fail");
     return ok;
 }
 
@@ -477,7 +595,10 @@ static void trezor_usb_hid_task(void* ignore)
         if (xQueueReceive(s_hid_rx_queue, &chunk, 100 / portTICK_PERIOD_MS) != pdTRUE) {
             continue;
         }
+        idletimer_register_activity(false);
         trezor_trace_set_stage("usb:task_rx");
+        trezor_trace_set_note("task rx queued=%lu rx_len=%lu", (unsigned long)uxQueueMessagesWaiting(s_hid_rx_queue),
+            (unsigned long)rx_len);
 
         if (rx_len == 0) {
             expected_len = 0;
@@ -491,12 +612,14 @@ static void trezor_usb_hid_task(void* ignore)
                         &session, chunk.bytes, sizeof(chunk.bytes), s_hid_tx_chunks, sizeof(s_hid_tx_chunks), &tx_len)) {
                     uint32_t available = 0;
                     uint32_t written = 0;
-                    const bool sent = trezor_usb_hid_send_chunks(s_hid_tx_chunks, tx_len, &available, &written);
+                    const bool sent = trezor_usb_hid_send_chunks(s_hid_tx_chunks, tx_len, &available, &written, false);
                     trezor_trace_record_transport_result(sent, tx_len, available, written);
-                    trezor_trace_set_stage(sent ? "usb:idle" : "usb:txfail");
+                    trezor_trace_set_stage(sent ? "usb:txdone" : "usb:txfail");
                 }
                 wally_bzero(s_hid_tx_chunks, sizeof(s_hid_tx_chunks));
+                trezor_trace_set_stage("usb:sens_check");
                 sensitive_assert_empty();
+                trezor_trace_set_stage("usb:idle");
                 continue;
             }
             trezor_trace_set_stage("usb:expect_ok");
@@ -522,18 +645,58 @@ static void trezor_usb_hid_task(void* ignore)
             trezor_session_t session = trezor_usb_hid_session();
             size_t tx_len = 0;
             trezor_trace_set_stage("usb:handle");
+            bool show_signed_notice = false;
             if (trezor_session_handle_wire(
                     &session, s_hid_rx_chunks, rx_len, s_hid_tx_chunks, sizeof(s_hid_tx_chunks), &tx_len)) {
                 trezor_trace_set_stage("usb:handled");
                 uint32_t available = 0;
                 uint32_t written = 0;
-                const bool sent = trezor_usb_hid_send_chunks(s_hid_tx_chunks, tx_len, &available, &written);
+                uint16_t response_message_type = 0;
+                size_t response_payload_len = 0;
+                const bool response_header_ok = trezor_usb_hid_response_header(
+                    s_hid_tx_chunks, tx_len, &response_message_type, &response_payload_len);
+                if (response_header_ok && response_message_type == TREZOR_MSG_ETHEREUM_TX_REQUEST) {
+                    trezor_trace_checkpoint("usb:tx_start", "type=%u payload=%lu len=%lu",
+                        (unsigned int)response_message_type, (unsigned long)response_payload_len,
+                        (unsigned long)tx_len);
+                }
+                const bool sent = trezor_usb_hid_send_chunks(s_hid_tx_chunks, tx_len, &available, &written,
+                    response_header_ok && response_message_type == TREZOR_MSG_ETHEREUM_TX_REQUEST);
+                show_signed_notice = sent && trezor_usb_hid_response_is_eth_signature(s_hid_tx_chunks, tx_len);
                 trezor_trace_record_transport_result(sent, tx_len, available, written);
-                trezor_trace_set_stage(sent ? "usb:idle" : "usb:txfail");
+                trezor_trace_set_note("usb tx sent=%u len=%lu av=%lu wr=%lu sig=%u", sent ? 1 : 0,
+                    (unsigned long)tx_len, (unsigned long)available, (unsigned long)written,
+                    show_signed_notice ? 1 : 0);
+                trezor_trace_set_stage(sent ? "usb:txdone" : "usb:txfail");
+                if (response_header_ok && response_message_type == TREZOR_MSG_ETHEREUM_TX_REQUEST) {
+                    trezor_trace_checkpoint(sent ? "usb:txdone" : "usb:txfail", "type=%u payload=%lu len=%lu av=%lu wr=%lu sig=%u",
+                        (unsigned int)response_message_type, (unsigned long)response_payload_len,
+                        (unsigned long)tx_len, (unsigned long)available, (unsigned long)written,
+                        show_signed_notice ? 1U : 0U);
+                }
             }
             wally_bzero(s_hid_rx_chunks, rx_len);
             wally_bzero(s_hid_tx_chunks, sizeof(s_hid_tx_chunks));
+            if (show_signed_notice) {
+                trezor_trace_checkpoint("usb:sens_check", "sig=1");
+            } else {
+                trezor_trace_set_stage("usb:sens_check");
+            }
             sensitive_assert_empty();
+            if (show_signed_notice) {
+                trezor_trace_checkpoint("usb:sens_ok", "sig=1");
+            } else {
+                trezor_trace_set_stage("usb:sens_ok");
+            }
+            if (show_signed_notice) {
+                trezor_usb_hid_show_signed_notice();
+            }
+            if (show_signed_notice) {
+                trezor_trace_checkpoint("usb:idle", "after_sig=1 queued=%lu",
+                    (unsigned long)uxQueueMessagesWaiting(s_hid_rx_queue));
+            } else {
+                trezor_trace_set_stage("usb:idle");
+            }
             rx_len = 0;
             expected_len = 0;
         }

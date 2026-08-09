@@ -28,6 +28,7 @@
 #include "protocols/trezor/session.h"
 #include "protocols/trezor/trace.h"
 #include "protocols/trezor/wire.h"
+#include "ui/chain_confirm.h"
 
 #include <stdbool.h>
 #include <stdio.h>
@@ -45,6 +46,8 @@
     } while (false)
 
 #define ARRAY_LEN(a) (sizeof(a) / sizeof((a)[0]))
+#define HEX_UI_LINES_FOR_BYTES(bytes_len)                                                                                \
+    (((2U + (2U * (bytes_len))) + CHAIN_CONFIRM_UI_HEX_LINE_CHARS - 1U) / CHAIN_CONFIRM_UI_HEX_LINE_CHARS)
 
 static const uint8_t PRIVATE_KEY_ONE[EC_PRIVATE_KEY_LEN]
     = { 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1 };
@@ -587,6 +590,21 @@ int wally_bzero(void* bytes, size_t bytes_len)
 int main(void)
 {
     CHECK(PRIVATE_KEY_ONE[EC_PRIVATE_KEY_LEN - 1] == 1);
+    CHECK(CHAIN_CONFIRM_UI_HEX_LINE_CHARS + 1U <= CHAIN_CONFIRM_UI_DISPLAY_LINE_MAX);
+    CHECK(CHAIN_CONFIRM_UI_MAX_HEX_LINES <= CHAIN_CONFIRM_UI_MAX_MESSAGE_LINES);
+    CHECK(HEX_UI_LINES_FOR_BYTES(ETHEREUM_ADDRESS_LEN) <= CHAIN_CONFIRM_UI_MAX_MESSAGE_LINES);
+    CHECK(HEX_UI_LINES_FOR_BYTES(TRON_ADDRESS_LEN) <= CHAIN_CONFIRM_UI_MAX_MESSAGE_LINES);
+    CHECK(HEX_UI_LINES_FOR_BYTES(EVM_ABI_WORD_LEN) <= CHAIN_CONFIRM_UI_MAX_MESSAGE_LINES);
+    CHECK(HEX_UI_LINES_FOR_BYTES(CHAIN_CONFIRM_MAX_BYTES) <= CHAIN_CONFIRM_UI_MAX_MESSAGE_LINES);
+
+    trezor_protobuf_reader_t eof_reader;
+    uint32_t eof_field_number = 1;
+    uint8_t eof_wire_type = 1;
+    const uint8_t* eof_value = (const uint8_t*)1;
+    size_t eof_value_len = 1;
+    trezor_protobuf_reader_init(&eof_reader, NULL, 0);
+    CHECK(!trezor_protobuf_reader_next(
+        &eof_reader, &eof_field_number, &eof_wire_type, &eof_value, &eof_value_len));
 
     const uint32_t eth_bip44[] = { chain_path_harden(44), chain_path_harden(60), chain_path_harden(0), 0, 0 };
     const uint32_t eth_bip44_change[] = { chain_path_harden(44), chain_path_harden(60), chain_path_harden(0), 1, 0 };
@@ -682,6 +700,9 @@ int main(void)
     eth_req.max_fee_per_gas = 2000000000ULL;
     eth_req.has_to = true;
     memcpy(eth_req.to, token_contract, sizeof(eth_req.to));
+    const uint8_t native_value[] = { 0x01 };
+    eth_req.value = native_value;
+    eth_req.value_len = sizeof(native_value);
     eth_req.sender_address = EXPECTED_ETH_ADDRESS;
     eth_req.sender_address_len = sizeof(EXPECTED_ETH_ADDRESS);
     eth_req.expected_sender_address = EXPECTED_ETH_ADDRESS;
@@ -697,6 +718,9 @@ int main(void)
     CHECK(chain_confirm_summary_has_field(&confirm_summary, CHAIN_CONFIRM_FIELD_PATH));
     CHECK(chain_confirm_summary_has_field(&confirm_summary, CHAIN_CONFIRM_FIELD_FROM));
     CHECK(chain_confirm_summary_has_field(&confirm_summary, CHAIN_CONFIRM_FIELD_TO));
+    const chain_confirm_field_t* const native_amount = find_confirm_field(&confirm_summary, CHAIN_CONFIRM_FIELD_AMOUNT);
+    CHECK(native_amount && native_amount->value_type == CHAIN_CONFIRM_VALUE_TEXT);
+    CHECK(strcmp(native_amount->value.text, "1 wei") == 0);
     CHECK(chain_confirm_summary_has_field(&confirm_summary, CHAIN_CONFIRM_FIELD_MAX_FEE));
 
     uint8_t wrong_sender[ETHEREUM_ADDRESS_LEN];
@@ -872,6 +896,8 @@ int main(void)
     CHECK(!ethereum_tx_preflight(&eth_req, &eth_res));
     eth_req.max_priority_fee_per_gas = 1000000000ULL;
 
+    eth_req.value = NULL;
+    eth_req.value_len = 0;
     eth_req.data = erc20_transfer_data;
     eth_req.data_len = sizeof(erc20_transfer_data);
     CHECK(ethereum_tx_preflight(&eth_req, &eth_res));
