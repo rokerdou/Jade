@@ -159,6 +159,36 @@ static bool trezor_session_bool_value(const uint8_t* const value, const size_t v
     return trezor_protobuf_read_varint_value(value, value_len, &raw) && raw <= 1;
 }
 
+static bool trezor_session_apply_flags_payload_is_noop(const uint8_t* const payload, const size_t payload_len)
+{
+    if (!payload_len) {
+        return true;
+    }
+    if (!payload) {
+        return false;
+    }
+
+    trezor_protobuf_reader_t reader;
+    trezor_protobuf_reader_init(&reader, payload, payload_len);
+    if (reader.len == 0) {
+        return false;
+    }
+
+    while (reader.pos < reader.len) {
+        uint32_t field_number = 0;
+        uint8_t wire_type = 0;
+        const uint8_t* value = NULL;
+        size_t value_len = 0;
+        uint64_t flags = 0;
+        if (!trezor_protobuf_reader_next(&reader, &field_number, &wire_type, &value, &value_len)
+            || field_number != 1 || wire_type != TREZOR_PROTOBUF_WIRE_VARINT
+            || !trezor_protobuf_read_varint_value(value, value_len, &flags) || flags != 0) {
+            return false;
+        }
+    }
+    return true;
+}
+
 static bool trezor_session_initialize_payload_read_session_id(const uint8_t* const payload, const size_t payload_len,
     const uint8_t** const session_id, size_t* const session_id_len)
 {
@@ -418,6 +448,16 @@ bool trezor_session_handle_payload(const trezor_session_t* const session, const 
                 response_payload, response_payload_len, response_payload_written);
         }
         trezor_session_clear_pending(session->state);
+        *response_type = TREZOR_MSG_SUCCESS;
+        *response_payload_written = 0;
+        return true;
+    }
+
+    if (request_type == TREZOR_MSG_APPLY_FLAGS) {
+        if (!trezor_session_apply_flags_payload_is_noop(request_payload, request_payload_len)) {
+            return trezor_session_failure_payload(TREZOR_FAILURE_DATA_ERROR, "Unsupported flags", response_type,
+                response_payload, response_payload_len, response_payload_written);
+        }
         *response_type = TREZOR_MSG_SUCCESS;
         *response_payload_written = 0;
         return true;

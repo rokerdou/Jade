@@ -473,6 +473,8 @@ const char* trezor_trace_message_name(const uint16_t message_type)
         return "ButtonRequest";
     case TREZOR_MSG_BUTTON_ACK:
         return "ButtonAck";
+    case TREZOR_MSG_APPLY_FLAGS:
+        return "ApplyFlags";
     case TREZOR_MSG_GET_ADDRESS:
         return "GetAddress";
     case TREZOR_MSG_ADDRESS:
@@ -555,6 +557,8 @@ static const char* trezor_trace_message_short_name(const uint16_t message_type)
         return "ButtonReq";
     case TREZOR_MSG_BUTTON_ACK:
         return "ButtonAck";
+    case TREZOR_MSG_APPLY_FLAGS:
+        return "Flags";
     case TREZOR_MSG_GET_ADDRESS:
         return "GetAddr";
     case TREZOR_MSG_ADDRESS:
@@ -985,6 +989,7 @@ static void trezor_trace_format_request(uint16_t request_type, const uint8_t* co
     case TREZOR_MSG_CANCEL:
     case TREZOR_MSG_END_SESSION:
     case TREZOR_MSG_BUTTON_ACK:
+    case TREZOR_MSG_APPLY_FLAGS:
         trezor_trace_append(output, output_len, "%s", payload_len ? "unexpected payload" : "empty");
         break;
     case TREZOR_MSG_GET_ADDRESS:

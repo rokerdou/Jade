@@ -2953,6 +2953,28 @@ int main(int argc, char** argv)
     CHECK(strstr(trace_text, "address omitted") != NULL);
     CHECK(strstr(trace_text, "0x52908400098527886E0F7030069857D2E4169EE7") == NULL);
 
+    trezor_protobuf_writer_init(&trezor_writer, trezor_payload, sizeof(trezor_payload));
+    CHECK(trezor_protobuf_write_varint_field(&trezor_writer, 1, 0));
+    CHECK(trezor_wire_encode_message(TREZOR_MSG_APPLY_FLAGS, trezor_payload, trezor_writer.len,
+        session_request_chunks, sizeof(session_request_chunks), &session_request_len));
+    CHECK(trezor_session_handle_wire(&trezor_session, session_request_chunks, session_request_len,
+        session_response_chunks, sizeof(session_response_chunks), &session_response_len));
+    CHECK(trezor_wire_decode_message(session_response_chunks, session_response_len, &session_response_type,
+        session_response_payload, sizeof(session_response_payload), &session_response_payload_len));
+    CHECK(session_response_type == TREZOR_MSG_SUCCESS);
+    CHECK(session_response_payload_len == 0);
+
+    trezor_protobuf_writer_init(&trezor_writer, trezor_payload, sizeof(trezor_payload));
+    CHECK(trezor_protobuf_write_varint_field(&trezor_writer, 1, 1));
+    CHECK(trezor_wire_encode_message(TREZOR_MSG_APPLY_FLAGS, trezor_payload, trezor_writer.len,
+        session_request_chunks, sizeof(session_request_chunks), &session_request_len));
+    CHECK(trezor_session_handle_wire(&trezor_session, session_request_chunks, session_request_len,
+        session_response_chunks, sizeof(session_response_chunks), &session_response_len));
+    CHECK(trezor_wire_decode_message(session_response_chunks, session_response_len, &session_response_type,
+        session_response_payload, sizeof(session_response_payload), &session_response_payload_len));
+    CHECK(session_response_type == TREZOR_MSG_FAILURE);
+    CHECK(trezor_payload_has_varint(session_response_payload, session_response_payload_len, 1, TREZOR_FAILURE_DATA_ERROR));
+
     CHECK(trezor_wire_encode_message(TREZOR_MSG_END_SESSION, NULL, 0, session_request_chunks,
         sizeof(session_request_chunks), &session_request_len));
     CHECK(trezor_session_handle_wire(&trezor_session, session_request_chunks, session_request_len,
@@ -3260,6 +3282,7 @@ int main(int argc, char** argv)
     CHECK(trezor_dispatcher_message_allowed(TREZOR_MSG_INITIALIZE));
     CHECK(trezor_dispatcher_message_allowed(TREZOR_MSG_GET_FEATURES));
     CHECK(trezor_dispatcher_message_allowed(TREZOR_MSG_END_SESSION));
+    CHECK(trezor_dispatcher_message_allowed(TREZOR_MSG_APPLY_FLAGS));
     CHECK(trezor_dispatcher_message_allowed(TREZOR_MSG_BUTTON_ACK));
     CHECK(trezor_dispatcher_message_allowed(TREZOR_MSG_GET_ADDRESS));
     CHECK(trezor_dispatcher_message_allowed(TREZOR_MSG_ETHEREUM_GET_ADDRESS));
