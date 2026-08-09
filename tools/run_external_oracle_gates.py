@@ -14,6 +14,7 @@ from pathlib import Path
 import base58
 import rlp
 from bech32 import bech32_encode, convertbits
+from eth_abi import decode as abi_decode
 from eth_keys import keys
 from eth_utils import keccak, to_checksum_address
 from trezorlib import messages, protobuf
@@ -230,6 +231,37 @@ def check_eth_signed_raw_tx_oracle(local_vectors: dict[str, str], expected: dict
             raise AssertionError(
                 f"Ethereum signed raw tx oracle mismatch for {key}: actual={actual_value} expected={expected_value}"
             )
+
+
+def decode_erc20_address_uint256_call(calldata: bytes, signature: str) -> tuple[str, int]:
+    selector = keccak(text=signature)[:4]
+    if len(calldata) != 4 + 32 + 32:
+        raise AssertionError(f"{signature} calldata has invalid length: {len(calldata)}")
+    if calldata[:4] != selector:
+        raise AssertionError(
+            f"{signature} selector mismatch: actual={calldata[:4].hex()} expected={selector.hex()}"
+        )
+    recipient, amount = abi_decode(["address", "uint256"], calldata[4:])
+    if not isinstance(recipient, str) or not isinstance(amount, int):
+        raise AssertionError(f"{signature} ABI decode returned unexpected types")
+    return to_checksum_address(recipient), amount
+
+
+def check_erc20_calldata_oracle(local_vectors: dict[str, str], expected: dict[str, str]) -> None:
+    expected_recipient = expected["eth_checksum_address"]
+    expected_amount = 50
+    cases = [
+        ("erc20_transfer_call", "transfer(address,uint256)"),
+        ("erc20_approve_call", "approve(address,uint256)"),
+    ]
+    for vector_key, signature in cases:
+        recipient, amount = decode_erc20_address_uint256_call(bytes.fromhex(local_vectors[vector_key]), signature)
+        if recipient != expected_recipient:
+            raise AssertionError(
+                f"{vector_key} recipient mismatch: actual={recipient} expected={expected_recipient}"
+            )
+        if amount != expected_amount:
+            raise AssertionError(f"{vector_key} amount mismatch: actual={amount} expected={expected_amount}")
 
 
 def message_payload(message: messages.MessageType) -> bytes:
@@ -767,6 +799,7 @@ def main() -> int:
             return 1
 
     check_eth_signed_raw_tx_oracle(local, expected)
+    check_erc20_calldata_oracle(local, expected)
     check_trezorlib_btc_protobuf_oracle()
     check_trezorlib_btc_signtx_host_flow_oracle()
     check_trezorlib_protocol_oracle(gate, local)
