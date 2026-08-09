@@ -274,6 +274,12 @@ static bool trezor_bitcoin_tx_input_decode(
                 return false;
             }
             output->has_amount = true;
+        } else if (field_number == 20) {
+            uint32_t coinjoin_flags = 0;
+            if (wire_type != TREZOR_PROTOBUF_WIRE_VARINT
+                || !trezor_bitcoin_uint32_value(value, value_len, &coinjoin_flags) || coinjoin_flags != 0) {
+                return false;
+            }
         } else {
             return false;
         }
@@ -405,6 +411,12 @@ static bool trezor_bitcoin_transaction_decode(
                 return false;
             }
             output->has_outputs_cnt = true;
+        } else if (field_number == 9) {
+            uint32_t extra_data_len = 0;
+            if (wire_type != TREZOR_PROTOBUF_WIRE_VARINT
+                || !trezor_bitcoin_uint32_value(value, value_len, &extra_data_len) || extra_data_len != 0) {
+                return false;
+            }
         } else {
             return false;
         }

@@ -1803,6 +1803,7 @@ int main(int argc, char** argv)
     CHECK(trezor_protobuf_write_varint_field(&trezor_btc_input_writer, 3, 0));
     CHECK(trezor_protobuf_write_varint_field(&trezor_btc_input_writer, 6, BITCOIN_P2WPKH_SPENDWITNESS));
     CHECK(trezor_protobuf_write_varint_field(&trezor_btc_input_writer, 8, 100000));
+    CHECK(trezor_protobuf_write_varint_field(&trezor_btc_input_writer, 20, 0));
     trezor_protobuf_writer_init(&trezor_btc_tx_writer, trezor_btc_tx_payload, sizeof(trezor_btc_tx_payload));
     CHECK(trezor_protobuf_write_bytes_field(
         &trezor_btc_tx_writer, 2, trezor_btc_input_payload, trezor_btc_input_writer.len));
@@ -1845,6 +1846,7 @@ int main(int argc, char** argv)
     CHECK(trezor_protobuf_write_varint_field(&trezor_btc_tx_writer, 1, 2));
     CHECK(trezor_protobuf_write_varint_field(&trezor_btc_tx_writer, 6, 1));
     CHECK(trezor_protobuf_write_varint_field(&trezor_btc_tx_writer, 7, 1));
+    CHECK(trezor_protobuf_write_varint_field(&trezor_btc_tx_writer, 9, 0));
     trezor_protobuf_writer_init(&trezor_btc_ack_writer, trezor_btc_ack_payload, sizeof(trezor_btc_ack_payload));
     CHECK(trezor_protobuf_write_bytes_field(&trezor_btc_ack_writer, 1, trezor_btc_tx_payload, trezor_btc_tx_writer.len));
     trezor_btc_meta_ack_payload_len = trezor_btc_ack_writer.len;
