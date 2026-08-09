@@ -2483,7 +2483,7 @@ int main(int argc, char** argv)
     CHECK(trezor_btc_tx_ack.has_inputs_cnt && trezor_btc_tx_ack.inputs_cnt == 1);
     CHECK(trezor_btc_tx_ack.has_outputs_cnt && trezor_btc_tx_ack.outputs_cnt == 1);
 
-    uint8_t trezor_btc_tx_request_payload[32];
+    uint8_t trezor_btc_tx_request_payload[64];
     size_t trezor_btc_tx_request_payload_len = 0;
     CHECK(trezor_bitcoin_tx_request_encode(TREZOR_BITCOIN_REQUEST_TXINPUT, true, 0,
         trezor_btc_tx_request_payload, sizeof(trezor_btc_tx_request_payload), &trezor_btc_tx_request_payload_len));
@@ -2506,6 +2506,45 @@ int main(int argc, char** argv)
     CHECK(trezor_btc_tx_request_payload_len == 2);
     CHECK(trezor_btc_tx_request_payload[0] == ((1 << 3) | TREZOR_PROTOBUF_WIRE_VARINT));
     CHECK(trezor_btc_tx_request_payload[1] == TREZOR_BITCOIN_REQUEST_TXFINISHED);
+    const uint8_t trezor_btc_txoriginput_request_payload[] = { 0x08, 0x05, 0x12, 0x24, 0x08, 0x00,
+        0x12, 0x20, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11,
+        0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11,
+        0x11, 0x11, 0x11, 0x11, 0x11, 0x11 };
+    CHECK(trezor_bitcoin_tx_request_encode_with_tx_hash(TREZOR_BITCOIN_REQUEST_TXORIGINPUT, true, 0,
+        trezor_btc_prev_hash, sizeof(trezor_btc_prev_hash), trezor_btc_tx_request_payload,
+        sizeof(trezor_btc_tx_request_payload), &trezor_btc_tx_request_payload_len));
+    CHECK(trezor_btc_tx_request_payload_len == sizeof(trezor_btc_txoriginput_request_payload));
+    CHECK(memcmp(trezor_btc_tx_request_payload, trezor_btc_txoriginput_request_payload,
+              sizeof(trezor_btc_txoriginput_request_payload))
+        == 0);
+    const uint8_t trezor_btc_txorigoutput_request_payload[] = { 0x08, 0x06, 0x12, 0x24, 0x08, 0x01,
+        0x12, 0x20, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11,
+        0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11,
+        0x11, 0x11, 0x11, 0x11, 0x11, 0x11 };
+    CHECK(trezor_bitcoin_tx_request_encode_with_tx_hash(TREZOR_BITCOIN_REQUEST_TXORIGOUTPUT, true, 1,
+        trezor_btc_prev_hash, sizeof(trezor_btc_prev_hash), trezor_btc_tx_request_payload,
+        sizeof(trezor_btc_tx_request_payload), &trezor_btc_tx_request_payload_len));
+    CHECK(trezor_btc_tx_request_payload_len == sizeof(trezor_btc_txorigoutput_request_payload));
+    CHECK(memcmp(trezor_btc_tx_request_payload, trezor_btc_txorigoutput_request_payload,
+              sizeof(trezor_btc_txorigoutput_request_payload))
+        == 0);
+    const uint8_t trezor_btc_prevmeta_request_payload[] = { 0x08, 0x02, 0x12, 0x22, 0x12, 0x20,
+        0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11,
+        0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11,
+        0x11, 0x11, 0x11, 0x11 };
+    CHECK(trezor_bitcoin_tx_request_encode_with_tx_hash(TREZOR_BITCOIN_REQUEST_TXMETA, false, 0,
+        trezor_btc_prev_hash, sizeof(trezor_btc_prev_hash), trezor_btc_tx_request_payload,
+        sizeof(trezor_btc_tx_request_payload), &trezor_btc_tx_request_payload_len));
+    CHECK(trezor_btc_tx_request_payload_len == sizeof(trezor_btc_prevmeta_request_payload));
+    CHECK(memcmp(trezor_btc_tx_request_payload, trezor_btc_prevmeta_request_payload,
+              sizeof(trezor_btc_prevmeta_request_payload))
+        == 0);
+    CHECK(!trezor_bitcoin_tx_request_encode_with_tx_hash(TREZOR_BITCOIN_REQUEST_TXFINISHED, false, 0,
+        trezor_btc_prev_hash, sizeof(trezor_btc_prev_hash), trezor_btc_tx_request_payload,
+        sizeof(trezor_btc_tx_request_payload), &trezor_btc_tx_request_payload_len));
+    CHECK(!trezor_bitcoin_tx_request_encode_with_tx_hash(TREZOR_BITCOIN_REQUEST_TXMETA, false, 0,
+        trezor_btc_prev_hash, sizeof(trezor_btc_prev_hash) - 1U, trezor_btc_tx_request_payload,
+        sizeof(trezor_btc_tx_request_payload), &trezor_btc_tx_request_payload_len));
 
     uint8_t trezor_public_key_payload[256];
     trezor_protobuf_writer_t trezor_public_key_writer;

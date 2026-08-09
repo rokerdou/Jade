@@ -326,7 +326,12 @@ static bool trezor_session_btc_signing_continue(const trezor_session_t* const se
             (unsigned long)session->state->pending_btc_signing.outputs_len,
             (unsigned long long)session->state->pending_btc_signing.fee);
         trezor_trace_set_stage(confirm_request_ok ? "btcsign:confirm" : "btcsign:confirm_req_fail");
-        const bool confirmed = confirm_request_ok && session->confirm_btc_tx
+        if (!confirm_request_ok) {
+            wally_bzero(&confirm_request, sizeof(confirm_request));
+            return trezor_session_failure_payload(TREZOR_FAILURE_DATA_ERROR, "Bitcoin signing unsupported",
+                response_type, response_payload, response_payload_len, response_payload_written);
+        }
+        const bool confirmed = session->confirm_btc_tx
             && session->confirm_btc_tx(session->confirm_btc_tx_ctx, &confirm_request);
         wally_bzero(&confirm_request, sizeof(confirm_request));
         if (!confirmed) {

@@ -524,15 +524,30 @@ bool trezor_bitcoin_address_encode(
 bool trezor_bitcoin_tx_request_encode(const trezor_bitcoin_request_type_t request_type, const bool has_request_index,
     const uint32_t request_index, uint8_t* const output, const size_t output_len, size_t* const written)
 {
+    return trezor_bitcoin_tx_request_encode_with_tx_hash(
+        request_type, has_request_index, request_index, NULL, 0, output, output_len, written);
+}
+
+bool trezor_bitcoin_tx_request_encode_with_tx_hash(const trezor_bitcoin_request_type_t request_type,
+    const bool has_request_index, const uint32_t request_index, const uint8_t* const tx_hash,
+    const size_t tx_hash_len, uint8_t* const output, const size_t output_len, size_t* const written)
+{
     if (!output || !written || request_type > TREZOR_BITCOIN_REQUEST_TXPAYMENTREQ) {
+        return false;
+    }
+    if ((tx_hash && tx_hash_len != SHA256_LEN) || (!tx_hash && tx_hash_len != 0)
+        || (tx_hash && request_type == TREZOR_BITCOIN_REQUEST_TXFINISHED)) {
         return false;
     }
 
     const bool write_details = request_type != TREZOR_BITCOIN_REQUEST_TXFINISHED;
-    uint8_t details[16];
+    uint8_t details[64];
     trezor_protobuf_writer_t details_writer;
     trezor_protobuf_writer_init(&details_writer, details, sizeof(details));
     if (has_request_index && !trezor_protobuf_write_varint_field(&details_writer, 1, request_index)) {
+        return false;
+    }
+    if (tx_hash && !trezor_protobuf_write_bytes_field(&details_writer, 2, tx_hash, tx_hash_len)) {
         return false;
     }
 

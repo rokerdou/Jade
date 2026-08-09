@@ -1069,7 +1069,7 @@ def check_local_btc_signtx_wire_script_oracle(gate: Path) -> None:
             (messages.MessageType.TxAck, btc_tx_ack_output(external_output)),
         ],
     )
-    assert_btc_failure(mixed_account_responses[-1], messages.FailureType.ActionCancelled, "BTC mixed-account inputs")
+    assert_btc_failure(mixed_account_responses[-1], messages.FailureType.DataError, "BTC mixed-account inputs")
 
     two_external_responses = run_local_wire_script(
         gate,
@@ -1092,7 +1092,7 @@ def check_local_btc_signtx_wire_script_oracle(gate: Path) -> None:
             ),
         ],
     )
-    assert_btc_failure(two_external_responses[-1], messages.FailureType.ActionCancelled, "BTC multiple external outputs")
+    assert_btc_failure(two_external_responses[-1], messages.FailureType.DataError, "BTC multiple external outputs")
 
     unsupported_script_responses = run_local_wire_script(
         gate,
@@ -1109,6 +1109,54 @@ def check_local_btc_signtx_wire_script_oracle(gate: Path) -> None:
         ],
     )
     assert_btc_failure(unsupported_script_responses[-1], messages.FailureType.DataError, "BTC unsupported input script")
+
+    legacy_without_prev_tx_responses = run_local_wire_script(
+        gate,
+        [
+            (
+                messages.MessageType.SignTx,
+                messages.SignTx(coin_name="Testnet", inputs_count=1, outputs_count=1, version=2, lock_time=0),
+            ),
+            (messages.MessageType.TxAck, btc_tx_ack_meta(1, 1)),
+            (
+                messages.MessageType.TxAck,
+                btc_tx_ack_input(
+                    btc_tx_input(
+                        path=[0x8000002C, 0x80000001, 0x80000000, 0, 0],
+                        script_type=messages.InputScriptType.SPENDADDRESS,
+                    )
+                ),
+            ),
+            (messages.MessageType.TxAck, btc_tx_ack_output(external_output)),
+        ],
+    )
+    assert_btc_failure(
+        legacy_without_prev_tx_responses[-1], messages.FailureType.DataError, "BTC signing unsupported"
+    )
+
+    p2sh_witness_without_prev_tx_responses = run_local_wire_script(
+        gate,
+        [
+            (
+                messages.MessageType.SignTx,
+                messages.SignTx(coin_name="Testnet", inputs_count=1, outputs_count=1, version=2, lock_time=0),
+            ),
+            (messages.MessageType.TxAck, btc_tx_ack_meta(1, 1)),
+            (
+                messages.MessageType.TxAck,
+                btc_tx_ack_input(
+                    btc_tx_input(
+                        path=[0x80000031, 0x80000001, 0x80000000, 0, 0],
+                        script_type=messages.InputScriptType.SPENDP2SHWITNESS,
+                    )
+                ),
+            ),
+            (messages.MessageType.TxAck, btc_tx_ack_output(external_output)),
+        ],
+    )
+    assert_btc_failure(
+        p2sh_witness_without_prev_tx_responses[-1], messages.FailureType.DataError, "BTC signing unsupported"
+    )
 
 
 def check_trezorlib_btc_protobuf_oracle() -> None:
@@ -1135,6 +1183,38 @@ def check_trezorlib_btc_protobuf_oracle() -> None:
     )
     if txmeta_request.hex() != "08021200":
         raise AssertionError(f"unexpected trezorlib BTC TxRequest(TXMETA) protobuf: {txmeta_request.hex()}")
+
+    prev_hash = bytes.fromhex("11" * 32)
+    txoriginput_request = message_payload(
+        messages.TxRequest(
+            request_type=messages.RequestType.TXORIGINPUT,
+            details=messages.TxRequestDetailsType(request_index=0, tx_hash=prev_hash),
+        )
+    )
+    if txoriginput_request.hex() != "08051224080012201111111111111111111111111111111111111111111111111111111111111111":
+        raise AssertionError(
+            f"unexpected trezorlib BTC TxRequest(TXORIGINPUT) protobuf: {txoriginput_request.hex()}"
+        )
+
+    txorigoutput_request = message_payload(
+        messages.TxRequest(
+            request_type=messages.RequestType.TXORIGOUTPUT,
+            details=messages.TxRequestDetailsType(request_index=1, tx_hash=prev_hash),
+        )
+    )
+    if txorigoutput_request.hex() != "08061224080112201111111111111111111111111111111111111111111111111111111111111111":
+        raise AssertionError(
+            f"unexpected trezorlib BTC TxRequest(TXORIGOUTPUT) protobuf: {txorigoutput_request.hex()}"
+        )
+
+    prevmeta_request = message_payload(
+        messages.TxRequest(
+            request_type=messages.RequestType.TXMETA,
+            details=messages.TxRequestDetailsType(tx_hash=prev_hash),
+        )
+    )
+    if prevmeta_request.hex() != "0802122212201111111111111111111111111111111111111111111111111111111111111111":
+        raise AssertionError(f"unexpected trezorlib BTC TxRequest prev TXMETA protobuf: {prevmeta_request.hex()}")
 
     txfinished_request = message_payload(messages.TxRequest(request_type=messages.RequestType.TXFINISHED))
     if txfinished_request.hex() != "0803":
