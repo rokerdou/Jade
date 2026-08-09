@@ -75,8 +75,8 @@ static bool trezor_wallet_get_bitcoin_address(
     void* ctx, const trezor_bitcoin_get_address_t* const request, char* const address, const size_t address_len)
 {
     (void)ctx;
-    if (!request || !address || !trezor_auth_bridge_wallet_ready()
-        || (request->has_coin_name && strcmp(request->coin_name, "Testnet") != 0)
+    if (!request || !address || !trezor_auth_bridge_wallet_ready() || !request->has_coin_name
+        || (strcmp(request->coin_name, "Testnet") != 0 && strcmp(request->coin_name, "Bitcoin") != 0)
         || (request->has_script_type && request->script_type != BITCOIN_P2PKH_SPENDADDRESS
             && request->script_type != BITCOIN_P2WPKH_SPENDWITNESS
             && request->script_type != BITCOIN_P2SH_P2WPKH_SPENDP2SHWITNESS)) {
@@ -89,12 +89,14 @@ static bool trezor_wallet_get_bitcoin_address(
     memcpy(path.parts, request->address_n, request->address_n_len * sizeof(request->address_n[0]));
 
     const uint32_t script_type = request->has_script_type ? request->script_type : BITCOIN_P2PKH_SPENDADDRESS;
+    const bool mainnet = strcmp(request->coin_name, "Bitcoin") == 0;
     bool ok = false;
-    if (script_type == BITCOIN_P2PKH_SPENDADDRESS) {
+    if (script_type == BITCOIN_P2PKH_SPENDADDRESS && !mainnet) {
         ok = bitcoin_wallet_p2pkh_testnet_address_from_path(&path, address, address_len);
     } else if (script_type == BITCOIN_P2WPKH_SPENDWITNESS) {
-        ok = bitcoin_wallet_p2wpkh_testnet_address_from_path(&path, address, address_len);
-    } else if (script_type == BITCOIN_P2SH_P2WPKH_SPENDP2SHWITNESS) {
+        ok = mainnet ? bitcoin_wallet_p2wpkh_mainnet_address_from_path(&path, address, address_len)
+                     : bitcoin_wallet_p2wpkh_testnet_address_from_path(&path, address, address_len);
+    } else if (script_type == BITCOIN_P2SH_P2WPKH_SPENDP2SHWITNESS && !mainnet) {
         ok = bitcoin_wallet_p2sh_p2wpkh_testnet_address_from_path(&path, address, address_len);
     }
     wally_bzero(&path, sizeof(path));

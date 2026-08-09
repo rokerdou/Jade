@@ -111,6 +111,7 @@ typedef struct {
     uint64_t total_input;
     uint64_t total_output;
     uint64_t fee;
+    uint64_t fee_rate_sats_per_vbyte;
     trezor_bitcoin_signing_phase_t phase;
 } trezor_bitcoin_signing_state_t;
 

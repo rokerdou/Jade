@@ -50,6 +50,10 @@ def p2wpkh_address_testnet(pubkey_hash: bytes) -> str:
     return bech32_encode("tb", [0] + convertbits(pubkey_hash, 8, 5))
 
 
+def p2wpkh_address_mainnet(pubkey_hash: bytes) -> str:
+    return bech32_encode("bc", [0] + convertbits(pubkey_hash, 8, 5))
+
+
 def ethereum_legacy_signing_fields(
     *, nonce: int, gas_price: int, gas_limit: int, to_address: bytes, value: int, data: bytes, chain_id: int
 ) -> list[int | bytes]:
@@ -181,6 +185,7 @@ def expected_vectors() -> dict[str, str]:
             TESTNET_P2PKH_VERSION + pubkey_hash
         ).decode(),
         "btc_testnet_p2wpkh_address": p2wpkh_address_testnet(pubkey_hash),
+        "btc_mainnet_p2wpkh_address": p2wpkh_address_mainnet(pubkey_hash),
         "btc_testnet_p2sh_p2wpkh_address": base58.b58encode_check(b"\xc4" + p2sh_p2wpkh_redeem_hash).decode(),
         "eth_eip155_signing_payload": eip155_payload.hex(),
         "eth_eip155_signing_hash": eip155_hash.hex(),
@@ -618,8 +623,13 @@ def btc_tx_output_address() -> str:
     return "tb1qw508d6qejxtdg4y5r3zarvary0c5xw7kxpjzsx"
 
 
-def btc_input_path(index: int = 0, *, account: int = 0, change: int = 0) -> list[int]:
-    return [0x80000054, 0x80000001, 0x80000000 + account, change, index]
+def btc_tx_output_address_mainnet() -> str:
+    return "bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4"
+
+
+def btc_input_path(index: int = 0, *, account: int = 0, change: int = 0, mainnet: bool = False) -> list[int]:
+    coin = 0 if mainnet else 1
+    return [0x80000054, 0x80000000 + coin, 0x80000000 + account, change, index]
 
 
 def btc_tx_input(
@@ -927,6 +937,35 @@ def check_local_btc_signtx_wire_script_oracle(gate: Path) -> None:
         witness_pubkeys=[BTC_TEST_COMPRESSED_PUBKEY],
     )
 
+    mainnet_input = btc_tx_input(path=btc_input_path(mainnet=True))
+    mainnet_output = btc_tx_output_external(amount=90_000, address=btc_tx_output_address_mainnet())
+    mainnet_responses = run_local_wire_script(
+        gate,
+        [
+            (
+                messages.MessageType.SignTx,
+                messages.SignTx(coin_name="Bitcoin", inputs_count=1, outputs_count=1, version=2, lock_time=0),
+            ),
+            (messages.MessageType.TxAck, btc_tx_ack_meta(1, 1)),
+            (messages.MessageType.TxAck, btc_tx_ack_input(mainnet_input)),
+            (messages.MessageType.TxAck, btc_tx_ack_output(mainnet_output)),
+        ],
+    )
+    mainnet_final = assert_btc_tx_request(
+        mainnet_responses[-1],
+        messages.RequestType.TXFINISHED,
+        signature_index=0,
+        expect_serialized_tx=True,
+    )
+    check_embit_btc_signed_tx_oracle(
+        mainnet_final.serialized.serialized_tx,
+        version=2,
+        locktime=0,
+        inputs=[(btc_tx_prev_hash(), 0)],
+        outputs=[(90_000, btc_p2wpkh_script_pubkey)],
+        witness_pubkeys=[BTC_TEST_COMPRESSED_PUBKEY],
+    )
+
     responses = run_local_wire_script(
         gate,
         [
@@ -981,6 +1020,31 @@ def check_local_btc_signtx_wire_script_oracle(gate: Path) -> None:
         ],
     )
     assert_btc_failure(overflow_responses[-1], messages.FailureType.DataError, "BTC output greater than input")
+
+    high_fee_responses = run_local_wire_script(
+        gate,
+        [
+            (
+                messages.MessageType.SignTx,
+                messages.SignTx(coin_name="Testnet", inputs_count=1, outputs_count=1, version=2, lock_time=0),
+            ),
+            (messages.MessageType.TxAck, btc_tx_ack_meta(1, 1)),
+            (messages.MessageType.TxAck, btc_tx_ack_input(btc_tx_input(amount=200_000))),
+            (messages.MessageType.TxAck, btc_tx_ack_output(btc_tx_output_external(amount=80_000))),
+        ],
+    )
+    assert_btc_failure(high_fee_responses[-1], messages.FailureType.DataError, "BTC fee-rate too high")
+
+    hidden_locktime_responses = run_local_wire_script(
+        gate,
+        [
+            (
+                messages.MessageType.SignTx,
+                messages.SignTx(coin_name="Testnet", inputs_count=1, outputs_count=1, version=2, lock_time=1),
+            ),
+        ],
+    )
+    assert_btc_failure(hidden_locktime_responses[-1], messages.FailureType.DataError, "BTC hidden lock_time")
 
     mixed_account_responses = run_local_wire_script(
         gate,
@@ -1139,6 +1203,22 @@ def check_trezorlib_protocol_oracle(gate: Path, local_vectors: dict[str, str]) -
         btc_addr = protobuf.load_message(io.BytesIO(payload), messages.Address)
         if btc_addr.address != local_vectors[vector_key]:
             raise AssertionError(f"unexpected Bitcoin address response for {script_type}: {btc_addr.address}")
+
+    response_type, payload = run_local_wire_oracle(
+        gate,
+        messages.MessageType.GetAddress,
+        messages.GetAddress(
+            address_n=[0x80000054, 0x80000000, 0x80000000, 0, 0],
+            coin_name="Bitcoin",
+            show_display=False,
+            script_type=messages.InputScriptType.SPENDWITNESS,
+        ),
+    )
+    if response_type != messages.MessageType.Address:
+        raise AssertionError(f"mainnet GetAddress response type mismatch: {response_type}")
+    btc_addr = protobuf.load_message(io.BytesIO(payload), messages.Address)
+    if btc_addr.address != local_vectors["btc_mainnet_p2wpkh_address"]:
+        raise AssertionError(f"unexpected mainnet P2WPKH address response: {btc_addr.address}")
 
     response_type, payload = run_local_wire_oracle(
         gate,

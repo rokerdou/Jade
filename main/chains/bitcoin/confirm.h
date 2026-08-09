@@ -15,6 +15,7 @@ typedef struct {
     uint64_t amount;
     uint64_t change;
     uint64_t fee;
+    uint64_t fee_rate_sats_per_vbyte;
 } bitcoin_confirm_request_t;
 
 bool bitcoin_confirm_summary_from_request(const bitcoin_confirm_request_t* request, chain_confirm_summary_t* summary);

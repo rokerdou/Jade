@@ -74,6 +74,8 @@ static const char* field_name(const chain_confirm_field_kind_t kind)
         return "Max Fee";
     case CHAIN_CONFIRM_FIELD_FEE:
         return "Fee";
+    case CHAIN_CONFIRM_FIELD_FEE_RATE:
+        return "Fee Rate";
     case CHAIN_CONFIRM_FIELD_FEE_LIMIT:
         return "Fee Limit";
     case CHAIN_CONFIRM_FIELD_CALLDATA_HASH:
@@ -128,6 +130,8 @@ static const char* field_trace_stage(const chain_confirm_field_kind_t kind, cons
         return done ? "ui:maxfee_ok" : "ui:maxfee";
     case CHAIN_CONFIRM_FIELD_FEE:
         return done ? "ui:fee_ok" : "ui:fee";
+    case CHAIN_CONFIRM_FIELD_FEE_RATE:
+        return done ? "ui:feerate_ok" : "ui:feerate";
     case CHAIN_CONFIRM_FIELD_FEE_LIMIT:
         return done ? "ui:feelimit_ok" : "ui:feelimit";
     case CHAIN_CONFIRM_FIELD_CALLDATA_HASH:

@@ -47,8 +47,8 @@ bool bitcoin_p2pkh_testnet_address_from_compressed_pubkey(
     return ok;
 }
 
-bool bitcoin_p2wpkh_testnet_address_from_compressed_pubkey(
-    const uint8_t* const pubkey, const size_t pubkey_len, char* const output, const size_t output_len)
+static bool bitcoin_p2wpkh_address_from_compressed_pubkey(const uint8_t* const pubkey, const size_t pubkey_len,
+    const char* const hrp, char* const output, const size_t output_len)
 {
     uint8_t scriptpubkey[2 + HASH160_LEN];
     memset(scriptpubkey, 0, sizeof(scriptpubkey));
@@ -56,7 +56,7 @@ bool bitcoin_p2wpkh_testnet_address_from_compressed_pubkey(
     scriptpubkey[1] = HASH160_LEN;
     char* encoded = NULL;
     bool ok = hash160_compressed_pubkey(pubkey, pubkey_len, scriptpubkey + 2)
-        && wally_addr_segwit_from_bytes(scriptpubkey, sizeof(scriptpubkey), "tb", 0, &encoded) == WALLY_OK
+        && wally_addr_segwit_from_bytes(scriptpubkey, sizeof(scriptpubkey), hrp, 0, &encoded) == WALLY_OK
         && copy_wally_address(encoded, output, output_len);
 
     if (!ok && output_len) {
@@ -67,6 +67,18 @@ bool bitcoin_p2wpkh_testnet_address_from_compressed_pubkey(
     }
     wally_bzero(scriptpubkey, sizeof(scriptpubkey));
     return ok;
+}
+
+bool bitcoin_p2wpkh_testnet_address_from_compressed_pubkey(
+    const uint8_t* const pubkey, const size_t pubkey_len, char* const output, const size_t output_len)
+{
+    return bitcoin_p2wpkh_address_from_compressed_pubkey(pubkey, pubkey_len, "tb", output, output_len);
+}
+
+bool bitcoin_p2wpkh_mainnet_address_from_compressed_pubkey(
+    const uint8_t* const pubkey, const size_t pubkey_len, char* const output, const size_t output_len)
+{
+    return bitcoin_p2wpkh_address_from_compressed_pubkey(pubkey, pubkey_len, "bc", output, output_len);
 }
 
 bool bitcoin_p2sh_p2wpkh_testnet_address_from_compressed_pubkey(

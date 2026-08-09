@@ -60,6 +60,17 @@ static bool bitcoin_format_sats(const uint64_t sats, char* const output, const s
         && bitcoin_append_str(output, output_len, &pos, " sats");
 }
 
+static bool bitcoin_format_fee_rate(const uint64_t sats_per_vbyte, char* const output, const size_t output_len)
+{
+    if (!output || output_len == 0) {
+        return false;
+    }
+    output[0] = '\0';
+    size_t pos = 0;
+    return bitcoin_append_u64_dec(output, output_len, &pos, sats_per_vbyte)
+        && bitcoin_append_str(output, output_len, &pos, " sat/vB");
+}
+
 bool bitcoin_confirm_summary_from_request(const bitcoin_confirm_request_t* const request, chain_confirm_summary_t* const summary)
 {
     if (!request || !summary || request->path_len == 0 || request->path_len > CHAIN_CONFIRM_MAX_PATH_LEN
@@ -70,9 +81,11 @@ bool bitcoin_confirm_summary_from_request(const bitcoin_confirm_request_t* const
     char amount[BITCOIN_AMOUNT_TEXT_MAX_LEN];
     char change[BITCOIN_AMOUNT_TEXT_MAX_LEN];
     char fee[BITCOIN_AMOUNT_TEXT_MAX_LEN];
+    char fee_rate[BITCOIN_AMOUNT_TEXT_MAX_LEN];
     if (!bitcoin_format_sats(request->amount, amount, sizeof(amount))
         || !bitcoin_format_sats(request->change, change, sizeof(change))
-        || !bitcoin_format_sats(request->fee, fee, sizeof(fee))) {
+        || !bitcoin_format_sats(request->fee, fee, sizeof(fee))
+        || !bitcoin_format_fee_rate(request->fee_rate_sats_per_vbyte, fee_rate, sizeof(fee_rate))) {
         return false;
     }
 
@@ -83,6 +96,7 @@ bool bitcoin_confirm_summary_from_request(const bitcoin_confirm_request_t* const
         && chain_confirm_summary_add_text(summary, CHAIN_CONFIRM_FIELD_TO, request->to)
         && chain_confirm_summary_add_text(summary, CHAIN_CONFIRM_FIELD_AMOUNT, amount)
         && chain_confirm_summary_add_text(summary, CHAIN_CONFIRM_FIELD_CHANGE, change)
-        && chain_confirm_summary_add_text(summary, CHAIN_CONFIRM_FIELD_FEE, fee);
+        && chain_confirm_summary_add_text(summary, CHAIN_CONFIRM_FIELD_FEE, fee)
+        && chain_confirm_summary_add_text(summary, CHAIN_CONFIRM_FIELD_FEE_RATE, fee_rate);
 }
 #endif /* AMALGAMATED_BUILD */
