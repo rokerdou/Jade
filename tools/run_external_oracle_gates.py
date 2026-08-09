@@ -434,6 +434,16 @@ def run_local_wire_oracle(gate: Path, message_type: int, message: messages.Messa
     return int(parsed["response_type"]), bytes.fromhex(parsed["response_payload"])
 
 
+def run_local_wire_script(gate: Path, script: list[tuple[int, messages.MessageType]]) -> list[tuple[int, bytes]]:
+    wires = [wire_encode(message_type, message_payload(message)).hex() for message_type, message in script]
+    output = subprocess.check_output([str(gate), "--trezor-wire-script", *wires], text=True)
+    parsed = parse_vectors(output)
+    responses: list[tuple[int, bytes]] = []
+    for index in range(len(script)):
+        responses.append((int(parsed[f"response_type_{index}"]), bytes.fromhex(parsed[f"response_payload_{index}"])))
+    return responses
+
+
 def assert_trezor_failure(
     gate: Path,
     message_type: int,
@@ -473,6 +483,8 @@ class ScriptedBtcSignTxClient:
         input_prev_hashes: list[bytes] | None = None,
         input_amounts: list[int] | None = None,
         output_amounts: list[int] | None = None,
+        output_addresses: list[str | None] | None = None,
+        output_paths: list[list[int] | None] | None = None,
     ) -> None:
         self.script = script
         self.final_signature = final_signature
@@ -484,6 +496,8 @@ class ScriptedBtcSignTxClient:
         self.input_prev_hashes = input_prev_hashes or [btc_tx_prev_hash()]
         self.input_amounts = input_amounts or [100_000]
         self.output_amounts = output_amounts or [90_000]
+        self.output_addresses = output_addresses or [btc_tx_output_address()]
+        self.output_paths = output_paths or [None]
         self.calls: list[messages.MessageType] = []
         self.ack_index = 0
         self.started = False
@@ -538,9 +552,16 @@ class ScriptedBtcSignTxClient:
             assert previous.request_index is not None
             if len(message.tx.outputs) != 1:
                 raise AssertionError(f"unexpected TXOUTPUT ack: {message.tx}")
+            expected_address = self.output_addresses[previous.request_index]
+            expected_path = self.output_paths[previous.request_index]
+            actual_output = message.tx.outputs[0]
+            if expected_address is None:
+                if actual_output.address or list(actual_output.address_n or []) != expected_path:
+                    raise AssertionError(f"unexpected BTC change output: {actual_output}")
+            elif actual_output.address != expected_address or actual_output.address_n:
+                raise AssertionError(f"unexpected BTC external output: {actual_output}")
             if (
-                message.tx.outputs[0].address != btc_tx_output_address()
-                or message.tx.outputs[0].amount != self.output_amounts[previous.request_index]
+                message.tx.outputs[0].amount != self.output_amounts[previous.request_index]
             ):
                 raise AssertionError(f"unexpected BTC output: {message.tx.outputs[0]}")
         else:
@@ -596,23 +617,69 @@ def btc_tx_output_address() -> str:
     return "tb1qw508d6qejxtdg4y5r3zarvary0c5xw7kxpjzsx"
 
 
+def btc_input_path(index: int = 0, *, account: int = 0, change: int = 0) -> list[int]:
+    return [0x80000054, 0x80000001, 0x80000000 + account, change, index]
+
+
+def btc_tx_input(
+    *,
+    path: list[int] | None = None,
+    prev_hash: bytes | None = None,
+    prev_index: int = 0,
+    amount: int = 100_000,
+    script_type: messages.InputScriptType = messages.InputScriptType.SPENDWITNESS,
+) -> messages.TxInputType:
+    return messages.TxInputType(
+        address_n=path or btc_input_path(),
+        prev_hash=prev_hash or btc_tx_prev_hash(),
+        prev_index=prev_index,
+        script_type=script_type,
+        amount=amount,
+        sequence=0xFFFFFFFF,
+    )
+
+
+def btc_tx_output_external(amount: int = 90_000, address: str | None = None) -> messages.TxOutputType:
+    return messages.TxOutputType(
+        address=address or btc_tx_output_address(),
+        amount=amount,
+        script_type=messages.OutputScriptType.PAYTOADDRESS,
+    )
+
+
+def btc_tx_output_change(amount: int = 5_000, *, path: list[int] | None = None) -> messages.TxOutputType:
+    return messages.TxOutputType(
+        address_n=path or btc_input_path(change=1),
+        amount=amount,
+        script_type=messages.OutputScriptType.PAYTOADDRESS,
+    )
+
+
+def btc_tx_ack_meta(inputs_count: int, outputs_count: int, *, version: int = 2, lock_time: int = 0) -> messages.TxAck:
+    return messages.TxAck(
+        tx=messages.TransactionType(
+            version=version,
+            inputs_cnt=inputs_count,
+            outputs_cnt=outputs_count,
+            lock_time=lock_time,
+        )
+    )
+
+
+def btc_tx_ack_input(tx_input: messages.TxInputType) -> messages.TxAck:
+    return messages.TxAck(tx=messages.TransactionType(inputs=[tx_input]))
+
+
+def btc_tx_ack_output(tx_output: messages.TxOutputType) -> messages.TxAck:
+    return messages.TxAck(tx=messages.TransactionType(outputs=[tx_output]))
+
+
 def check_trezorlib_btc_signtx_host_flow_oracle() -> None:
     from trezorlib import btc
 
-    input_path = [0x80000054, 0x80000001, 0x80000000, 0, 0]
-    tx_input = messages.TxInputType(
-        address_n=input_path,
-        prev_hash=btc_tx_prev_hash(),
-        prev_index=0,
-        script_type=messages.InputScriptType.SPENDWITNESS,
-        amount=100_000,
-        sequence=0xFFFFFFFF,
-    )
-    tx_output = messages.TxOutputType(
-        address=btc_tx_output_address(),
-        amount=90_000,
-        script_type=messages.OutputScriptType.PAYTOADDRESS,
-    )
+    input_path = btc_input_path()
+    tx_input = btc_tx_input(path=input_path)
+    tx_output = btc_tx_output_external()
 
     signature = bytes.fromhex("30" + "44" * 70)
     serialized_tx = bytes.fromhex("02000000000100")
@@ -645,15 +712,8 @@ def check_trezorlib_btc_signtx_host_flow_oracle() -> None:
     if not client.closed:
         raise AssertionError("trezorlib BTC SignTx session did not close")
 
-    input_path_1 = [0x80000054, 0x80000001, 0x80000000, 0, 1]
-    tx_input_1 = messages.TxInputType(
-        address_n=input_path_1,
-        prev_hash=bytes.fromhex("22" * 32),
-        prev_index=1,
-        script_type=messages.InputScriptType.SPENDWITNESS,
-        amount=40_000,
-        sequence=0xFFFFFFFF,
-    )
+    input_path_1 = btc_input_path(1)
+    tx_input_1 = btc_tx_input(path=input_path_1, prev_hash=bytes.fromhex("22" * 32), prev_index=1, amount=40_000)
     signature_0 = bytes.fromhex("30" + "55" * 70)
     signature_1 = bytes.fromhex("30" + "66" * 70)
     multi_serialized_tx = bytes.fromhex("0200000000010201")
@@ -698,6 +758,211 @@ def check_trezorlib_btc_signtx_host_flow_oracle() -> None:
         raise AssertionError(f"unexpected trezorlib multi-input BTC host call sequence: {call_types}")
     if not multi_client.closed:
         raise AssertionError("trezorlib multi-input BTC SignTx session did not close")
+
+    change_output = btc_tx_output_change(amount=45_000)
+    multi_change_signature_0 = bytes.fromhex("30" + "77" * 70)
+    multi_change_signature_1 = bytes.fromhex("30" + "88" * 70)
+    multi_change_serialized_tx = bytes.fromhex("0200000000010202")
+    multi_change_client = ScriptedBtcSignTxClient(
+        [
+            BtcSignTxHostStep(messages.RequestType.TXMETA, "meta"),
+            BtcSignTxHostStep(messages.RequestType.TXINPUT, "input", request_index=0),
+            BtcSignTxHostStep(messages.RequestType.TXINPUT, "input", request_index=1),
+            BtcSignTxHostStep(messages.RequestType.TXOUTPUT, "output", request_index=0),
+            BtcSignTxHostStep(messages.RequestType.TXOUTPUT, "output", request_index=1),
+            BtcSignTxHostStep(
+                messages.RequestType.TXMETA,
+                "meta",
+                signature_index=0,
+                signature=multi_change_signature_0,
+            ),
+        ],
+        multi_change_signature_1,
+        multi_change_serialized_tx,
+        final_signature_index=1,
+        inputs_count=2,
+        outputs_count=2,
+        input_prev_hashes=[btc_tx_prev_hash(), bytes.fromhex("22" * 32)],
+        input_amounts=[100_000, 40_000],
+        output_amounts=[90_000, 45_000],
+        output_addresses=[btc_tx_output_address(), None],
+        output_paths=[None, btc_input_path(change=1)],
+    )
+
+    signatures, signed_tx = btc.sign_tx(
+        multi_change_client,
+        "Testnet",
+        [tx_input, tx_input_1],
+        [tx_output, change_output],
+        version=2,
+        lock_time=0,
+    )
+    if signatures != [multi_change_signature_0, multi_change_signature_1]:
+        raise AssertionError(f"trezorlib multi-output BTC signatures mismatch: {signatures}")
+    if signed_tx != multi_change_serialized_tx:
+        raise AssertionError(f"trezorlib multi-output BTC serialized tx mismatch: {signed_tx.hex()}")
+
+    call_types = [type(call).__name__ for call in multi_change_client.calls]
+    if call_types != ["SignTx", "TxAck", "TxAck", "TxAck", "TxAck", "TxAck", "TxAck"]:
+        raise AssertionError(f"unexpected trezorlib multi-output BTC host call sequence: {call_types}")
+    if not multi_change_client.closed:
+        raise AssertionError("trezorlib multi-output BTC SignTx session did not close")
+
+
+def assert_btc_tx_request(
+    response: tuple[int, bytes],
+    request_type: messages.RequestType,
+    *,
+    request_index: int | None = None,
+    signature_index: int | None = None,
+    expect_serialized_tx: bool = False,
+) -> messages.TxRequest:
+    response_type, payload = response
+    if response_type != messages.MessageType.TxRequest:
+        raise AssertionError(f"BTC response must be TxRequest, got {response_type}")
+    tx_request = protobuf.load_message(io.BytesIO(payload), messages.TxRequest)
+    if tx_request.request_type != request_type:
+        raise AssertionError(f"BTC request type mismatch: actual={tx_request.request_type} expected={request_type}")
+    if request_index is not None:
+        if tx_request.details is None or tx_request.details.request_index != request_index:
+            raise AssertionError(f"BTC request index mismatch: {tx_request}")
+    if signature_index is not None:
+        if tx_request.serialized is None or tx_request.serialized.signature_index != signature_index:
+            raise AssertionError(f"BTC signature index mismatch: {tx_request}")
+        if len(tx_request.serialized.signature or b"") < 64:
+            raise AssertionError("BTC signed response missing DER signature")
+    if expect_serialized_tx:
+        if tx_request.serialized is None or len(tx_request.serialized.serialized_tx or b"") == 0:
+            raise AssertionError("BTC final signed response missing serialized tx")
+    return tx_request
+
+
+def assert_btc_failure(response: tuple[int, bytes], expected_code: messages.FailureType, case_name: str) -> None:
+    response_type, payload = response
+    if response_type != messages.MessageType.Failure:
+        raise AssertionError(f"{case_name} must fail, got response type {response_type}")
+    failure = protobuf.load_message(io.BytesIO(payload), messages.Failure)
+    if failure.code != expected_code:
+        raise AssertionError(f"{case_name} failure code mismatch: actual={failure.code} expected={expected_code}")
+
+
+def check_local_btc_signtx_wire_script_oracle(gate: Path) -> None:
+    tx_input_0 = btc_tx_input(path=btc_input_path())
+    tx_input_1 = btc_tx_input(path=btc_input_path(1), prev_hash=bytes.fromhex("22" * 32), prev_index=1, amount=40_000)
+    external_output = btc_tx_output_external(amount=90_000)
+    change_output = btc_tx_output_change(amount=45_000)
+    common_meta = btc_tx_ack_meta(2, 2)
+
+    responses = run_local_wire_script(
+        gate,
+        [
+            (
+                messages.MessageType.SignTx,
+                messages.SignTx(coin_name="Testnet", inputs_count=2, outputs_count=2, version=2, lock_time=0),
+            ),
+            (messages.MessageType.TxAck, common_meta),
+            (messages.MessageType.TxAck, btc_tx_ack_input(tx_input_0)),
+            (messages.MessageType.TxAck, btc_tx_ack_input(tx_input_1)),
+            (messages.MessageType.TxAck, btc_tx_ack_output(external_output)),
+            (messages.MessageType.TxAck, btc_tx_ack_output(change_output)),
+            (messages.MessageType.TxAck, common_meta),
+        ],
+    )
+    expected = [
+        (messages.RequestType.TXMETA, None, None, False),
+        (messages.RequestType.TXINPUT, 0, None, False),
+        (messages.RequestType.TXINPUT, 1, None, False),
+        (messages.RequestType.TXOUTPUT, 0, None, False),
+        (messages.RequestType.TXOUTPUT, 1, None, False),
+        (messages.RequestType.TXMETA, None, 0, False),
+        (messages.RequestType.TXFINISHED, None, 1, True),
+    ]
+    for response, (request_type, request_index, signature_index, expect_serialized_tx) in zip(responses, expected):
+        assert_btc_tx_request(
+            response,
+            request_type,
+            request_index=request_index,
+            signature_index=signature_index,
+            expect_serialized_tx=expect_serialized_tx,
+        )
+
+    overflow_responses = run_local_wire_script(
+        gate,
+        [
+            (
+                messages.MessageType.SignTx,
+                messages.SignTx(coin_name="Testnet", inputs_count=1, outputs_count=1, version=2, lock_time=0),
+            ),
+            (messages.MessageType.TxAck, btc_tx_ack_meta(1, 1)),
+            (messages.MessageType.TxAck, btc_tx_ack_input(tx_input_0)),
+            (messages.MessageType.TxAck, btc_tx_ack_output(btc_tx_output_external(amount=100_001))),
+        ],
+    )
+    assert_btc_failure(overflow_responses[-1], messages.FailureType.DataError, "BTC output greater than input")
+
+    mixed_account_responses = run_local_wire_script(
+        gate,
+        [
+            (
+                messages.MessageType.SignTx,
+                messages.SignTx(coin_name="Testnet", inputs_count=2, outputs_count=1, version=2, lock_time=0),
+            ),
+            (messages.MessageType.TxAck, btc_tx_ack_meta(2, 1)),
+            (messages.MessageType.TxAck, btc_tx_ack_input(tx_input_0)),
+            (
+                messages.MessageType.TxAck,
+                btc_tx_ack_input(
+                    btc_tx_input(
+                        path=btc_input_path(1, account=1),
+                        prev_hash=bytes.fromhex("33" * 32),
+                        prev_index=1,
+                        amount=40_000,
+                    )
+                ),
+            ),
+            (messages.MessageType.TxAck, btc_tx_ack_output(external_output)),
+        ],
+    )
+    assert_btc_failure(mixed_account_responses[-1], messages.FailureType.ActionCancelled, "BTC mixed-account inputs")
+
+    two_external_responses = run_local_wire_script(
+        gate,
+        [
+            (
+                messages.MessageType.SignTx,
+                messages.SignTx(coin_name="Testnet", inputs_count=1, outputs_count=2, version=2, lock_time=0),
+            ),
+            (messages.MessageType.TxAck, btc_tx_ack_meta(1, 2)),
+            (messages.MessageType.TxAck, btc_tx_ack_input(tx_input_0)),
+            (messages.MessageType.TxAck, btc_tx_ack_output(btc_tx_output_external(amount=50_000))),
+            (
+                messages.MessageType.TxAck,
+                btc_tx_ack_output(
+                    btc_tx_output_external(
+                        amount=40_000,
+                        address="tb1qgj8n7c7e9s2vtz0z9w3lzggr5lk6ndeg29dh7a",
+                    )
+                ),
+            ),
+        ],
+    )
+    assert_btc_failure(two_external_responses[-1], messages.FailureType.ActionCancelled, "BTC multiple external outputs")
+
+    unsupported_script_responses = run_local_wire_script(
+        gate,
+        [
+            (
+                messages.MessageType.SignTx,
+                messages.SignTx(coin_name="Testnet", inputs_count=1, outputs_count=1, version=2, lock_time=0),
+            ),
+            (messages.MessageType.TxAck, btc_tx_ack_meta(1, 1)),
+            (
+                messages.MessageType.TxAck,
+                btc_tx_ack_input(btc_tx_input(script_type=messages.InputScriptType.SPENDMULTISIG)),
+            ),
+        ],
+    )
+    assert_btc_failure(unsupported_script_responses[-1], messages.FailureType.DataError, "BTC unsupported input script")
 
 
 def check_trezorlib_btc_protobuf_oracle() -> None:
@@ -1029,6 +1294,7 @@ def main() -> int:
     check_erc20_calldata_oracle(local, expected)
     check_trezorlib_btc_protobuf_oracle()
     check_trezorlib_btc_signtx_host_flow_oracle()
+    check_local_btc_signtx_wire_script_oracle(gate)
     check_trezorlib_protocol_oracle(gate, local)
     print("PASS external_oracle_gates")
     return 0

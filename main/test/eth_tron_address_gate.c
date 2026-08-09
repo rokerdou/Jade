@@ -1327,6 +1327,51 @@ static int run_trezor_wire_oracle(const char* const request_hex)
     return 0;
 }
 
+static int run_trezor_wire_script(const int request_count, char** const request_hexes)
+{
+    uint8_t request_chunks[2304];
+    size_t request_chunks_len = 0;
+    uint8_t response_chunks[2304];
+    size_t response_chunks_len = 0;
+    uint8_t response_payload[TREZOR_SESSION_MAX_RESPONSE_PAYLOAD_LEN];
+    size_t response_payload_len = 0;
+    uint16_t response_type = 0;
+    trezor_session_state_t state;
+    trezor_session_t session;
+
+    if (request_count <= 0 || !request_hexes) {
+        return 1;
+    }
+
+    make_oracle_test_session(&session, &state);
+    printf("response_count=%d\n", request_count);
+    for (int i = 0; i < request_count; ++i) {
+        char key[32];
+        request_chunks_len = 0;
+        response_chunks_len = 0;
+        response_payload_len = 0;
+        response_type = 0;
+        wally_bzero(request_chunks, sizeof(request_chunks));
+        wally_bzero(response_chunks, sizeof(response_chunks));
+        wally_bzero(response_payload, sizeof(response_payload));
+
+        if (!parse_hex_bytes(request_hexes[i], request_chunks, sizeof(request_chunks), &request_chunks_len)
+            || !trezor_session_handle_wire(&session, request_chunks, request_chunks_len, response_chunks,
+                sizeof(response_chunks), &response_chunks_len)
+            || !trezor_wire_decode_message(response_chunks, response_chunks_len, &response_type, response_payload,
+                sizeof(response_payload), &response_payload_len)) {
+            return 1;
+        }
+
+        printf("response_type_%d=%u\n", i, (unsigned int)response_type);
+        if (snprintf(key, sizeof(key), "response_payload_%d", i) <= 0) {
+            return 1;
+        }
+        print_hex_value(key, response_payload, response_payload_len);
+    }
+    return 0;
+}
+
 static int dump_oracle_vectors(void)
 {
     uint8_t eth_address[ETHEREUM_ADDRESS_LEN];
@@ -1441,6 +1486,9 @@ int main(int argc, char** argv)
     }
     if (argc == 3 && argv && argv[1] && strcmp(argv[1], "--trezor-wire-oracle") == 0) {
         return run_trezor_wire_oracle(argv[2]);
+    }
+    if (argc >= 3 && argv && argv[1] && strcmp(argv[1], "--trezor-wire-script") == 0) {
+        return run_trezor_wire_script(argc - 2, &argv[2]);
     }
 
     CHECK(PRIVATE_KEY_ONE[EC_PRIVATE_KEY_LEN - 1] == 1);
