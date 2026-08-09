@@ -76,12 +76,10 @@ static bool trezor_wallet_get_bitcoin_address(
 {
     (void)ctx;
     if (!request || !address || !trezor_auth_bridge_wallet_ready()
-        || !bitcoin_path_is_trezor_connect_state_testnet_p2pkh(request->address_n, request->address_n_len)
         || (request->has_coin_name && strcmp(request->coin_name, "Testnet") != 0)
         || (request->has_script_type && request->script_type != BITCOIN_P2PKH_SPENDADDRESS
             && request->script_type != BITCOIN_P2WPKH_SPENDWITNESS
-            && request->script_type != BITCOIN_P2SH_P2WPKH_SPENDP2SHWITNESS)
-        || (request->has_show_display && request->show_display)) {
+            && request->script_type != BITCOIN_P2SH_P2WPKH_SPENDP2SHWITNESS)) {
         return false;
     }
 
@@ -102,8 +100,18 @@ static bool trezor_wallet_get_bitcoin_address(
     wally_bzero(&path, sizeof(path));
     if (!ok) {
         wally_bzero(address, address_len);
+        return false;
     }
-    return ok;
+    if (request->has_show_display && request->show_display) {
+        idletimer_set_min_timeout_secs(TREZOR_WALLET_ADAPTER_INTERACTIVE_TIMEOUT_SECS);
+        const bool accepted = show_confirm_address_activity(address, false);
+        idletimer_set_min_timeout_secs(0);
+        if (!accepted) {
+            wally_bzero(address, address_len);
+            return false;
+        }
+    }
+    return true;
 }
 
 static bool trezor_wallet_get_public_key(
