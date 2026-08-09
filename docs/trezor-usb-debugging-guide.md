@@ -49,6 +49,12 @@ They also include external-oracle checks against mainstream community libraries:
   `TxRequest` encoding. These gates validate counts, path length, hash length,
   supported script types, address/string bounds, and unsupported field
   rejection before any wallet signing code is reachable.
+- BTC session preflight now accepts `SignTx` and stateful `TxAck` only for the
+  bounded Testnet subset. It collects meta, one input at a time, one output at a
+  time, validates input/output totals, computes fee, then returns
+  `Failure(ActionCancelled, "Bitcoin signing disabled")` before any private key
+  or signature code is reachable. Orphan or out-of-order `TxAck` returns
+  `Failure(DataError)` and clears the pending state.
 
 These Python packages are development-test dependencies only. They are installed
 into `.host-oracle-venv/` and are not linked into firmware or ESP-IDF builds.
@@ -77,15 +83,14 @@ Current host-gate coverage:
 - Fake hardware confirmation UI rejects summaries that cannot be rendered within
   the T-Display-S3/Jade message line limits.
 - Sensitive or unsupported Trezor messages such as `GetEntropy`, `LoadDevice`,
-  `ResetDevice`, BTC `SignTx`, BTC `TxAck`, `TxAckPaymentRequest`,
-  `CipherKeyValue`, `BackupDevice`, `RecoveryDevice`, and `UnlockPath` are
-  rejected before reaching key material.
+  `ResetDevice`, `TxAckPaymentRequest`, `CipherKeyValue`, `BackupDevice`,
+  `RecoveryDevice`, and `UnlockPath` are rejected before reaching key material.
 - The same sensitive/unsupported messages are also checked through the full
-  Trezor wire/session path. Until BTC `SignTx` is implemented as the complete
-  Trezor interactive transaction protocol, `SignTx`, `TxAck`, and
-  `TxAckPaymentRequest` must remain wire-level `Failure(UnexpectedMessage)`
-  responses and must not reach wallet signing code. A parser passing its host
-  gate is not sufficient reason to enable the USB dispatcher entry.
+  Trezor wire/session path. BTC `SignTx`/`TxAck` may enter only the preflight
+  state machine described above; until BTC signing is fully implemented, that
+  state machine must terminate before wallet signing code and must not return a
+  signature or serialized transaction. A parser passing its host gate is not
+  sufficient reason to call wallet signing code.
 - Malformed wire packets are checked to return `Failure(InvalidProtocol)` rather
   than crashing, hanging, or leaking parser state.
 

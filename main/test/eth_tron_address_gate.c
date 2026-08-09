@@ -1742,6 +1742,8 @@ int main(int argc, char** argv)
     CHECK(trezor_bitcoin_address_payload[1] == 34);
 
     uint8_t trezor_sign_tx_payload[128];
+    uint8_t trezor_valid_sign_tx_payload[128];
+    size_t trezor_valid_sign_tx_payload_len = 0;
     trezor_protobuf_writer_t trezor_sign_tx_writer;
     trezor_protobuf_writer_init(&trezor_sign_tx_writer, trezor_sign_tx_payload, sizeof(trezor_sign_tx_payload));
     CHECK(trezor_protobuf_write_varint_field(&trezor_sign_tx_writer, 1, 1));
@@ -1749,6 +1751,8 @@ int main(int argc, char** argv)
     CHECK(trezor_protobuf_write_string_field(&trezor_sign_tx_writer, 3, "Testnet"));
     CHECK(trezor_protobuf_write_varint_field(&trezor_sign_tx_writer, 4, 2));
     CHECK(trezor_protobuf_write_varint_field(&trezor_sign_tx_writer, 5, 0));
+    CHECK(trezor_protobuf_write_bool_field(&trezor_sign_tx_writer, 12, false));
+    CHECK(trezor_protobuf_write_bool_field(&trezor_sign_tx_writer, 13, true));
     trezor_bitcoin_sign_tx_t trezor_sign_tx;
     CHECK(trezor_bitcoin_sign_tx_decode(trezor_sign_tx_payload, trezor_sign_tx_writer.len, &trezor_sign_tx));
     CHECK(trezor_sign_tx.inputs_count == 1);
@@ -1757,6 +1761,8 @@ int main(int argc, char** argv)
     CHECK(trezor_sign_tx.version == 2);
     CHECK(trezor_sign_tx.lock_time == 0);
     CHECK(trezor_sign_tx.serialize);
+    trezor_valid_sign_tx_payload_len = trezor_sign_tx_writer.len;
+    memcpy(trezor_valid_sign_tx_payload, trezor_sign_tx_payload, trezor_valid_sign_tx_payload_len);
 
     trezor_protobuf_writer_init(&trezor_sign_tx_writer, trezor_sign_tx_payload, sizeof(trezor_sign_tx_payload));
     CHECK(trezor_protobuf_write_varint_field(
@@ -1777,6 +1783,12 @@ int main(int argc, char** argv)
     uint8_t trezor_btc_output_payload[160];
     uint8_t trezor_btc_tx_payload[256];
     uint8_t trezor_btc_ack_payload[288];
+    uint8_t trezor_btc_input_ack_payload[288];
+    uint8_t trezor_btc_output_ack_payload[288];
+    uint8_t trezor_btc_meta_ack_payload[288];
+    size_t trezor_btc_input_ack_payload_len = 0;
+    size_t trezor_btc_output_ack_payload_len = 0;
+    size_t trezor_btc_meta_ack_payload_len = 0;
     trezor_protobuf_writer_t trezor_btc_input_writer;
     trezor_protobuf_writer_t trezor_btc_output_writer;
     trezor_protobuf_writer_t trezor_btc_tx_writer;
@@ -1796,6 +1808,8 @@ int main(int argc, char** argv)
         &trezor_btc_tx_writer, 2, trezor_btc_input_payload, trezor_btc_input_writer.len));
     trezor_protobuf_writer_init(&trezor_btc_ack_writer, trezor_btc_ack_payload, sizeof(trezor_btc_ack_payload));
     CHECK(trezor_protobuf_write_bytes_field(&trezor_btc_ack_writer, 1, trezor_btc_tx_payload, trezor_btc_tx_writer.len));
+    trezor_btc_input_ack_payload_len = trezor_btc_ack_writer.len;
+    memcpy(trezor_btc_input_ack_payload, trezor_btc_ack_payload, trezor_btc_input_ack_payload_len);
     trezor_bitcoin_transaction_t trezor_btc_tx_ack;
     CHECK(trezor_bitcoin_tx_ack_decode(trezor_btc_ack_payload, trezor_btc_ack_writer.len, &trezor_btc_tx_ack));
     CHECK(trezor_btc_tx_ack.inputs_len == 1);
@@ -1818,6 +1832,8 @@ int main(int argc, char** argv)
         &trezor_btc_tx_writer, 5, trezor_btc_output_payload, trezor_btc_output_writer.len));
     trezor_protobuf_writer_init(&trezor_btc_ack_writer, trezor_btc_ack_payload, sizeof(trezor_btc_ack_payload));
     CHECK(trezor_protobuf_write_bytes_field(&trezor_btc_ack_writer, 1, trezor_btc_tx_payload, trezor_btc_tx_writer.len));
+    trezor_btc_output_ack_payload_len = trezor_btc_ack_writer.len;
+    memcpy(trezor_btc_output_ack_payload, trezor_btc_ack_payload, trezor_btc_output_ack_payload_len);
     CHECK(trezor_bitcoin_tx_ack_decode(trezor_btc_ack_payload, trezor_btc_ack_writer.len, &trezor_btc_tx_ack));
     CHECK(trezor_btc_tx_ack.inputs_len == 0);
     CHECK(trezor_btc_tx_ack.outputs_len == 1);
@@ -1831,6 +1847,8 @@ int main(int argc, char** argv)
     CHECK(trezor_protobuf_write_varint_field(&trezor_btc_tx_writer, 7, 1));
     trezor_protobuf_writer_init(&trezor_btc_ack_writer, trezor_btc_ack_payload, sizeof(trezor_btc_ack_payload));
     CHECK(trezor_protobuf_write_bytes_field(&trezor_btc_ack_writer, 1, trezor_btc_tx_payload, trezor_btc_tx_writer.len));
+    trezor_btc_meta_ack_payload_len = trezor_btc_ack_writer.len;
+    memcpy(trezor_btc_meta_ack_payload, trezor_btc_ack_payload, trezor_btc_meta_ack_payload_len);
     CHECK(trezor_bitcoin_tx_ack_decode(trezor_btc_ack_payload, trezor_btc_ack_writer.len, &trezor_btc_tx_ack));
     CHECK(trezor_btc_tx_ack.has_version && trezor_btc_tx_ack.version == 2);
     CHECK(trezor_btc_tx_ack.has_inputs_cnt && trezor_btc_tx_ack.inputs_cnt == 1);
@@ -2494,6 +2512,65 @@ int main(int argc, char** argv)
     CHECK(strstr(trace_text, "address omitted") != NULL);
     CHECK(strstr(trace_text, "mrCDrCybB6J1vRfbwM5hemdJz73FwDBC8r") == NULL);
 
+    uint8_t expected_btc_tx_request_payload[32];
+    size_t expected_btc_tx_request_payload_len = 0;
+    CHECK(trezor_session_handle_payload(&trezor_session, TREZOR_MSG_SIGN_TX, trezor_valid_sign_tx_payload,
+        trezor_valid_sign_tx_payload_len, &session_response_type, session_response_payload, sizeof(session_response_payload),
+        &session_response_payload_len));
+    CHECK(session_response_type == TREZOR_MSG_TX_REQUEST);
+    CHECK(trezor_session_state.has_pending_btc_signing);
+    CHECK(trezor_session_state.pending_btc_signing.phase == TREZOR_BITCOIN_SIGNING_PHASE_EXPECT_META);
+    CHECK(trezor_bitcoin_tx_request_encode(TREZOR_BITCOIN_REQUEST_TXMETA, false, 0,
+        expected_btc_tx_request_payload, sizeof(expected_btc_tx_request_payload), &expected_btc_tx_request_payload_len));
+    CHECK(session_response_payload_len == expected_btc_tx_request_payload_len);
+    CHECK(memcmp(session_response_payload, expected_btc_tx_request_payload, expected_btc_tx_request_payload_len) == 0);
+
+    CHECK(trezor_session_handle_payload(&trezor_session, TREZOR_MSG_TX_ACK, trezor_btc_meta_ack_payload,
+        trezor_btc_meta_ack_payload_len, &session_response_type, session_response_payload, sizeof(session_response_payload),
+        &session_response_payload_len));
+    CHECK(session_response_type == TREZOR_MSG_TX_REQUEST);
+    CHECK(trezor_session_state.pending_btc_signing.phase == TREZOR_BITCOIN_SIGNING_PHASE_EXPECT_INPUT);
+    CHECK(trezor_bitcoin_tx_request_encode(TREZOR_BITCOIN_REQUEST_TXINPUT, true, 0,
+        expected_btc_tx_request_payload, sizeof(expected_btc_tx_request_payload), &expected_btc_tx_request_payload_len));
+    CHECK(session_response_payload_len == expected_btc_tx_request_payload_len);
+    CHECK(memcmp(session_response_payload, expected_btc_tx_request_payload, expected_btc_tx_request_payload_len) == 0);
+
+    CHECK(trezor_session_handle_payload(&trezor_session, TREZOR_MSG_TX_ACK, trezor_btc_input_ack_payload,
+        trezor_btc_input_ack_payload_len, &session_response_type, session_response_payload, sizeof(session_response_payload),
+        &session_response_payload_len));
+    CHECK(session_response_type == TREZOR_MSG_TX_REQUEST);
+    CHECK(trezor_session_state.pending_btc_signing.phase == TREZOR_BITCOIN_SIGNING_PHASE_EXPECT_OUTPUT);
+    CHECK(trezor_bitcoin_tx_request_encode(TREZOR_BITCOIN_REQUEST_TXOUTPUT, true, 0,
+        expected_btc_tx_request_payload, sizeof(expected_btc_tx_request_payload), &expected_btc_tx_request_payload_len));
+    CHECK(session_response_payload_len == expected_btc_tx_request_payload_len);
+    CHECK(memcmp(session_response_payload, expected_btc_tx_request_payload, expected_btc_tx_request_payload_len) == 0);
+
+    CHECK(trezor_session_handle_payload(&trezor_session, TREZOR_MSG_TX_ACK, trezor_btc_output_ack_payload,
+        trezor_btc_output_ack_payload_len, &session_response_type, session_response_payload, sizeof(session_response_payload),
+        &session_response_payload_len));
+    CHECK(session_response_type == TREZOR_MSG_FAILURE);
+    CHECK(!trezor_session_state.has_pending_btc_signing);
+    CHECK(trezor_session_state.pending_btc_signing.phase == TREZOR_BITCOIN_SIGNING_PHASE_NONE);
+    CHECK(trezor_payload_has_varint(
+        session_response_payload, session_response_payload_len, 1, TREZOR_FAILURE_ACTION_CANCELLED));
+
+    CHECK(trezor_session_handle_payload(&trezor_session, TREZOR_MSG_SIGN_TX, trezor_valid_sign_tx_payload,
+        trezor_valid_sign_tx_payload_len, &session_response_type, session_response_payload, sizeof(session_response_payload),
+        &session_response_payload_len));
+    CHECK(session_response_type == TREZOR_MSG_TX_REQUEST);
+    CHECK(trezor_session_state.has_pending_btc_signing);
+    CHECK(trezor_session_handle_payload(&trezor_session, TREZOR_MSG_TX_ACK, trezor_btc_meta_ack_payload,
+        trezor_btc_meta_ack_payload_len, &session_response_type, session_response_payload, sizeof(session_response_payload),
+        &session_response_payload_len));
+    CHECK(session_response_type == TREZOR_MSG_TX_REQUEST);
+    CHECK(trezor_session_handle_payload(&trezor_session, TREZOR_MSG_TX_ACK, trezor_btc_output_ack_payload,
+        trezor_btc_output_ack_payload_len, &session_response_type, session_response_payload, sizeof(session_response_payload),
+        &session_response_payload_len));
+    CHECK(session_response_type == TREZOR_MSG_FAILURE);
+    CHECK(!trezor_session_state.has_pending_btc_signing);
+    CHECK(trezor_payload_has_varint(
+        session_response_payload, session_response_payload_len, 1, TREZOR_FAILURE_DATA_ERROR));
+
     trezor_protobuf_writer_init(&trezor_bitcoin_writer, trezor_bitcoin_payload, sizeof(trezor_bitcoin_payload));
     for (size_t i = 0; i < ARRAY_LEN(btc_state_path); ++i) {
         CHECK(trezor_protobuf_write_varint_field(&trezor_bitcoin_writer, 1, btc_state_path[i]));
@@ -2842,12 +2919,12 @@ int main(int argc, char** argv)
     CHECK(trezor_dispatcher_message_allowed(TREZOR_MSG_ETHEREUM_SIGN_TX));
     CHECK(trezor_dispatcher_message_allowed(TREZOR_MSG_ETHEREUM_SIGN_TX_EIP1559));
     CHECK(trezor_dispatcher_message_allowed(TREZOR_MSG_ETHEREUM_TX_ACK));
+    CHECK(trezor_dispatcher_message_allowed(TREZOR_MSG_SIGN_TX));
+    CHECK(trezor_dispatcher_message_allowed(TREZOR_MSG_TX_ACK));
     CHECK(trezor_dispatcher_message_sensitive_or_unsupported(TREZOR_MSG_LOAD_DEVICE));
     CHECK(trezor_dispatcher_message_sensitive_or_unsupported(TREZOR_MSG_RESET_DEVICE));
     CHECK(trezor_dispatcher_message_sensitive_or_unsupported(TREZOR_MSG_RECOVERY_DEVICE));
     CHECK(trezor_dispatcher_message_sensitive_or_unsupported(TREZOR_MSG_GET_ENTROPY));
-    CHECK(trezor_dispatcher_message_sensitive_or_unsupported(TREZOR_MSG_SIGN_TX));
-    CHECK(trezor_dispatcher_message_sensitive_or_unsupported(TREZOR_MSG_TX_ACK));
     CHECK(trezor_dispatcher_message_sensitive_or_unsupported(TREZOR_MSG_TX_ACK_PAYMENT_REQUEST));
     CHECK(trezor_dispatcher_message_sensitive_or_unsupported(TREZOR_MSG_CIPHER_KEY_VALUE));
     CHECK(trezor_dispatcher_message_sensitive_or_unsupported(TREZOR_MSG_BACKUP_DEVICE));
@@ -2860,8 +2937,6 @@ int main(int argc, char** argv)
     CHECK(!trezor_check_rejected_message(&trezor_session, TREZOR_MSG_GET_ENTROPY, "GetEntropy"));
     CHECK(!trezor_check_rejected_message(&trezor_session, TREZOR_MSG_LOAD_DEVICE, "LoadDevice"));
     CHECK(!trezor_check_rejected_message(&trezor_session, TREZOR_MSG_RESET_DEVICE, "ResetDevice"));
-    CHECK(!trezor_check_rejected_message(&trezor_session, TREZOR_MSG_SIGN_TX, "SignTx"));
-    CHECK(!trezor_check_rejected_message(&trezor_session, TREZOR_MSG_TX_ACK, "TxAck"));
     CHECK(!trezor_check_rejected_message(&trezor_session, TREZOR_MSG_TX_ACK_PAYMENT_REQUEST, "TxAckPaymentRequest"));
     CHECK(!trezor_check_rejected_message(&trezor_session, TREZOR_MSG_CIPHER_KEY_VALUE, "CipherKeyValue"));
     CHECK(!trezor_check_rejected_message(&trezor_session, TREZOR_MSG_BACKUP_DEVICE, "BackupDevice"));
@@ -2875,8 +2950,6 @@ int main(int argc, char** argv)
     CHECK(!trezor_check_rejected_wire_message(&trezor_session, TREZOR_MSG_GET_ENTROPY, "GetEntropy"));
     CHECK(!trezor_check_rejected_wire_message(&trezor_session, TREZOR_MSG_LOAD_DEVICE, "LoadDevice"));
     CHECK(!trezor_check_rejected_wire_message(&trezor_session, TREZOR_MSG_RESET_DEVICE, "ResetDevice"));
-    CHECK(!trezor_check_rejected_wire_message(&trezor_session, TREZOR_MSG_SIGN_TX, "SignTx"));
-    CHECK(!trezor_check_rejected_wire_message(&trezor_session, TREZOR_MSG_TX_ACK, "TxAck"));
     CHECK(!trezor_check_rejected_wire_message(
         &trezor_session, TREZOR_MSG_TX_ACK_PAYMENT_REQUEST, "TxAckPaymentRequest"));
     CHECK(!trezor_check_rejected_wire_message(&trezor_session, TREZOR_MSG_CIPHER_KEY_VALUE, "CipherKeyValue"));

@@ -91,6 +91,26 @@ typedef struct {
     size_t outputs_len;
 } trezor_bitcoin_transaction_t;
 
+typedef enum {
+    TREZOR_BITCOIN_SIGNING_PHASE_NONE = 0,
+    TREZOR_BITCOIN_SIGNING_PHASE_EXPECT_META,
+    TREZOR_BITCOIN_SIGNING_PHASE_EXPECT_INPUT,
+    TREZOR_BITCOIN_SIGNING_PHASE_EXPECT_OUTPUT,
+    TREZOR_BITCOIN_SIGNING_PHASE_READY,
+} trezor_bitcoin_signing_phase_t;
+
+typedef struct {
+    trezor_bitcoin_sign_tx_t request;
+    trezor_bitcoin_tx_input_t inputs[TREZOR_BITCOIN_TX_INPUTS_MAX];
+    trezor_bitcoin_tx_output_t outputs[TREZOR_BITCOIN_TX_OUTPUTS_MAX];
+    size_t inputs_len;
+    size_t outputs_len;
+    uint64_t total_input;
+    uint64_t total_output;
+    uint64_t fee;
+    trezor_bitcoin_signing_phase_t phase;
+} trezor_bitcoin_signing_state_t;
+
 bool trezor_bitcoin_get_address_decode(
     const uint8_t* payload, size_t payload_len, trezor_bitcoin_get_address_t* output);
 bool trezor_bitcoin_sign_tx_decode(const uint8_t* payload, size_t payload_len, trezor_bitcoin_sign_tx_t* output);
@@ -98,5 +118,12 @@ bool trezor_bitcoin_tx_ack_decode(const uint8_t* payload, size_t payload_len, tr
 bool trezor_bitcoin_address_encode(const char* address, uint8_t* output, size_t output_len, size_t* written);
 bool trezor_bitcoin_tx_request_encode(trezor_bitcoin_request_type_t request_type, bool has_request_index,
     uint32_t request_index, uint8_t* output, size_t output_len, size_t* written);
+bool trezor_bitcoin_signing_init(
+    trezor_bitcoin_signing_state_t* state, const uint8_t* payload, size_t payload_len);
+bool trezor_bitcoin_signing_apply_tx_ack(
+    trezor_bitcoin_signing_state_t* state, const uint8_t* payload, size_t payload_len);
+bool trezor_bitcoin_signing_encode_next_request(
+    const trezor_bitcoin_signing_state_t* state, uint8_t* output, size_t output_len, size_t* written);
+bool trezor_bitcoin_signing_ready(const trezor_bitcoin_signing_state_t* state);
 
 #endif /* TREZOR_BITCOIN_H_ */

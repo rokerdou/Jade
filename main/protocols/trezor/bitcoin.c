@@ -185,6 +185,12 @@ bool trezor_bitcoin_sign_tx_decode(
                 return false;
             }
             output->has_amount_unit = true;
+        } else if (field_number == 12) {
+            bool decred_staking_ticket = false;
+            if (wire_type != TREZOR_PROTOBUF_WIRE_VARINT
+                || !trezor_bitcoin_bool_value(value, value_len, &decred_staking_ticket) || decred_staking_ticket) {
+                return false;
+            }
         } else if (field_number == 13) {
             if (wire_type != TREZOR_PROTOBUF_WIRE_VARINT
                 || !trezor_bitcoin_bool_value(value, value_len, &output->serialize)) {
@@ -485,5 +491,141 @@ bool trezor_bitcoin_tx_request_encode(const trezor_bitcoin_request_type_t reques
 
     *written = writer.len;
     return true;
+}
+
+bool trezor_bitcoin_signing_init(
+    trezor_bitcoin_signing_state_t* const state, const uint8_t* const payload, const size_t payload_len)
+{
+    if (!state) {
+        return false;
+    }
+
+    wally_bzero(state, sizeof(*state));
+    if (!trezor_bitcoin_sign_tx_decode(payload, payload_len, &state->request)) {
+        return false;
+    }
+    state->phase = TREZOR_BITCOIN_SIGNING_PHASE_EXPECT_META;
+    return true;
+}
+
+static bool trezor_bitcoin_add_u64(uint64_t* const total, const uint64_t value)
+{
+    if (!total || value > UINT64_MAX - *total) {
+        return false;
+    }
+    *total += value;
+    return true;
+}
+
+static bool trezor_bitcoin_signing_validate_totals(trezor_bitcoin_signing_state_t* const state)
+{
+    if (!state || state->inputs_len != state->request.inputs_count || state->outputs_len != state->request.outputs_count) {
+        return false;
+    }
+
+    state->total_input = 0;
+    state->total_output = 0;
+    for (size_t i = 0; i < state->inputs_len; ++i) {
+        if (!state->inputs[i].has_amount || !trezor_bitcoin_add_u64(&state->total_input, state->inputs[i].amount)) {
+            return false;
+        }
+    }
+    for (size_t i = 0; i < state->outputs_len; ++i) {
+        if (!state->outputs[i].has_amount || !trezor_bitcoin_add_u64(&state->total_output, state->outputs[i].amount)) {
+            return false;
+        }
+    }
+    if (state->total_output > state->total_input) {
+        return false;
+    }
+    state->fee = state->total_input - state->total_output;
+    return true;
+}
+
+bool trezor_bitcoin_signing_apply_tx_ack(
+    trezor_bitcoin_signing_state_t* const state, const uint8_t* const payload, const size_t payload_len)
+{
+    if (!state || state->phase == TREZOR_BITCOIN_SIGNING_PHASE_NONE
+        || state->phase == TREZOR_BITCOIN_SIGNING_PHASE_READY) {
+        return false;
+    }
+
+    trezor_bitcoin_transaction_t tx_ack;
+    if (!trezor_bitcoin_tx_ack_decode(payload, payload_len, &tx_ack)) {
+        return false;
+    }
+
+    if (state->phase == TREZOR_BITCOIN_SIGNING_PHASE_EXPECT_META) {
+        if (tx_ack.inputs_len != 0 || tx_ack.outputs_len != 0 || !tx_ack.has_inputs_cnt || !tx_ack.has_outputs_cnt
+            || tx_ack.inputs_cnt != state->request.inputs_count || tx_ack.outputs_cnt != state->request.outputs_count
+            || (tx_ack.has_version && tx_ack.version != state->request.version)
+            || (tx_ack.has_lock_time && tx_ack.lock_time != state->request.lock_time)) {
+            return false;
+        }
+        state->phase = TREZOR_BITCOIN_SIGNING_PHASE_EXPECT_INPUT;
+        return true;
+    }
+
+    if (state->phase == TREZOR_BITCOIN_SIGNING_PHASE_EXPECT_INPUT) {
+        if (tx_ack.inputs_len != 1 || tx_ack.outputs_len != 0 || state->inputs_len >= state->request.inputs_count) {
+            return false;
+        }
+        state->inputs[state->inputs_len++] = tx_ack.inputs[0];
+        if (state->inputs_len < state->request.inputs_count) {
+            return true;
+        }
+        state->phase = TREZOR_BITCOIN_SIGNING_PHASE_EXPECT_OUTPUT;
+        return true;
+    }
+
+    if (state->phase == TREZOR_BITCOIN_SIGNING_PHASE_EXPECT_OUTPUT) {
+        if (tx_ack.inputs_len != 0 || tx_ack.outputs_len != 1 || state->outputs_len >= state->request.outputs_count) {
+            return false;
+        }
+        state->outputs[state->outputs_len++] = tx_ack.outputs[0];
+        if (state->outputs_len < state->request.outputs_count) {
+            return true;
+        }
+        if (!trezor_bitcoin_signing_validate_totals(state)) {
+            return false;
+        }
+        state->phase = TREZOR_BITCOIN_SIGNING_PHASE_READY;
+        return true;
+    }
+
+    return false;
+}
+
+bool trezor_bitcoin_signing_encode_next_request(const trezor_bitcoin_signing_state_t* const state, uint8_t* const output,
+    const size_t output_len, size_t* const written)
+{
+    if (!state || !output || !written) {
+        return false;
+    }
+
+    if (state->phase == TREZOR_BITCOIN_SIGNING_PHASE_EXPECT_META) {
+        return trezor_bitcoin_tx_request_encode(
+            TREZOR_BITCOIN_REQUEST_TXMETA, false, 0, output, output_len, written);
+    }
+    if (state->phase == TREZOR_BITCOIN_SIGNING_PHASE_EXPECT_INPUT) {
+        if (state->inputs_len >= state->request.inputs_count) {
+            return false;
+        }
+        return trezor_bitcoin_tx_request_encode(TREZOR_BITCOIN_REQUEST_TXINPUT, true, (uint32_t)state->inputs_len,
+            output, output_len, written);
+    }
+    if (state->phase == TREZOR_BITCOIN_SIGNING_PHASE_EXPECT_OUTPUT) {
+        if (state->outputs_len >= state->request.outputs_count) {
+            return false;
+        }
+        return trezor_bitcoin_tx_request_encode(TREZOR_BITCOIN_REQUEST_TXOUTPUT, true, (uint32_t)state->outputs_len,
+            output, output_len, written);
+    }
+    return false;
+}
+
+bool trezor_bitcoin_signing_ready(const trezor_bitcoin_signing_state_t* const state)
+{
+    return state && state->phase == TREZOR_BITCOIN_SIGNING_PHASE_READY;
 }
 #endif /* AMALGAMATED_BUILD */

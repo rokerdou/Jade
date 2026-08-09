@@ -473,27 +473,44 @@ def check_trezorlib_protocol_oracle(gate: Path, local_vectors: dict[str, str]) -
     response_type, payload = run_local_wire_oracle(
         gate,
         messages.MessageType.SignTx,
+        messages.SignTx(coin_name="Testnet", inputs_count=1, outputs_count=1, version=2, lock_time=0),
+    )
+    if response_type != messages.MessageType.TxRequest:
+        raise AssertionError(f"BTC SignTx preflight response type mismatch: {response_type}")
+    btc_tx_request = protobuf.load_message(io.BytesIO(payload), messages.TxRequest)
+    if btc_tx_request.request_type != messages.RequestType.TXMETA or btc_tx_request.details is None:
+        raise AssertionError(f"BTC SignTx must start with TxRequest(TXMETA): {btc_tx_request}")
+
+    response_type, payload = run_local_wire_oracle(
+        gate,
+        messages.MessageType.SignTx,
         messages.SignTx(coin_name="Bitcoin", inputs_count=1, outputs_count=1),
     )
     if response_type != messages.MessageType.Failure:
-        raise AssertionError(f"BTC SignTx must be rejected until fully implemented: {response_type}")
+        raise AssertionError(f"BTC mainnet SignTx must be rejected until supported: {response_type}")
+    failure = protobuf.load_message(io.BytesIO(payload), messages.Failure)
+    if failure.code != messages.FailureType.DataError:
+        raise AssertionError(f"BTC mainnet SignTx unexpected failure code: {failure.code}")
+
+    response_type, payload = run_local_wire_oracle(
+        gate, messages.MessageType.TxAck, messages.TxAck(tx=messages.TransactionType())
+    )
+    if response_type != messages.MessageType.Failure:
+        raise AssertionError(f"orphan BTC TxAck must fail: {response_type}")
+    failure = protobuf.load_message(io.BytesIO(payload), messages.Failure)
+    if failure.code != messages.FailureType.DataError:
+        raise AssertionError(f"orphan BTC TxAck unexpected failure code: {failure.code}")
+
+    response_type, payload = run_local_wire_oracle(
+        gate,
+        messages.MessageType.TxAckPaymentRequest,
+        messages.TxAckPaymentRequest(recipient_name="merchant", signature=b"\x00" * 64),
+    )
+    if response_type != messages.MessageType.Failure:
+        raise AssertionError(f"TxAckPaymentRequest must be rejected until BTC signing is implemented: {response_type}")
     failure = protobuf.load_message(io.BytesIO(payload), messages.Failure)
     if failure.code != messages.FailureType.UnexpectedMessage:
-        raise AssertionError(f"BTC SignTx unexpected failure code: {failure.code}")
-
-    for message_type, message in (
-        (messages.MessageType.TxAck, messages.TxAck(tx=messages.TransactionType())),
-        (
-            messages.MessageType.TxAckPaymentRequest,
-            messages.TxAckPaymentRequest(recipient_name="merchant", signature=b"\x00" * 64),
-        ),
-    ):
-        response_type, payload = run_local_wire_oracle(gate, message_type, message)
-        if response_type != messages.MessageType.Failure:
-            raise AssertionError(f"{message_type.name} must be rejected until BTC signing is implemented: {response_type}")
-        failure = protobuf.load_message(io.BytesIO(payload), messages.Failure)
-        if failure.code != messages.FailureType.UnexpectedMessage:
-            raise AssertionError(f"{message_type.name} unexpected failure code: {failure.code}")
+        raise AssertionError(f"TxAckPaymentRequest unexpected failure code: {failure.code}")
 
 
 def main() -> int:
