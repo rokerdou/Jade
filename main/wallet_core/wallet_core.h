@@ -49,6 +49,11 @@ WARN_UNUSED_RESULT bool wallet_core_get_public_node_with_version(
 /*
  * Low-level digest signing primitive.
  *
+ * For multichain/USB signing, raw secp256k1 private key material must stay
+ * inside wallet_core.c. Chain and protocol modules may only request public data
+ * or ask this function to sign a digest that has already passed parsing,
+ * policy checks, and on-device review.
+ *
  * This function does not perform user confirmation and must only be called by
  * chain modules after they have parsed the request and completed the required
  * on-device confirmation flow. It never exposes derived private keys to callers.

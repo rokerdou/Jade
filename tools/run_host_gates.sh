@@ -24,7 +24,12 @@ run_external_oracle_gates() {
     "${oracle_venv}/bin/python" tools/run_external_oracle_gates.py --build-dir "$build_dir"
 }
 
+run_sensitive_key_boundary_gate() {
+    python3 tools/check_sensitive_key_boundaries.py
+}
+
 if [[ "${2:-}" == "--no-build" ]]; then
+    run_sensitive_key_boundary_gate
     "./${build_dir}/eth_tron_address_gate"
     echo "PASS eth_tron_address_gate"
     "./${build_dir}/wallet_core_public_node_gate"
@@ -44,6 +49,7 @@ idf.py \
     -D SDKCONFIG_DEFAULTS=configs/sdkconfig_display_ttgo_tdisplays3_hardened.defaults \
     eth_tron_address_gate wallet_core_public_node_gate
 
+run_sensitive_key_boundary_gate
 "./${build_dir}/eth_tron_address_gate"
 echo "PASS eth_tron_address_gate"
 "./${build_dir}/wallet_core_public_node_gate"
