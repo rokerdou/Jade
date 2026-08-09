@@ -43,6 +43,12 @@ They also include external-oracle checks against mainstream community libraries:
   `SignTx -> TxRequest(TXMETA) -> TxAck(meta) -> TxRequest(TXINPUT) ->
   TxAck(input) -> TxRequest(TXOUTPUT) -> TxAck(output) ->
   TxRequest(TXFINISHED)`.
+- BTC protobuf parsing now has host gates for the safe subset needed by that
+  flow: `SignTx`, `TxAck(TransactionType.inputs)`,
+  `TxAck(TransactionType.outputs)`, `TxAck(TransactionType meta)`, and
+  `TxRequest` encoding. These gates validate counts, path length, hash length,
+  supported script types, address/string bounds, and unsupported field
+  rejection before any wallet signing code is reachable.
 
 These Python packages are development-test dependencies only. They are installed
 into `.host-oracle-venv/` and are not linked into firmware or ESP-IDF builds.
@@ -78,7 +84,8 @@ Current host-gate coverage:
   Trezor wire/session path. Until BTC `SignTx` is implemented as the complete
   Trezor interactive transaction protocol, `SignTx`, `TxAck`, and
   `TxAckPaymentRequest` must remain wire-level `Failure(UnexpectedMessage)`
-  responses and must not reach wallet signing code.
+  responses and must not reach wallet signing code. A parser passing its host
+  gate is not sufficient reason to enable the USB dispatcher entry.
 - Malformed wire packets are checked to return `Failure(InvalidProtocol)` rather
   than crashing, hanging, or leaking parser state.
 

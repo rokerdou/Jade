@@ -459,10 +459,16 @@ const char* trezor_trace_message_name(const uint16_t message_type)
         return "GetPublicKey";
     case TREZOR_MSG_PUBLIC_KEY:
         return "PublicKey";
+    case TREZOR_MSG_SIGN_TX:
+        return "SignTx";
     case TREZOR_MSG_FEATURES:
         return "Features";
     case TREZOR_MSG_CANCEL:
         return "Cancel";
+    case TREZOR_MSG_TX_REQUEST:
+        return "TxRequest";
+    case TREZOR_MSG_TX_ACK:
+        return "TxAck";
     case TREZOR_MSG_BUTTON_REQUEST:
         return "ButtonRequest";
     case TREZOR_MSG_BUTTON_ACK:
@@ -471,6 +477,8 @@ const char* trezor_trace_message_name(const uint16_t message_type)
         return "GetAddress";
     case TREZOR_MSG_ADDRESS:
         return "Address";
+    case TREZOR_MSG_TX_ACK_PAYMENT_REQUEST:
+        return "TxAckPaymentRequest";
     case TREZOR_MSG_GET_FEATURES:
         return "GetFeatures";
     case TREZOR_MSG_END_SESSION:
@@ -533,10 +541,16 @@ static const char* trezor_trace_message_short_name(const uint16_t message_type)
         return "GetPub";
     case TREZOR_MSG_PUBLIC_KEY:
         return "Pub";
+    case TREZOR_MSG_SIGN_TX:
+        return "SignTx";
     case TREZOR_MSG_FEATURES:
         return "Feat";
     case TREZOR_MSG_CANCEL:
         return "Cancel";
+    case TREZOR_MSG_TX_REQUEST:
+        return "TxReq";
+    case TREZOR_MSG_TX_ACK:
+        return "TxAck";
     case TREZOR_MSG_BUTTON_REQUEST:
         return "ButtonReq";
     case TREZOR_MSG_BUTTON_ACK:
@@ -545,6 +559,8 @@ static const char* trezor_trace_message_short_name(const uint16_t message_type)
         return "GetAddr";
     case TREZOR_MSG_ADDRESS:
         return "Addr";
+    case TREZOR_MSG_TX_ACK_PAYMENT_REQUEST:
+        return "TxPayAck";
     case TREZOR_MSG_GET_FEATURES:
         return "GetFeat";
     case TREZOR_MSG_END_SESSION:

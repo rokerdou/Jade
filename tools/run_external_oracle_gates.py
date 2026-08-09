@@ -299,6 +299,36 @@ def check_trezorlib_btc_signtx_host_flow_oracle() -> None:
         raise AssertionError("trezorlib BTC SignTx session did not close")
 
 
+def check_trezorlib_btc_protobuf_oracle() -> None:
+    signtx_payload = message_payload(
+        messages.SignTx(outputs_count=1, inputs_count=1, coin_name="Testnet", version=2, lock_time=0)
+    )
+    if signtx_payload.hex() != "080110011a07546573746e657420022800580060006801":
+        raise AssertionError(f"unexpected trezorlib BTC SignTx protobuf: {signtx_payload.hex()}")
+
+    txinput_request = message_payload(
+        messages.TxRequest(
+            request_type=messages.RequestType.TXINPUT,
+            details=messages.TxRequestDetailsType(request_index=0),
+        )
+    )
+    if txinput_request.hex() != "080012020800":
+        raise AssertionError(f"unexpected trezorlib BTC TxRequest(TXINPUT) protobuf: {txinput_request.hex()}")
+
+    txmeta_request = message_payload(
+        messages.TxRequest(
+            request_type=messages.RequestType.TXMETA,
+            details=messages.TxRequestDetailsType(),
+        )
+    )
+    if txmeta_request.hex() != "08021200":
+        raise AssertionError(f"unexpected trezorlib BTC TxRequest(TXMETA) protobuf: {txmeta_request.hex()}")
+
+    txfinished_request = message_payload(messages.TxRequest(request_type=messages.RequestType.TXFINISHED))
+    if txfinished_request.hex() != "0803":
+        raise AssertionError(f"unexpected trezorlib BTC TxRequest(TXFINISHED) protobuf: {txfinished_request.hex()}")
+
+
 def check_trezorlib_protocol_oracle(gate: Path, local_vectors: dict[str, str]) -> None:
     response_type, payload = run_local_wire_oracle(gate, messages.MessageType.Initialize, messages.Initialize())
     if response_type != messages.MessageType.Features:
@@ -498,6 +528,7 @@ def main() -> int:
             print(f"  external: {expected_value}", file=sys.stderr)
             return 1
 
+    check_trezorlib_btc_protobuf_oracle()
     check_trezorlib_btc_signtx_host_flow_oracle()
     check_trezorlib_protocol_oracle(gate, local)
     print("PASS external_oracle_gates")
