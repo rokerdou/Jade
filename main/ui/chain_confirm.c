@@ -82,6 +82,16 @@ static const char* field_name(const chain_confirm_field_kind_t kind)
     return "Field";
 }
 
+static const char* summary_field_name(
+    const chain_confirm_summary_t* const summary, const chain_confirm_field_t* const field)
+{
+    if (summary && field && summary->operation == CHAIN_CONFIRM_OPERATION_TOKEN_APPROVE
+        && field->kind == CHAIN_CONFIRM_FIELD_TOKEN_RECIPIENT) {
+        return "Token Spender";
+    }
+    return field ? field_name(field->kind) : "Field";
+}
+
 #ifdef CONFIG_TREZOR_USB_HID
 static const char* field_trace_stage(const chain_confirm_field_kind_t kind, const bool done)
 {
@@ -380,13 +390,13 @@ static bool show_hex_value(const char* const title, const uint8_t* const bytes, 
     return true;
 }
 
-static bool show_field(const chain_confirm_field_t* const field)
+static bool show_field(const chain_confirm_summary_t* const summary, const chain_confirm_field_t* const field)
 {
     if (!field) {
         return false;
     }
 
-    const char* const title = field_name(field->kind);
+    const char* const title = summary_field_name(summary, field);
 #ifdef CONFIG_TREZOR_USB_HID
     trezor_trace_set_note("show field kind=%u type=%u", (unsigned int)field->kind, (unsigned int)field->value_type);
 #endif
@@ -463,7 +473,7 @@ bool show_chain_confirm_summary_activity(const chain_confirm_summary_t* const su
 #ifdef CONFIG_TREZOR_USB_HID
         trezor_trace_set_stage(field_trace_stage(summary->fields[field_index].kind, false));
 #endif
-        if (!show_field(&summary->fields[field_index])) {
+        if (!show_field(summary, &summary->fields[field_index])) {
 #ifdef CONFIG_TREZOR_USB_HID
             trezor_trace_set_stage("ui:field_back");
 #endif

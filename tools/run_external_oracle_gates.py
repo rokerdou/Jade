@@ -235,6 +235,72 @@ def check_eth_signed_raw_tx_oracle(local_vectors: dict[str, str], expected: dict
             )
 
 
+def check_erc20_legacy_signed_raw_tx_oracle(local_vectors: dict[str, str], expected: dict[str, str]) -> None:
+    token_contract = bytes.fromhex("11" * 20)
+    cases = [
+        ("erc20_transfer_call", "transfer(address,uint256)"),
+        ("erc20_approve_call", "approve(address,uint256)"),
+    ]
+    for vector_key, abi_signature in cases:
+        calldata = bytes.fromhex(local_vectors[vector_key])
+        signing_fields = ethereum_legacy_signing_fields(
+            nonce=9,
+            gas_price=20_000_000_000,
+            gas_limit=60_000,
+            to_address=token_contract,
+            value=0,
+            data=calldata,
+            chain_id=1,
+        )
+        signature = keys.PrivateKey(PRIVATE_KEY_ONE).sign_msg_hash(keccak(rlp.encode(signing_fields)))
+        raw_tx = rlp.encode(
+            ethereum_legacy_signed_fields(
+                nonce=9,
+                gas_price=20_000_000_000,
+                gas_limit=60_000,
+                to_address=token_contract,
+                value=0,
+                data=calldata,
+                v=35 + (2 * 1) + signature.v,
+                r=signature.r,
+                s=signature.s,
+            )
+        )
+        decoded = decode_legacy_raw_tx(raw_tx)
+        recipient, amount = decode_erc20_address_uint256_call(bytes.fromhex(decoded["data"][2:]), abi_signature)
+        expected_decoded: dict[str, object] = {
+            "nonce": 9,
+            "gas_price": 20_000_000_000,
+            "gas_limit": 60_000,
+            "to": "0x" + token_contract.hex(),
+            "value": 0,
+            "data": "0x" + calldata.hex(),
+            "chain_id": 1,
+            "from": expected["eth_checksum_address"],
+            "recipient": expected["eth_checksum_address"],
+            "amount": 50,
+        }
+        actual_decoded: dict[str, object] = {
+            "nonce": decoded["nonce"],
+            "gas_price": decoded["gas_price"],
+            "gas_limit": decoded["gas_limit"],
+            "to": decoded["to"],
+            "value": decoded["value"],
+            "data": decoded["data"],
+            "chain_id": decoded["chain_id"],
+            "from": decoded["from"],
+            "recipient": recipient,
+            "amount": amount,
+        }
+        for key, expected_value in expected_decoded.items():
+            actual_value = actual_decoded[key]
+            if actual_value != expected_value:
+                raise AssertionError(
+                    f"{vector_key} signed raw tx oracle mismatch for {key}: "
+                    f"actual={actual_value} expected={expected_value}"
+                )
+
+
 def check_eth_eip1559_signed_raw_tx_oracle(local_vectors: dict[str, str], expected: dict[str, str]) -> None:
     """Verify EIP-1559 raw tx semantics with eth-account's typed tx support."""
 
@@ -866,6 +932,7 @@ def main() -> int:
             return 1
 
     check_eth_signed_raw_tx_oracle(local, expected)
+    check_erc20_legacy_signed_raw_tx_oracle(local, expected)
     check_eth_eip1559_signed_raw_tx_oracle(local, expected)
     check_erc20_calldata_oracle(local, expected)
     check_trezorlib_btc_protobuf_oracle()
