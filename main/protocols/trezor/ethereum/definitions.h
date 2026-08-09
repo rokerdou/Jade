@@ -1,7 +1,7 @@
 #ifndef TREZOR_ETHEREUM_DEFINITIONS_H_
 #define TREZOR_ETHEREUM_DEFINITIONS_H_
 
-#include "../../chains/ethereum/tx.h"
+#include "../../../chains/ethereum/tx.h"
 
 #include <stdbool.h>
 #include <stddef.h>

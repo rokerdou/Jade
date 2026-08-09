@@ -1,10 +1,10 @@
-#ifndef TREZOR_ETHEREUM_H_
-#define TREZOR_ETHEREUM_H_
+#ifndef TREZOR_ETHEREUM_PROTOCOL_H_
+#define TREZOR_ETHEREUM_PROTOCOL_H_
 
-#include "../../chains/ethereum/sign.h"
-#include "../../chains/ethereum/tx.h"
-#include "../../wallet_core/wallet_core.h"
-#include "ethereum_definitions.h"
+#include "../../../chains/ethereum/sign.h"
+#include "../../../chains/ethereum/tx.h"
+#include "../../../wallet_core/wallet_core.h"
+#include "definitions.h"
 
 #include <stdbool.h>
 #include <stddef.h>
@@ -56,4 +56,4 @@ bool trezor_ethereum_tx_request_encode_data(size_t data_length, uint8_t* output,
 bool trezor_ethereum_tx_request_encode_signature(
     const ethereum_signature_t* signature, uint8_t* output, size_t output_len, size_t* written);
 
-#endif /* TREZOR_ETHEREUM_H_ */
+#endif /* TREZOR_ETHEREUM_PROTOCOL_H_ */

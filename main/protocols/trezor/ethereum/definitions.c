@@ -1,7 +1,7 @@
 #ifndef AMALGAMATED_BUILD
-#include "ethereum_definitions.h"
+#include "definitions.h"
 
-#include "protobuf.h"
+#include "../protobuf.h"
 
 #include <string.h>
 #include <wally_crypto.h>

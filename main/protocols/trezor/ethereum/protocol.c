@@ -1,8 +1,8 @@
 #ifndef AMALGAMATED_BUILD
-#include "ethereum.h"
+#include "protocol.h"
 
-#include "messages.h"
-#include "protobuf.h"
+#include "../messages.h"
+#include "../protobuf.h"
 
 #include <string.h>
 #include <wally_crypto.h>

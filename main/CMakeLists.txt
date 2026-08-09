@@ -56,6 +56,7 @@ idf_component_register(SRC_DIRS "."
                                 "fonts"
                                 "process"
                                 "protocols/trezor"
+                                "protocols/trezor/ethereum"
                                 "wallet_core"
                                 "utils"
                                 "ui"
@@ -136,8 +137,8 @@ if(HOST_CC)
             ${COMPONENT_DIR}/chains/ethereum/wallet.c
             ${COMPONENT_DIR}/protocols/trezor/bitcoin.c
             ${COMPONENT_DIR}/protocols/trezor/dispatcher.c
-            ${COMPONENT_DIR}/protocols/trezor/ethereum.c
-            ${COMPONENT_DIR}/protocols/trezor/ethereum_definitions.c
+            ${COMPONENT_DIR}/protocols/trezor/ethereum/protocol.c
+            ${COMPONENT_DIR}/protocols/trezor/ethereum/definitions.c
             ${COMPONENT_DIR}/protocols/trezor/failure.c
             ${COMPONENT_DIR}/protocols/trezor/features.c
             ${COMPONENT_DIR}/protocols/trezor/protobuf.c
@@ -195,10 +196,10 @@ if(HOST_CC)
             ${COMPONENT_DIR}/protocols/trezor/bitcoin.h
             ${COMPONENT_DIR}/protocols/trezor/dispatcher.c
             ${COMPONENT_DIR}/protocols/trezor/dispatcher.h
-            ${COMPONENT_DIR}/protocols/trezor/ethereum.c
-            ${COMPONENT_DIR}/protocols/trezor/ethereum.h
-            ${COMPONENT_DIR}/protocols/trezor/ethereum_definitions.c
-            ${COMPONENT_DIR}/protocols/trezor/ethereum_definitions.h
+            ${COMPONENT_DIR}/protocols/trezor/ethereum/protocol.c
+            ${COMPONENT_DIR}/protocols/trezor/ethereum/protocol.h
+            ${COMPONENT_DIR}/protocols/trezor/ethereum/definitions.c
+            ${COMPONENT_DIR}/protocols/trezor/ethereum/definitions.h
             ${COMPONENT_DIR}/protocols/trezor/failure.c
             ${COMPONENT_DIR}/protocols/trezor/failure.h
             ${COMPONENT_DIR}/protocols/trezor/features.c
