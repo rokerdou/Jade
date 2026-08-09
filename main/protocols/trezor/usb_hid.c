@@ -20,6 +20,7 @@
 #include "../../process/auth_user.h"
 #include "../../process.h"
 #include "../../sensitive.h"
+#include "../../ui.h"
 #include "../../wallet_core/wallet_core.h"
 
 #include <esp_err.h>
@@ -321,6 +322,9 @@ static bool trezor_usb_hid_get_eth_address(
         trezor_trace_set_stage("eth:cancel");
         return false;
     }
+    if (request->has_show_display && request->show_display) {
+        display_processing_message_activity();
+    }
 
     trezor_trace_set_stage("eth:done");
     return true;
@@ -402,7 +406,11 @@ static bool trezor_usb_hid_sign_eth_tx(
     if (!request || !signature || !trezor_usb_hid_ensure_wallet_ready()) {
         return false;
     }
-    return ethereum_sign_tx(request, signature);
+    const bool ok = ethereum_sign_tx(request, signature);
+    if (ok) {
+        display_processing_message_activity();
+    }
+    return ok;
 }
 
 static trezor_session_t trezor_usb_hid_session(void)

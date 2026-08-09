@@ -123,6 +123,12 @@ static bool authorization_append_field(
     if (field->value_type == CHAIN_CONFIRM_VALUE_PATH) {
         return authorization_append_confirm_path(buffer, &field->value.path);
     }
+    if (field->value_type == CHAIN_CONFIRM_VALUE_TEXT) {
+        const size_t text_len = strnlen(field->value.text, CHAIN_CONFIRM_MAX_TEXT);
+        return text_len > 0 && text_len < CHAIN_CONFIRM_MAX_TEXT
+            && authorization_append_u32(buffer, (uint32_t)text_len)
+            && authorization_append(buffer, (const uint8_t*)field->value.text, text_len);
+    }
     return false;
 }
 

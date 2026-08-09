@@ -4,6 +4,7 @@
 #include "../../crypto/keccak256.h"
 #include "confirm.h"
 
+#include <stdlib.h>
 #include <string.h>
 #include <wally_crypto.h>
 
@@ -226,11 +227,16 @@ bool ethereum_tx_signing_hash(
         return false;
     }
 
-    uint8_t payload[ETHEREUM_TX_MAX_SIGNING_PAYLOAD_LEN];
+    uint8_t* const payload = malloc(ETHEREUM_TX_MAX_SIGNING_PAYLOAD_LEN);
+    if (!payload) {
+        return false;
+    }
+
     size_t payload_len = 0;
-    const bool ok = ethereum_tx_signing_payload(request, payload, sizeof(payload), &payload_len)
+    const bool ok = ethereum_tx_signing_payload(request, payload, ETHEREUM_TX_MAX_SIGNING_PAYLOAD_LEN, &payload_len)
         && keccak256(payload, payload_len, output, output_len);
-    wally_bzero(payload, sizeof(payload));
+    wally_bzero(payload, ETHEREUM_TX_MAX_SIGNING_PAYLOAD_LEN);
+    free(payload);
     return ok;
 }
 

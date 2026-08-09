@@ -906,6 +906,26 @@ int main(void)
     const chain_confirm_field_t* const token_decimals
         = find_confirm_field(&confirm_summary, CHAIN_CONFIRM_FIELD_TOKEN_DECIMALS);
     CHECK(token_decimals && token_decimals->value_type == CHAIN_CONFIRM_VALUE_U64 && token_decimals->value.u64 == 6);
+    chain_authorization_t token_authorization = { 0 };
+    g_ui_calls = 0;
+    CHECK(ethereum_authorize_tx(&eth_req, &token_authorization));
+    CHECK(g_ui_calls == 1);
+    uint8_t token_tx_digest[CHAIN_AUTHORIZED_DIGEST_LEN];
+    memset(token_tx_digest, 0x7a, sizeof(token_tx_digest));
+    chain_authorized_digest_t token_authorized_digest = { 0 };
+    CHECK(chain_authorized_digest_init(
+        &token_authorization, token_tx_digest, sizeof(token_tx_digest), &token_authorized_digest));
+    CHECK(chain_authorized_digest_matches_authorization(&token_authorization, &token_authorized_digest));
+    bool changed_token_text = false;
+    for (size_t i = 0; i < token_authorization.summary.num_fields; ++i) {
+        if (token_authorization.summary.fields[i].kind == CHAIN_CONFIRM_FIELD_TOKEN_SYMBOL) {
+            token_authorization.summary.fields[i].value.text[0] ^= 0x01;
+            changed_token_text = true;
+            break;
+        }
+    }
+    CHECK(changed_token_text);
+    CHECK(!chain_authorized_digest_matches_authorization(&token_authorization, &token_authorized_digest));
     eth_req.token_definition.chain_id = 2;
     CHECK(!ethereum_tx_preflight(&eth_req, &eth_res));
     eth_req.token_definition.chain_id = 1;
