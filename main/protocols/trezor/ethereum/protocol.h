@@ -2,7 +2,6 @@
 #define TREZOR_ETHEREUM_PROTOCOL_H_
 
 #include "../../../chains/ethereum/sign.h"
-#include "../../../chains/ethereum/tx.h"
 #include "../../../wallet_core/wallet_core.h"
 #include "definitions.h"
 
@@ -50,8 +49,6 @@ bool trezor_ethereum_sign_tx_init(trezor_ethereum_signing_state_t* state, uint16
 bool trezor_ethereum_tx_ack_apply(
     trezor_ethereum_signing_state_t* state, const uint8_t* payload, size_t payload_len);
 bool trezor_ethereum_signing_state_ready(const trezor_ethereum_signing_state_t* state);
-bool trezor_ethereum_signing_state_to_request(
-    const trezor_ethereum_signing_state_t* state, ethereum_tx_preflight_request_t* request);
 bool trezor_ethereum_tx_request_encode_data(size_t data_length, uint8_t* output, size_t output_len, size_t* written);
 bool trezor_ethereum_tx_request_encode_signature(
     const ethereum_signature_t* signature, uint8_t* output, size_t output_len, size_t* written);

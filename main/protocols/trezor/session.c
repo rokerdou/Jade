@@ -3,6 +3,7 @@
 
 #include "bitcoin.h"
 #include "dispatcher.h"
+#include "ethereum/normalizer.h"
 #include "failure.h"
 #include "messages.h"
 #include "protobuf.h"

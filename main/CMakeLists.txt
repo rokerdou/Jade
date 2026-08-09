@@ -139,6 +139,7 @@ if(HOST_CC)
             ${COMPONENT_DIR}/protocols/trezor/dispatcher.c
             ${COMPONENT_DIR}/protocols/trezor/ethereum/protocol.c
             ${COMPONENT_DIR}/protocols/trezor/ethereum/definitions.c
+            ${COMPONENT_DIR}/protocols/trezor/ethereum/normalizer.c
             ${COMPONENT_DIR}/protocols/trezor/failure.c
             ${COMPONENT_DIR}/protocols/trezor/features.c
             ${COMPONENT_DIR}/protocols/trezor/protobuf.c
@@ -200,6 +201,8 @@ if(HOST_CC)
             ${COMPONENT_DIR}/protocols/trezor/ethereum/protocol.h
             ${COMPONENT_DIR}/protocols/trezor/ethereum/definitions.c
             ${COMPONENT_DIR}/protocols/trezor/ethereum/definitions.h
+            ${COMPONENT_DIR}/protocols/trezor/ethereum/normalizer.c
+            ${COMPONENT_DIR}/protocols/trezor/ethereum/normalizer.h
             ${COMPONENT_DIR}/protocols/trezor/failure.c
             ${COMPONENT_DIR}/protocols/trezor/failure.h
             ${COMPONENT_DIR}/protocols/trezor/features.c

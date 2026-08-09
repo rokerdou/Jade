@@ -144,6 +144,7 @@ void __wrap_abort(void);
 #include "./protocols/trezor/bitcoin.c"
 #include "./protocols/trezor/ethereum/definitions.c"
 #include "./protocols/trezor/ethereum/protocol.c"
+#include "./protocols/trezor/ethereum/normalizer.c"
 #include "./protocols/trezor/failure.c"
 #include "./protocols/trezor/features.c"
 #include "./protocols/trezor/protobuf.c"
