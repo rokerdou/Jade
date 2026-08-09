@@ -13,6 +13,7 @@ typedef struct {
     size_t path_len;
     char to[BITCOIN_ADDRESS_MAX_LEN];
     uint64_t amount;
+    uint64_t change;
     uint64_t fee;
 } bitcoin_confirm_request_t;
 

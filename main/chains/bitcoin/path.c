@@ -18,8 +18,21 @@ bool bitcoin_path_is_testnet_p2pkh_account_public_node(const uint32_t* const pat
 
 bool bitcoin_path_is_testnet_p2wpkh_signing(const uint32_t* const path, const size_t path_len)
 {
-    return path && path_len == 5 && path[0] == chain_path_harden(84)
-        && path[1] == chain_path_harden(BITCOIN_TESTNET_SLIP44) && (path[2] & 0x80000000U) != 0 && path[3] == 0
-        && path[4] <= 1000000U;
+    return bitcoin_path_is_p2wpkh_signing(path, path_len, true);
+}
+
+bool bitcoin_path_is_p2wpkh_signing(const uint32_t* const path, const size_t path_len, const bool testnet)
+{
+    const uint32_t slip44 = testnet ? BITCOIN_TESTNET_SLIP44 : BITCOIN_MAINNET_SLIP44;
+    return path && path_len == 5 && path[0] == chain_path_harden(84) && path[1] == chain_path_harden(slip44)
+        && (path[2] & 0x80000000U) != 0 && path[3] == 0 && path[4] <= 1000000U;
+}
+
+bool bitcoin_path_is_p2wpkh_change(
+    const uint32_t* const path, const size_t path_len, const bool testnet, const uint32_t account)
+{
+    const uint32_t slip44 = testnet ? BITCOIN_TESTNET_SLIP44 : BITCOIN_MAINNET_SLIP44;
+    return path && path_len == 5 && path[0] == chain_path_harden(84) && path[1] == chain_path_harden(slip44)
+        && path[2] == account && path[3] == 1 && path[4] <= 1000000U;
 }
 #endif /* AMALGAMATED_BUILD */

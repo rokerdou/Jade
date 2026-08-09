@@ -11,7 +11,7 @@
 #include <stdint.h>
 
 #define TREZOR_SESSION_MAX_REQUEST_PAYLOAD_LEN 2048
-#define TREZOR_SESSION_MAX_RESPONSE_PAYLOAD_LEN 1024
+#define TREZOR_SESSION_MAX_RESPONSE_PAYLOAD_LEN 2048
 #define TREZOR_SESSION_BITCOIN_ADDRESS_STRING_LEN BITCOIN_P2PKH_ADDRESS_MAX_LEN
 #define TREZOR_SESSION_ETH_ADDRESS_STRING_LEN 43
 
@@ -33,11 +33,13 @@ typedef struct {
     bool has_pending_local_unlock;
     bool has_pending_eth_signing;
     bool has_pending_btc_signing;
+    bool has_pending_btc_signed_tx;
     uint16_t pending_request_type;
     uint8_t pending_request_payload[TREZOR_SESSION_MAX_REQUEST_PAYLOAD_LEN];
     size_t pending_request_payload_len;
     trezor_ethereum_signing_state_t pending_eth_signing;
     trezor_bitcoin_signing_state_t pending_btc_signing;
+    trezor_bitcoin_signed_tx_t pending_btc_signed_tx;
 } trezor_session_state_t;
 
 typedef struct {

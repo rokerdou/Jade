@@ -123,6 +123,7 @@ static trezor_public_key_request_t g_last_trezor_public_key_request;
 static bool g_trezor_eth_sign_ok = true;
 static size_t g_trezor_eth_sign_calls = 0;
 static size_t g_trezor_btc_confirm_calls = 0;
+static size_t g_trezor_btc_sign_calls = 0;
 static bitcoin_confirm_request_t g_last_trezor_btc_confirm_request;
 static ethereum_tx_preflight_request_t g_last_trezor_eth_sign_request;
 static uint32_t g_last_trezor_eth_sign_path[WALLET_CORE_MAX_PATH_LEN];
@@ -512,10 +513,10 @@ static bool trezor_test_sign_btc_digest(void* ctx, const wallet_core_path_t* con
     const size_t digest_len, uint8_t* const signature, const size_t signature_len)
 {
     (void)ctx;
-    if (!digest || digest_len != sizeof(EXPECTED_BTC_TEST_DIGEST)
-        || memcmp(digest, EXPECTED_BTC_TEST_DIGEST, sizeof(EXPECTED_BTC_TEST_DIGEST)) != 0) {
+    if (!digest || digest_len != sizeof(EXPECTED_BTC_TEST_DIGEST)) {
         return false;
     }
+    ++g_trezor_btc_sign_calls;
     return wallet_core_sign_digest_ecdsa_recoverable(path, digest, digest_len, signature, signature_len);
 }
 
@@ -572,12 +573,13 @@ static bool trezor_payload_has_varint(const uint8_t* const payload, const size_t
     return false;
 }
 
-static bool trezor_btc_tx_request_has_signed_serialized_payload(
-    const uint8_t* const payload, const size_t payload_len)
+static bool trezor_btc_tx_request_has_signed_payload(const uint8_t* const payload, const size_t payload_len,
+    const trezor_bitcoin_request_type_t expected_request_type, const uint32_t expected_signature_index,
+    const bool expect_serialized_tx, const uint8_t expected_tx_inputs, const uint8_t expected_tx_outputs)
 {
     trezor_protobuf_reader_t reader;
     trezor_protobuf_reader_init(&reader, payload, payload_len);
-    bool saw_finished = false;
+    bool saw_request_type = false;
     bool saw_signature = false;
     bool saw_serialized_tx = false;
 
@@ -591,9 +593,8 @@ static bool trezor_btc_tx_request_has_signed_serialized_payload(
             return false;
         }
         if (field_number == 1 && wire_type == TREZOR_PROTOBUF_WIRE_VARINT
-            && trezor_protobuf_read_varint_value(value, value_len, &decoded)
-            && decoded == TREZOR_BITCOIN_REQUEST_TXFINISHED) {
-            saw_finished = true;
+            && trezor_protobuf_read_varint_value(value, value_len, &decoded) && decoded == expected_request_type) {
+            saw_request_type = true;
             continue;
         }
         if (field_number != 3 || wire_type != TREZOR_PROTOBUF_WIRE_LEN) {
@@ -614,14 +615,15 @@ static bool trezor_btc_tx_request_has_signed_serialized_payload(
             }
             if (serialized_field == 1 && serialized_wire_type == TREZOR_PROTOBUF_WIRE_VARINT
                 && trezor_protobuf_read_varint_value(serialized_value, serialized_value_len, &decoded)
-                && decoded == 0) {
+                && decoded == expected_signature_index) {
                 saw_signature_index = true;
             } else if (serialized_field == 2 && serialized_wire_type == TREZOR_PROTOBUF_WIRE_LEN
                 && serialized_value_len >= 2 && serialized_value[serialized_value_len - 1] == 1) {
                 saw_signature = true;
             } else if (serialized_field == 3 && serialized_wire_type == TREZOR_PROTOBUF_WIRE_LEN
                 && serialized_value_len == sizeof(EXPECTED_BTC_TEST_TX_BYTES)
-                && memcmp(serialized_value, EXPECTED_BTC_TEST_TX_BYTES, sizeof(EXPECTED_BTC_TEST_TX_BYTES)) == 0) {
+                && serialized_value[0] == EXPECTED_BTC_TEST_TX_BYTES[0] && serialized_value[6] == expected_tx_inputs
+                && serialized_value[11] == expected_tx_outputs) {
                 saw_serialized_tx = true;
             }
         }
@@ -629,7 +631,14 @@ static bool trezor_btc_tx_request_has_signed_serialized_payload(
             return false;
         }
     }
-    return saw_finished && saw_signature && saw_serialized_tx;
+    return saw_request_type && saw_signature && saw_serialized_tx == expect_serialized_tx;
+}
+
+static bool trezor_btc_tx_request_has_signed_serialized_payload(
+    const uint8_t* const payload, const size_t payload_len)
+{
+    return trezor_btc_tx_request_has_signed_payload(payload, payload_len, TREZOR_BITCOIN_REQUEST_TXFINISHED, 0, true, 1,
+        1);
 }
 
 static int trezor_check_rejected_message(
@@ -1069,7 +1078,9 @@ int wally_map_clear(struct wally_map* map_in)
 int wally_tx_init_alloc(uint32_t version, uint32_t locktime, size_t inputs_allocation_len,
     size_t outputs_allocation_len, struct wally_tx** output)
 {
-    if (!output || inputs_allocation_len != 1 || outputs_allocation_len != 1) {
+    if (!output || inputs_allocation_len == 0 || outputs_allocation_len == 0
+        || inputs_allocation_len > TREZOR_BITCOIN_TX_INPUTS_MAX
+        || outputs_allocation_len > TREZOR_BITCOIN_TX_OUTPUTS_MAX) {
         return WALLY_EINVAL;
     }
     struct wally_tx* tx = calloc(1, sizeof(*tx));
@@ -1102,7 +1113,10 @@ int wally_tx_add_raw_input(struct wally_tx* tx, const unsigned char* txhash, siz
     if (!tx || !txhash || txhash_len != WALLY_TXHASH_LEN || flags != 0) {
         return WALLY_EINVAL;
     }
-    tx->num_inputs = 1;
+    if (tx->num_inputs >= tx->inputs_allocation_len) {
+        return WALLY_EINVAL;
+    }
+    ++tx->num_inputs;
     return WALLY_OK;
 }
 
@@ -1113,7 +1127,10 @@ int wally_tx_add_raw_output(
     if (!tx || !script || script_len == 0 || flags != 0) {
         return WALLY_EINVAL;
     }
-    tx->num_outputs = 1;
+    if (tx->num_outputs >= tx->outputs_allocation_len) {
+        return WALLY_EINVAL;
+    }
+    ++tx->num_outputs;
     return WALLY_OK;
 }
 
@@ -1133,21 +1150,24 @@ int wally_tx_get_input_signature_hash(const struct wally_tx* tx, size_t index, c
     (void)genesis_blockhash;
     (void)genesis_blockhash_len;
     (void)cache;
-    if (!tx || index != 0 || !script || script_len != sizeof(EXPECTED_BTC_P2WPKH_SCRIPTPUBKEY) || sighash != 1
-        || flags != WALLY_SIGTYPE_SW_V0 || !bytes_out || len != sizeof(EXPECTED_BTC_TEST_DIGEST)) {
+    if (!tx || index >= tx->num_inputs || !script || script_len != sizeof(EXPECTED_BTC_P2WPKH_SCRIPTPUBKEY)
+        || sighash != 1 || flags != WALLY_SIGTYPE_SW_V0 || !bytes_out || len != sizeof(EXPECTED_BTC_TEST_DIGEST)) {
         return WALLY_EINVAL;
     }
     memcpy(bytes_out, EXPECTED_BTC_TEST_DIGEST, sizeof(EXPECTED_BTC_TEST_DIGEST));
+    bytes_out[0] ^= (uint8_t)index;
     return WALLY_OK;
 }
 
 int wally_tx_to_bytes(const struct wally_tx* tx, uint32_t flags, unsigned char* bytes_out, size_t len, size_t* written)
 {
     if (!tx || flags != WALLY_TX_FLAG_USE_WITNESS || !bytes_out || len < sizeof(EXPECTED_BTC_TEST_TX_BYTES)
-        || !written || tx->num_inputs != 1 || tx->num_outputs != 1) {
+        || !written || tx->num_inputs == 0 || tx->num_outputs == 0) {
         return WALLY_EINVAL;
     }
     memcpy(bytes_out, EXPECTED_BTC_TEST_TX_BYTES, sizeof(EXPECTED_BTC_TEST_TX_BYTES));
+    bytes_out[6] = (uint8_t)tx->num_inputs;
+    bytes_out[11] = (uint8_t)tx->num_outputs;
     *written = sizeof(EXPECTED_BTC_TEST_TX_BYTES);
     return WALLY_OK;
 }
@@ -1455,6 +1475,10 @@ int main(int argc, char** argv)
         = { chain_path_harden(44), chain_path_harden(1), chain_path_harden(0), 0, 0 };
     const uint32_t btc_signing_path[]
         = { chain_path_harden(84), chain_path_harden(1), chain_path_harden(0), 0, 0 };
+    const uint32_t btc_signing_path_1[]
+        = { chain_path_harden(84), chain_path_harden(1), chain_path_harden(0), 0, 1 };
+    const uint32_t btc_change_path[]
+        = { chain_path_harden(84), chain_path_harden(1), chain_path_harden(0), 1, 0 };
     const uint32_t btc_account_path[] = { chain_path_harden(44), chain_path_harden(1), chain_path_harden(0) };
     const uint32_t btc_wrong_coin[]
         = { chain_path_harden(44), chain_path_harden(0), chain_path_harden(0), 0, 0 };
@@ -1464,6 +1488,9 @@ int main(int argc, char** argv)
     CHECK(!bitcoin_path_is_testnet_p2pkh_account_public_node(btc_state_path, ARRAY_LEN(btc_state_path)));
     CHECK(!bitcoin_path_is_testnet_p2pkh_account_public_node(btc_wrong_coin, 3));
     CHECK(bitcoin_path_is_testnet_p2wpkh_signing(btc_signing_path, ARRAY_LEN(btc_signing_path)));
+    CHECK(bitcoin_path_is_p2wpkh_signing(btc_signing_path_1, ARRAY_LEN(btc_signing_path_1), true));
+    CHECK(bitcoin_path_is_p2wpkh_change(
+        btc_change_path, ARRAY_LEN(btc_change_path), true, chain_path_harden(0)));
     CHECK(!bitcoin_path_is_testnet_p2wpkh_signing(btc_state_path, ARRAY_LEN(btc_state_path)));
 
     char btc_address[BITCOIN_P2PKH_ADDRESS_MAX_LEN];
@@ -2072,7 +2099,8 @@ int main(int argc, char** argv)
     CHECK(trezor_protobuf_write_varint_field(&trezor_sign_tx_writer, 1, 1));
     CHECK(trezor_protobuf_write_varint_field(&trezor_sign_tx_writer, 2, 1));
     CHECK(trezor_protobuf_write_string_field(&trezor_sign_tx_writer, 3, "Bitcoin"));
-    CHECK(!trezor_bitcoin_sign_tx_decode(trezor_sign_tx_payload, trezor_sign_tx_writer.len, &trezor_sign_tx));
+    CHECK(trezor_bitcoin_sign_tx_decode(trezor_sign_tx_payload, trezor_sign_tx_writer.len, &trezor_sign_tx));
+    CHECK(trezor_sign_tx.has_coin_name && strcmp(trezor_sign_tx.coin_name, "Bitcoin") == 0);
 
     const uint8_t trezor_btc_prev_hash[32]
         = { 0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11,
@@ -2873,11 +2901,167 @@ int main(int argc, char** argv)
     const chain_confirm_field_t* const btc_amount = find_confirm_field(&g_last_ui_summary, CHAIN_CONFIRM_FIELD_AMOUNT);
     CHECK(btc_amount && btc_amount->value_type == CHAIN_CONFIRM_VALUE_TEXT);
     CHECK(strcmp(btc_amount->value.text, "90000 sats") == 0);
+    const chain_confirm_field_t* const btc_change = find_confirm_field(&g_last_ui_summary, CHAIN_CONFIRM_FIELD_CHANGE);
+    CHECK(btc_change && btc_change->value_type == CHAIN_CONFIRM_VALUE_TEXT);
+    CHECK(strcmp(btc_change->value.text, "0 sats") == 0);
     const chain_confirm_field_t* const btc_fee = find_confirm_field(&g_last_ui_summary, CHAIN_CONFIRM_FIELD_FEE);
     CHECK(btc_fee && btc_fee->value_type == CHAIN_CONFIRM_VALUE_TEXT);
     CHECK(strcmp(btc_fee->value.text, "10000 sats") == 0);
     CHECK(test_confirm_summary_fits_tdisplay_s3(&g_last_ui_summary));
     CHECK(trezor_btc_tx_request_has_signed_serialized_payload(session_response_payload, session_response_payload_len));
+
+    uint8_t trezor_btc_change_output_payload[160];
+    uint8_t trezor_btc_change_output_ack_payload[288];
+    uint8_t trezor_btc_one_input_two_output_sign_tx_payload[128];
+    uint8_t trezor_btc_one_input_two_output_meta_ack_payload[288];
+    size_t trezor_btc_change_output_ack_payload_len = 0;
+    size_t trezor_btc_one_input_two_output_sign_tx_payload_len = 0;
+    size_t trezor_btc_one_input_two_output_meta_ack_payload_len = 0;
+
+    trezor_protobuf_writer_init(
+        &trezor_sign_tx_writer, trezor_btc_one_input_two_output_sign_tx_payload, sizeof(trezor_btc_one_input_two_output_sign_tx_payload));
+    CHECK(trezor_protobuf_write_varint_field(&trezor_sign_tx_writer, 1, 2));
+    CHECK(trezor_protobuf_write_varint_field(&trezor_sign_tx_writer, 2, 1));
+    CHECK(trezor_protobuf_write_string_field(&trezor_sign_tx_writer, 3, "Testnet"));
+    CHECK(trezor_protobuf_write_varint_field(&trezor_sign_tx_writer, 4, 2));
+    CHECK(trezor_protobuf_write_bool_field(&trezor_sign_tx_writer, 13, true));
+    trezor_btc_one_input_two_output_sign_tx_payload_len = trezor_sign_tx_writer.len;
+
+    trezor_protobuf_writer_init(&trezor_btc_output_writer, trezor_btc_change_output_payload, sizeof(trezor_btc_change_output_payload));
+    for (size_t i = 0; i < ARRAY_LEN(btc_change_path); ++i) {
+        CHECK(trezor_protobuf_write_varint_field(&trezor_btc_output_writer, 2, btc_change_path[i]));
+    }
+    CHECK(trezor_protobuf_write_varint_field(&trezor_btc_output_writer, 3, 5000));
+    CHECK(trezor_protobuf_write_varint_field(&trezor_btc_output_writer, 4, 0));
+    trezor_protobuf_writer_init(&trezor_btc_tx_writer, trezor_btc_tx_payload, sizeof(trezor_btc_tx_payload));
+    CHECK(trezor_protobuf_write_bytes_field(
+        &trezor_btc_tx_writer, 5, trezor_btc_change_output_payload, trezor_btc_output_writer.len));
+    trezor_protobuf_writer_init(&trezor_btc_ack_writer, trezor_btc_ack_payload, sizeof(trezor_btc_ack_payload));
+    CHECK(trezor_protobuf_write_bytes_field(&trezor_btc_ack_writer, 1, trezor_btc_tx_payload, trezor_btc_tx_writer.len));
+    trezor_btc_change_output_ack_payload_len = trezor_btc_ack_writer.len;
+    memcpy(trezor_btc_change_output_ack_payload, trezor_btc_ack_payload, trezor_btc_change_output_ack_payload_len);
+
+    trezor_protobuf_writer_init(&trezor_btc_tx_writer, trezor_btc_tx_payload, sizeof(trezor_btc_tx_payload));
+    CHECK(trezor_protobuf_write_varint_field(&trezor_btc_tx_writer, 1, 2));
+    CHECK(trezor_protobuf_write_varint_field(&trezor_btc_tx_writer, 6, 1));
+    CHECK(trezor_protobuf_write_varint_field(&trezor_btc_tx_writer, 7, 2));
+    trezor_protobuf_writer_init(&trezor_btc_ack_writer, trezor_btc_ack_payload, sizeof(trezor_btc_ack_payload));
+    CHECK(trezor_protobuf_write_bytes_field(&trezor_btc_ack_writer, 1, trezor_btc_tx_payload, trezor_btc_tx_writer.len));
+    trezor_btc_one_input_two_output_meta_ack_payload_len = trezor_btc_ack_writer.len;
+    memcpy(trezor_btc_one_input_two_output_meta_ack_payload, trezor_btc_ack_payload,
+        trezor_btc_one_input_two_output_meta_ack_payload_len);
+
+    g_trezor_btc_sign_calls = 0;
+    CHECK(trezor_session_handle_payload(&trezor_session, TREZOR_MSG_SIGN_TX,
+        trezor_btc_one_input_two_output_sign_tx_payload, trezor_btc_one_input_two_output_sign_tx_payload_len,
+        &session_response_type, session_response_payload, sizeof(session_response_payload), &session_response_payload_len));
+    CHECK(session_response_type == TREZOR_MSG_TX_REQUEST);
+    CHECK(trezor_session_handle_payload(&trezor_session, TREZOR_MSG_TX_ACK,
+        trezor_btc_one_input_two_output_meta_ack_payload, trezor_btc_one_input_two_output_meta_ack_payload_len,
+        &session_response_type, session_response_payload, sizeof(session_response_payload), &session_response_payload_len));
+    CHECK(session_response_type == TREZOR_MSG_TX_REQUEST);
+    CHECK(trezor_session_handle_payload(&trezor_session, TREZOR_MSG_TX_ACK, trezor_btc_input_ack_payload,
+        trezor_btc_input_ack_payload_len, &session_response_type, session_response_payload, sizeof(session_response_payload),
+        &session_response_payload_len));
+    CHECK(session_response_type == TREZOR_MSG_TX_REQUEST);
+    CHECK(trezor_session_handle_payload(&trezor_session, TREZOR_MSG_TX_ACK, trezor_btc_output_ack_payload,
+        trezor_btc_output_ack_payload_len, &session_response_type, session_response_payload, sizeof(session_response_payload),
+        &session_response_payload_len));
+    CHECK(session_response_type == TREZOR_MSG_TX_REQUEST);
+    g_trezor_btc_confirm_calls = 0;
+    CHECK(trezor_session_handle_payload(&trezor_session, TREZOR_MSG_TX_ACK, trezor_btc_change_output_ack_payload,
+        trezor_btc_change_output_ack_payload_len, &session_response_type, session_response_payload,
+        sizeof(session_response_payload), &session_response_payload_len));
+    CHECK(session_response_type == TREZOR_MSG_TX_REQUEST);
+    CHECK(!trezor_session_state.has_pending_btc_signing);
+    CHECK(!trezor_session_state.has_pending_btc_signed_tx);
+    CHECK(g_trezor_btc_confirm_calls == 1);
+    CHECK(g_trezor_btc_sign_calls == 1);
+    CHECK(g_last_trezor_btc_confirm_request.amount == 90000);
+    CHECK(g_last_trezor_btc_confirm_request.change == 5000);
+    CHECK(g_last_trezor_btc_confirm_request.fee == 5000);
+    CHECK(trezor_btc_tx_request_has_signed_payload(session_response_payload, session_response_payload_len,
+        TREZOR_BITCOIN_REQUEST_TXFINISHED, 0, true, 1, 2));
+
+    uint8_t trezor_btc_input1_payload[160];
+    uint8_t trezor_btc_input1_ack_payload[288];
+    uint8_t trezor_btc_two_input_sign_tx_payload[128];
+    uint8_t trezor_btc_two_input_meta_ack_payload[288];
+    size_t trezor_btc_input1_ack_payload_len = 0;
+    size_t trezor_btc_two_input_sign_tx_payload_len = 0;
+    size_t trezor_btc_two_input_meta_ack_payload_len = 0;
+    const uint8_t trezor_btc_prev_hash1[32]
+        = { 0x22, 0x22, 0x22, 0x22, 0x22, 0x22, 0x22, 0x22, 0x22, 0x22, 0x22, 0x22, 0x22, 0x22, 0x22, 0x22,
+              0x22, 0x22, 0x22, 0x22, 0x22, 0x22, 0x22, 0x22, 0x22, 0x22, 0x22, 0x22, 0x22, 0x22, 0x22, 0x22 };
+
+    trezor_protobuf_writer_init(&trezor_sign_tx_writer, trezor_btc_two_input_sign_tx_payload, sizeof(trezor_btc_two_input_sign_tx_payload));
+    CHECK(trezor_protobuf_write_varint_field(&trezor_sign_tx_writer, 1, 1));
+    CHECK(trezor_protobuf_write_varint_field(&trezor_sign_tx_writer, 2, 2));
+    CHECK(trezor_protobuf_write_string_field(&trezor_sign_tx_writer, 3, "Testnet"));
+    CHECK(trezor_protobuf_write_varint_field(&trezor_sign_tx_writer, 4, 2));
+    CHECK(trezor_protobuf_write_bool_field(&trezor_sign_tx_writer, 13, true));
+    trezor_btc_two_input_sign_tx_payload_len = trezor_sign_tx_writer.len;
+
+    trezor_protobuf_writer_init(&trezor_btc_input_writer, trezor_btc_input1_payload, sizeof(trezor_btc_input1_payload));
+    for (size_t i = 0; i < ARRAY_LEN(btc_signing_path_1); ++i) {
+        CHECK(trezor_protobuf_write_varint_field(&trezor_btc_input_writer, 1, btc_signing_path_1[i]));
+    }
+    CHECK(trezor_protobuf_write_bytes_field(
+        &trezor_btc_input_writer, 2, trezor_btc_prev_hash1, sizeof(trezor_btc_prev_hash1)));
+    CHECK(trezor_protobuf_write_varint_field(&trezor_btc_input_writer, 3, 1));
+    CHECK(trezor_protobuf_write_varint_field(&trezor_btc_input_writer, 6, BITCOIN_P2WPKH_SPENDWITNESS));
+    CHECK(trezor_protobuf_write_varint_field(&trezor_btc_input_writer, 8, 40000));
+    trezor_protobuf_writer_init(&trezor_btc_tx_writer, trezor_btc_tx_payload, sizeof(trezor_btc_tx_payload));
+    CHECK(trezor_protobuf_write_bytes_field(
+        &trezor_btc_tx_writer, 2, trezor_btc_input1_payload, trezor_btc_input_writer.len));
+    trezor_protobuf_writer_init(&trezor_btc_ack_writer, trezor_btc_ack_payload, sizeof(trezor_btc_ack_payload));
+    CHECK(trezor_protobuf_write_bytes_field(&trezor_btc_ack_writer, 1, trezor_btc_tx_payload, trezor_btc_tx_writer.len));
+    trezor_btc_input1_ack_payload_len = trezor_btc_ack_writer.len;
+    memcpy(trezor_btc_input1_ack_payload, trezor_btc_ack_payload, trezor_btc_input1_ack_payload_len);
+
+    trezor_protobuf_writer_init(&trezor_btc_tx_writer, trezor_btc_tx_payload, sizeof(trezor_btc_tx_payload));
+    CHECK(trezor_protobuf_write_varint_field(&trezor_btc_tx_writer, 1, 2));
+    CHECK(trezor_protobuf_write_varint_field(&trezor_btc_tx_writer, 6, 2));
+    CHECK(trezor_protobuf_write_varint_field(&trezor_btc_tx_writer, 7, 1));
+    trezor_protobuf_writer_init(&trezor_btc_ack_writer, trezor_btc_ack_payload, sizeof(trezor_btc_ack_payload));
+    CHECK(trezor_protobuf_write_bytes_field(&trezor_btc_ack_writer, 1, trezor_btc_tx_payload, trezor_btc_tx_writer.len));
+    trezor_btc_two_input_meta_ack_payload_len = trezor_btc_ack_writer.len;
+    memcpy(trezor_btc_two_input_meta_ack_payload, trezor_btc_ack_payload, trezor_btc_two_input_meta_ack_payload_len);
+
+    g_trezor_btc_sign_calls = 0;
+    CHECK(trezor_session_handle_payload(&trezor_session, TREZOR_MSG_SIGN_TX, trezor_btc_two_input_sign_tx_payload,
+        trezor_btc_two_input_sign_tx_payload_len, &session_response_type, session_response_payload,
+        sizeof(session_response_payload), &session_response_payload_len));
+    CHECK(session_response_type == TREZOR_MSG_TX_REQUEST);
+    CHECK(trezor_session_handle_payload(&trezor_session, TREZOR_MSG_TX_ACK, trezor_btc_two_input_meta_ack_payload,
+        trezor_btc_two_input_meta_ack_payload_len, &session_response_type, session_response_payload,
+        sizeof(session_response_payload), &session_response_payload_len));
+    CHECK(session_response_type == TREZOR_MSG_TX_REQUEST);
+    CHECK(trezor_session_handle_payload(&trezor_session, TREZOR_MSG_TX_ACK, trezor_btc_input_ack_payload,
+        trezor_btc_input_ack_payload_len, &session_response_type, session_response_payload, sizeof(session_response_payload),
+        &session_response_payload_len));
+    CHECK(session_response_type == TREZOR_MSG_TX_REQUEST);
+    CHECK(trezor_session_handle_payload(&trezor_session, TREZOR_MSG_TX_ACK, trezor_btc_input1_ack_payload,
+        trezor_btc_input1_ack_payload_len, &session_response_type, session_response_payload, sizeof(session_response_payload),
+        &session_response_payload_len));
+    CHECK(session_response_type == TREZOR_MSG_TX_REQUEST);
+    g_trezor_btc_confirm_calls = 0;
+    CHECK(trezor_session_handle_payload(&trezor_session, TREZOR_MSG_TX_ACK, trezor_btc_output_ack_payload,
+        trezor_btc_output_ack_payload_len, &session_response_type, session_response_payload, sizeof(session_response_payload),
+        &session_response_payload_len));
+    CHECK(session_response_type == TREZOR_MSG_TX_REQUEST);
+    CHECK(g_trezor_btc_confirm_calls == 1);
+    CHECK(g_trezor_btc_sign_calls == 2);
+    CHECK(trezor_session_state.has_pending_btc_signed_tx);
+    CHECK(trezor_btc_tx_request_has_signed_payload(session_response_payload, session_response_payload_len,
+        TREZOR_BITCOIN_REQUEST_TXMETA, 0, false, 0, 0));
+    CHECK(trezor_session_handle_payload(&trezor_session, TREZOR_MSG_TX_ACK, trezor_btc_two_input_meta_ack_payload,
+        trezor_btc_two_input_meta_ack_payload_len, &session_response_type, session_response_payload,
+        sizeof(session_response_payload), &session_response_payload_len));
+    CHECK(session_response_type == TREZOR_MSG_TX_REQUEST);
+    CHECK(!trezor_session_state.has_pending_btc_signed_tx);
+    CHECK(trezor_btc_tx_request_has_signed_payload(session_response_payload, session_response_payload_len,
+        TREZOR_BITCOIN_REQUEST_TXFINISHED, 1, true, 2, 1));
 
     CHECK(trezor_session_handle_payload(&trezor_session, TREZOR_MSG_SIGN_TX, trezor_valid_sign_tx_payload,
         trezor_valid_sign_tx_payload_len, &session_response_type, session_response_payload, sizeof(session_response_payload),

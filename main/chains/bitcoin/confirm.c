@@ -68,8 +68,10 @@ bool bitcoin_confirm_summary_from_request(const bitcoin_confirm_request_t* const
     }
 
     char amount[BITCOIN_AMOUNT_TEXT_MAX_LEN];
+    char change[BITCOIN_AMOUNT_TEXT_MAX_LEN];
     char fee[BITCOIN_AMOUNT_TEXT_MAX_LEN];
     if (!bitcoin_format_sats(request->amount, amount, sizeof(amount))
+        || !bitcoin_format_sats(request->change, change, sizeof(change))
         || !bitcoin_format_sats(request->fee, fee, sizeof(fee))) {
         return false;
     }
@@ -80,6 +82,7 @@ bool bitcoin_confirm_summary_from_request(const bitcoin_confirm_request_t* const
                summary, CHAIN_CONFIRM_FIELD_PATH, request->path, request->path_len)
         && chain_confirm_summary_add_text(summary, CHAIN_CONFIRM_FIELD_TO, request->to)
         && chain_confirm_summary_add_text(summary, CHAIN_CONFIRM_FIELD_AMOUNT, amount)
+        && chain_confirm_summary_add_text(summary, CHAIN_CONFIRM_FIELD_CHANGE, change)
         && chain_confirm_summary_add_text(summary, CHAIN_CONFIRM_FIELD_FEE, fee);
 }
 #endif /* AMALGAMATED_BUILD */

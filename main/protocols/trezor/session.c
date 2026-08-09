@@ -326,62 +326,61 @@ static bool trezor_session_btc_signing_continue(const trezor_session_t* const se
                 response_type, response_payload, response_payload_len, response_payload_written);
         }
 
-        wallet_core_path_t signing_path;
+        trezor_bitcoin_signed_tx_t signed_tx;
         uint8_t digest[SHA256_LEN];
         uint8_t compact_signature[EC_SIGNATURE_RECOVERABLE_LEN];
-        uint8_t btc_signature[EC_SIGNATURE_DER_MAX_LEN + 1U];
-        uint8_t unsigned_tx[512];
-        uint8_t serialized_tx[512];
-        size_t unsigned_tx_len = 0;
-        size_t btc_signature_len = 0;
-        size_t serialized_tx_len = 0;
-        wally_bzero(&signing_path, sizeof(signing_path));
+        wally_bzero(&signed_tx, sizeof(signed_tx));
         wally_bzero(digest, sizeof(digest));
         wally_bzero(compact_signature, sizeof(compact_signature));
-        wally_bzero(btc_signature, sizeof(btc_signature));
-        wally_bzero(unsigned_tx, sizeof(unsigned_tx));
-        wally_bzero(serialized_tx, sizeof(serialized_tx));
 
-        bool ok = trezor_bitcoin_signing_build_p2wpkh_testnet_hash(&session->state->pending_btc_signing, &signing_path,
-            digest, sizeof(digest), unsigned_tx, sizeof(unsigned_tx), &unsigned_tx_len);
-        trezor_trace_set_stage(ok ? "btcsign:digest_ok" : "btcsign:digest_fail");
-        ok = ok && session->sign_btc_digest
-            && session->sign_btc_digest(session->sign_btc_digest_ctx, &signing_path, digest, sizeof(digest),
-                compact_signature, sizeof(compact_signature));
-        trezor_trace_set_stage(ok ? "btcsign:sign_ok" : "btcsign:sign_fail");
-        ok = ok
-            && wally_ec_sig_to_der(compact_signature + 1, EC_SIGNATURE_LEN, btc_signature, EC_SIGNATURE_DER_MAX_LEN,
-                   &btc_signature_len)
-                == WALLY_OK
-            && btc_signature_len < sizeof(btc_signature);
-        if (ok) {
-            btc_signature[btc_signature_len++] = 1U;
+        bool ok = session->sign_btc_digest && session->state->pending_btc_signing.inputs_len > 0
+            && session->state->pending_btc_signing.inputs_len <= TREZOR_BITCOIN_TX_INPUTS_MAX;
+        signed_tx.signatures_len = ok ? session->state->pending_btc_signing.inputs_len : 0;
+        for (size_t i = 0; ok && i < signed_tx.signatures_len; ++i) {
+            wallet_core_path_t signing_path;
+            wally_bzero(&signing_path, sizeof(signing_path));
+            ok = trezor_bitcoin_signing_build_p2wpkh_hash(
+                &session->state->pending_btc_signing, i, &signing_path, digest, sizeof(digest));
+            trezor_trace_set_stage(ok ? "btcsign:digest_ok" : "btcsign:digest_fail");
+            ok = ok
+                && session->sign_btc_digest(session->sign_btc_digest_ctx, &signing_path, digest, sizeof(digest),
+                    compact_signature, sizeof(compact_signature));
+            trezor_trace_set_stage(ok ? "btcsign:sign_ok" : "btcsign:sign_fail");
+            ok = ok
+                && wally_ec_sig_to_der(compact_signature + 1, EC_SIGNATURE_LEN, signed_tx.signatures[i].bytes,
+                       EC_SIGNATURE_DER_MAX_LEN, &signed_tx.signatures[i].len)
+                    == WALLY_OK
+                && signed_tx.signatures[i].len < sizeof(signed_tx.signatures[i].bytes);
+            if (ok) {
+                signed_tx.signatures[i].bytes[signed_tx.signatures[i].len++] = 1U;
+            }
+            trezor_trace_set_stage(ok ? "btcsign:der_ok" : "btcsign:der_fail");
+            wally_bzero(&signing_path, sizeof(signing_path));
+            wally_bzero(digest, sizeof(digest));
+            wally_bzero(compact_signature, sizeof(compact_signature));
         }
-        trezor_trace_set_stage(ok ? "btcsign:der_ok" : "btcsign:der_fail");
         ok = ok
-            && trezor_bitcoin_signing_build_p2wpkh_testnet_signed_tx(&session->state->pending_btc_signing,
-                &signing_path, btc_signature, btc_signature_len, serialized_tx, sizeof(serialized_tx),
-                &serialized_tx_len);
+            && trezor_bitcoin_signing_build_p2wpkh_signed_tx(&session->state->pending_btc_signing,
+                signed_tx.signatures, signed_tx.signatures_len, signed_tx.serialized_tx,
+                sizeof(signed_tx.serialized_tx), &signed_tx.serialized_tx_len);
         trezor_trace_set_stage(ok ? "btcsign:tx_ok" : "btcsign:tx_fail");
-        ok = ok
-            && trezor_bitcoin_tx_request_encode_signed(&session->state->pending_btc_signing, btc_signature,
-                btc_signature_len, serialized_tx, serialized_tx_len, response_payload, response_payload_len,
-                response_payload_written);
         *response_type = TREZOR_MSG_TX_REQUEST;
+        ok = ok && trezor_bitcoin_signed_tx_encode_next(&signed_tx, response_payload, response_payload_len,
+                       response_payload_written);
         trezor_trace_set_stage(ok ? "btcsign:encoded" : "btcsign:encode_fail");
 
-        wally_bzero(&signing_path, sizeof(signing_path));
-        wally_bzero(digest, sizeof(digest));
-        wally_bzero(compact_signature, sizeof(compact_signature));
-        wally_bzero(btc_signature, sizeof(btc_signature));
-        wally_bzero(unsigned_tx, sizeof(unsigned_tx));
-        wally_bzero(serialized_tx, sizeof(serialized_tx));
         wally_bzero(&session->state->pending_btc_signing, sizeof(session->state->pending_btc_signing));
         session->state->has_pending_btc_signing = false;
         if (!ok) {
+            wally_bzero(&signed_tx, sizeof(signed_tx));
             return trezor_session_failure_payload(TREZOR_FAILURE_DATA_ERROR, "Bitcoin signing unsupported",
                 response_type, response_payload, response_payload_len, response_payload_written);
         }
+        if (signed_tx.next_signature_index < signed_tx.signatures_len) {
+            session->state->pending_btc_signed_tx = signed_tx;
+            session->state->has_pending_btc_signed_tx = true;
+        }
+        wally_bzero(&signed_tx, sizeof(signed_tx));
         return true;
     }
 
@@ -390,6 +389,32 @@ static bool trezor_session_btc_signing_continue(const trezor_session_t* const se
         response_payload_len, response_payload_written);
     trezor_trace_set_stage(ok ? "btcsign:req" : "btcsign:req_fail");
     return ok;
+}
+
+static bool trezor_session_btc_signed_tx_continue(const trezor_session_t* const session, uint16_t* const response_type,
+    uint8_t* const response_payload, const size_t response_payload_len, size_t* const response_payload_written)
+{
+    if (!session || !session->state || !session->state->has_pending_btc_signed_tx || !response_type
+        || !response_payload || !response_payload_written) {
+        return trezor_session_failure_payload(TREZOR_FAILURE_UNEXPECTED_MESSAGE, "Bitcoin signing not active",
+            response_type, response_payload, response_payload_len, response_payload_written);
+    }
+
+    *response_type = TREZOR_MSG_TX_REQUEST;
+    const bool ok = trezor_bitcoin_signed_tx_encode_next(
+        &session->state->pending_btc_signed_tx, response_payload, response_payload_len, response_payload_written);
+    trezor_trace_set_stage(ok ? "btcsign:emit" : "btcsign:emit_fail");
+    if (ok && session->state->pending_btc_signed_tx.next_signature_index
+            >= session->state->pending_btc_signed_tx.signatures_len) {
+        wally_bzero(&session->state->pending_btc_signed_tx, sizeof(session->state->pending_btc_signed_tx));
+        session->state->has_pending_btc_signed_tx = false;
+    }
+    if (!ok) {
+        trezor_session_clear_pending(session->state);
+        return trezor_session_failure_payload(TREZOR_FAILURE_DATA_ERROR, "Bitcoin signed response failed",
+            response_type, response_payload, response_payload_len, response_payload_written);
+    }
+    return true;
 }
 
 bool trezor_session_handle_payload(const trezor_session_t* const session, const uint16_t request_type,
@@ -623,6 +648,18 @@ bool trezor_session_handle_payload(const trezor_session_t* const session, const 
 
     if (request_type == TREZOR_MSG_TX_ACK) {
         trezor_trace_set_stage("btcsign:ack");
+        if (session->state && session->state->has_pending_btc_signed_tx) {
+            trezor_bitcoin_transaction_t discard_tx_ack;
+            if (!trezor_bitcoin_tx_ack_decode(request_payload, request_payload_len, &discard_tx_ack)) {
+                trezor_session_clear_pending(session->state);
+                trezor_trace_set_stage("btcsign:emit_ack_fail");
+                return trezor_session_failure_payload(TREZOR_FAILURE_DATA_ERROR, "Invalid Bitcoin transaction data",
+                    response_type, response_payload, response_payload_len, response_payload_written);
+            }
+            wally_bzero(&discard_tx_ack, sizeof(discard_tx_ack));
+            return trezor_session_btc_signed_tx_continue(
+                session, response_type, response_payload, response_payload_len, response_payload_written);
+        }
         if (!session->state || !session->state->has_pending_btc_signing
             || !trezor_bitcoin_signing_apply_tx_ack(
                 &session->state->pending_btc_signing, request_payload, request_payload_len)) {

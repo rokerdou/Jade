@@ -56,6 +56,8 @@ static const char* field_name(const chain_confirm_field_kind_t kind)
         return "To";
     case CHAIN_CONFIRM_FIELD_AMOUNT:
         return "Amount";
+    case CHAIN_CONFIRM_FIELD_CHANGE:
+        return "Change";
     case CHAIN_CONFIRM_FIELD_TOKEN_CONTRACT:
         return "Token Contract";
     case CHAIN_CONFIRM_FIELD_TOKEN_RECIPIENT:
@@ -98,6 +100,8 @@ static const char* field_trace_stage(const chain_confirm_field_kind_t kind, cons
         return done ? "ui:to_ok" : "ui:to";
     case CHAIN_CONFIRM_FIELD_AMOUNT:
         return done ? "ui:amount_ok" : "ui:amount";
+    case CHAIN_CONFIRM_FIELD_CHANGE:
+        return done ? "ui:change_ok" : "ui:change";
     case CHAIN_CONFIRM_FIELD_TOKEN_CONTRACT:
         return done ? "ui:token_ctr_ok" : "ui:token_ctr";
     case CHAIN_CONFIRM_FIELD_TOKEN_RECIPIENT:
