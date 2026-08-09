@@ -2450,6 +2450,80 @@ int main(int argc, char** argv)
     CHECK(trezor_btc_tx_ack.inputs[0].script_type == BITCOIN_P2WPKH_SPENDWITNESS);
     CHECK(trezor_btc_tx_ack.inputs[0].has_amount && trezor_btc_tx_ack.inputs[0].amount == 100000);
 
+    uint8_t trezor_btc_prev_script[32];
+    memset(trezor_btc_prev_script, 0x51, sizeof(trezor_btc_prev_script));
+    uint8_t trezor_btc_prev_item_payload[640];
+    trezor_protobuf_writer_t trezor_btc_prev_item_writer;
+    trezor_protobuf_writer_init(
+        &trezor_btc_prev_item_writer, trezor_btc_prev_item_payload, sizeof(trezor_btc_prev_item_payload));
+    CHECK(trezor_protobuf_write_bytes_field(
+        &trezor_btc_prev_item_writer, 2, trezor_btc_prev_hash, sizeof(trezor_btc_prev_hash)));
+    CHECK(trezor_protobuf_write_varint_field(&trezor_btc_prev_item_writer, 3, 7));
+    CHECK(trezor_protobuf_write_bytes_field(
+        &trezor_btc_prev_item_writer, 4, trezor_btc_prev_script, sizeof(trezor_btc_prev_script)));
+    CHECK(trezor_protobuf_write_varint_field(&trezor_btc_prev_item_writer, 5, 0xfffffffeUL));
+    trezor_bitcoin_prev_input_t trezor_btc_prev_input;
+    CHECK(trezor_bitcoin_prev_input_decode(
+        trezor_btc_prev_item_payload, trezor_btc_prev_item_writer.len, &trezor_btc_prev_input));
+    CHECK(trezor_btc_prev_input.has_prev_hash);
+    CHECK(memcmp(trezor_btc_prev_input.prev_hash, trezor_btc_prev_hash, sizeof(trezor_btc_prev_hash)) == 0);
+    CHECK(trezor_btc_prev_input.has_prev_index && trezor_btc_prev_input.prev_index == 7);
+    CHECK(trezor_btc_prev_input.has_script_sig && trezor_btc_prev_input.script_sig_len == sizeof(trezor_btc_prev_script));
+    CHECK(memcmp(trezor_btc_prev_input.script_sig, trezor_btc_prev_script, sizeof(trezor_btc_prev_script)) == 0);
+    CHECK(trezor_btc_prev_input.has_sequence && trezor_btc_prev_input.sequence == 0xfffffffeUL);
+
+    trezor_protobuf_writer_init(
+        &trezor_btc_prev_item_writer, trezor_btc_prev_item_payload, sizeof(trezor_btc_prev_item_payload));
+    CHECK(trezor_protobuf_write_bytes_field(
+        &trezor_btc_prev_item_writer, 2, trezor_btc_prev_hash, sizeof(trezor_btc_prev_hash)));
+    CHECK(trezor_protobuf_write_varint_field(&trezor_btc_prev_item_writer, 3, 7));
+    CHECK(trezor_protobuf_write_varint_field(&trezor_btc_prev_item_writer, 5, 0xfffffffeUL));
+    CHECK(!trezor_bitcoin_prev_input_decode(
+        trezor_btc_prev_item_payload, trezor_btc_prev_item_writer.len, &trezor_btc_prev_input));
+
+    uint8_t trezor_btc_oversized_script[TREZOR_BITCOIN_PREV_SCRIPT_MAX_LEN + 1U];
+    memset(trezor_btc_oversized_script, 0x52, sizeof(trezor_btc_oversized_script));
+    trezor_protobuf_writer_init(
+        &trezor_btc_prev_item_writer, trezor_btc_prev_item_payload, sizeof(trezor_btc_prev_item_payload));
+    CHECK(trezor_protobuf_write_bytes_field(
+        &trezor_btc_prev_item_writer, 2, trezor_btc_prev_hash, sizeof(trezor_btc_prev_hash)));
+    CHECK(trezor_protobuf_write_varint_field(&trezor_btc_prev_item_writer, 3, 0));
+    CHECK(trezor_protobuf_write_bytes_field(&trezor_btc_prev_item_writer, 4, trezor_btc_oversized_script,
+        sizeof(trezor_btc_oversized_script)));
+    CHECK(trezor_protobuf_write_varint_field(&trezor_btc_prev_item_writer, 5, UINT32_MAX));
+    CHECK(!trezor_bitcoin_prev_input_decode(
+        trezor_btc_prev_item_payload, trezor_btc_prev_item_writer.len, &trezor_btc_prev_input));
+
+    trezor_protobuf_writer_init(
+        &trezor_btc_prev_item_writer, trezor_btc_prev_item_payload, sizeof(trezor_btc_prev_item_payload));
+    CHECK(trezor_protobuf_write_varint_field(&trezor_btc_prev_item_writer, 1, 90000));
+    CHECK(trezor_protobuf_write_bytes_field(&trezor_btc_prev_item_writer, 2, EXPECTED_BTC_P2WPKH_SCRIPTPUBKEY,
+        sizeof(EXPECTED_BTC_P2WPKH_SCRIPTPUBKEY)));
+    trezor_bitcoin_prev_output_t trezor_btc_prev_output;
+    CHECK(trezor_bitcoin_prev_output_decode(
+        trezor_btc_prev_item_payload, trezor_btc_prev_item_writer.len, &trezor_btc_prev_output));
+    CHECK(trezor_btc_prev_output.has_amount && trezor_btc_prev_output.amount == 90000);
+    CHECK(trezor_btc_prev_output.has_script_pubkey
+        && trezor_btc_prev_output.script_pubkey_len == sizeof(EXPECTED_BTC_P2WPKH_SCRIPTPUBKEY));
+    CHECK(memcmp(trezor_btc_prev_output.script_pubkey, EXPECTED_BTC_P2WPKH_SCRIPTPUBKEY,
+              sizeof(EXPECTED_BTC_P2WPKH_SCRIPTPUBKEY))
+        == 0);
+
+    trezor_protobuf_writer_init(
+        &trezor_btc_prev_item_writer, trezor_btc_prev_item_payload, sizeof(trezor_btc_prev_item_payload));
+    CHECK(trezor_protobuf_write_varint_field(&trezor_btc_prev_item_writer, 1, 90000));
+    CHECK(!trezor_bitcoin_prev_output_decode(
+        trezor_btc_prev_item_payload, trezor_btc_prev_item_writer.len, &trezor_btc_prev_output));
+
+    trezor_protobuf_writer_init(
+        &trezor_btc_prev_item_writer, trezor_btc_prev_item_payload, sizeof(trezor_btc_prev_item_payload));
+    CHECK(trezor_protobuf_write_varint_field(&trezor_btc_prev_item_writer, 1, 90000));
+    CHECK(trezor_protobuf_write_bytes_field(&trezor_btc_prev_item_writer, 2, EXPECTED_BTC_P2WPKH_SCRIPTPUBKEY,
+        sizeof(EXPECTED_BTC_P2WPKH_SCRIPTPUBKEY)));
+    CHECK(trezor_protobuf_write_varint_field(&trezor_btc_prev_item_writer, 3, 0));
+    CHECK(!trezor_bitcoin_prev_output_decode(
+        trezor_btc_prev_item_payload, trezor_btc_prev_item_writer.len, &trezor_btc_prev_output));
+
     trezor_protobuf_writer_init(&trezor_btc_output_writer, trezor_btc_output_payload, sizeof(trezor_btc_output_payload));
     CHECK(trezor_protobuf_write_string_field(
         &trezor_btc_output_writer, 1, "tb1qw508d6qejxtdg4y5r3zarvary0c5xw7kxpjzsx"));

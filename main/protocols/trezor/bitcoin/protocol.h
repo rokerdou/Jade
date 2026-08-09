@@ -15,6 +15,7 @@
 #define TREZOR_BITCOIN_ADDRESS_MAX_LEN 96
 #define TREZOR_BITCOIN_SIGNATURE_MAX_LEN (EC_SIGNATURE_DER_MAX_LEN + 1U)
 #define TREZOR_BITCOIN_SIGNED_TX_MAX_LEN 1800
+#define TREZOR_BITCOIN_PREV_SCRIPT_MAX_LEN 520
 
 typedef enum {
     TREZOR_BITCOIN_REQUEST_TXINPUT = 0,
@@ -94,6 +95,26 @@ typedef struct {
     size_t outputs_len;
 } trezor_bitcoin_transaction_t;
 
+typedef struct {
+    bool has_prev_hash;
+    uint8_t prev_hash[SHA256_LEN];
+    bool has_prev_index;
+    uint32_t prev_index;
+    bool has_script_sig;
+    uint8_t script_sig[TREZOR_BITCOIN_PREV_SCRIPT_MAX_LEN];
+    size_t script_sig_len;
+    bool has_sequence;
+    uint32_t sequence;
+} trezor_bitcoin_prev_input_t;
+
+typedef struct {
+    bool has_amount;
+    uint64_t amount;
+    bool has_script_pubkey;
+    uint8_t script_pubkey[TREZOR_BITCOIN_PREV_SCRIPT_MAX_LEN];
+    size_t script_pubkey_len;
+} trezor_bitcoin_prev_output_t;
+
 typedef enum {
     TREZOR_BITCOIN_SIGNING_PHASE_NONE = 0,
     TREZOR_BITCOIN_SIGNING_PHASE_EXPECT_META,
@@ -132,6 +153,10 @@ bool trezor_bitcoin_get_address_decode(
     const uint8_t* payload, size_t payload_len, trezor_bitcoin_get_address_t* output);
 bool trezor_bitcoin_sign_tx_decode(const uint8_t* payload, size_t payload_len, trezor_bitcoin_sign_tx_t* output);
 bool trezor_bitcoin_tx_ack_decode(const uint8_t* payload, size_t payload_len, trezor_bitcoin_transaction_t* output);
+bool trezor_bitcoin_prev_input_decode(
+    const uint8_t* payload, size_t payload_len, trezor_bitcoin_prev_input_t* output);
+bool trezor_bitcoin_prev_output_decode(
+    const uint8_t* payload, size_t payload_len, trezor_bitcoin_prev_output_t* output);
 bool trezor_bitcoin_address_encode(const char* address, uint8_t* output, size_t output_len, size_t* written);
 bool trezor_bitcoin_tx_request_encode(trezor_bitcoin_request_type_t request_type, bool has_request_index,
     uint32_t request_index, uint8_t* output, size_t output_len, size_t* written);

@@ -503,6 +503,106 @@ bool trezor_bitcoin_tx_ack_decode(
     return has_tx;
 }
 
+bool trezor_bitcoin_prev_input_decode(
+    const uint8_t* const payload, const size_t payload_len, trezor_bitcoin_prev_input_t* const output)
+{
+    if (!payload || !output) {
+        return false;
+    }
+
+    wally_bzero(output, sizeof(*output));
+    trezor_protobuf_reader_t reader;
+    trezor_protobuf_reader_init(&reader, payload, payload_len);
+    if (payload_len && reader.len == 0) {
+        return false;
+    }
+
+    while (reader.pos < reader.len) {
+        uint32_t field_number = 0;
+        uint8_t wire_type = 0;
+        const uint8_t* value = NULL;
+        size_t value_len = 0;
+        if (!trezor_protobuf_reader_next(&reader, &field_number, &wire_type, &value, &value_len)) {
+            return false;
+        }
+
+        if (field_number == 2) {
+            if (wire_type != TREZOR_PROTOBUF_WIRE_LEN || value_len != sizeof(output->prev_hash)) {
+                return false;
+            }
+            memcpy(output->prev_hash, value, value_len);
+            output->has_prev_hash = true;
+        } else if (field_number == 3) {
+            if (wire_type != TREZOR_PROTOBUF_WIRE_VARINT
+                || !trezor_bitcoin_uint32_value(value, value_len, &output->prev_index)) {
+                return false;
+            }
+            output->has_prev_index = true;
+        } else if (field_number == 4) {
+            if (wire_type != TREZOR_PROTOBUF_WIRE_LEN || value_len > sizeof(output->script_sig)) {
+                return false;
+            }
+            memcpy(output->script_sig, value, value_len);
+            output->script_sig_len = value_len;
+            output->has_script_sig = true;
+        } else if (field_number == 5) {
+            if (wire_type != TREZOR_PROTOBUF_WIRE_VARINT
+                || !trezor_bitcoin_uint32_value(value, value_len, &output->sequence)) {
+                return false;
+            }
+            output->has_sequence = true;
+        } else {
+            return false;
+        }
+    }
+
+    return output->has_prev_hash && output->has_prev_index && output->has_script_sig && output->has_sequence;
+}
+
+bool trezor_bitcoin_prev_output_decode(
+    const uint8_t* const payload, const size_t payload_len, trezor_bitcoin_prev_output_t* const output)
+{
+    if (!payload || !output) {
+        return false;
+    }
+
+    wally_bzero(output, sizeof(*output));
+    trezor_protobuf_reader_t reader;
+    trezor_protobuf_reader_init(&reader, payload, payload_len);
+    if (payload_len && reader.len == 0) {
+        return false;
+    }
+
+    while (reader.pos < reader.len) {
+        uint32_t field_number = 0;
+        uint8_t wire_type = 0;
+        const uint8_t* value = NULL;
+        size_t value_len = 0;
+        if (!trezor_protobuf_reader_next(&reader, &field_number, &wire_type, &value, &value_len)) {
+            return false;
+        }
+
+        if (field_number == 1) {
+            if (wire_type != TREZOR_PROTOBUF_WIRE_VARINT
+                || !trezor_bitcoin_uint64_value(value, value_len, &output->amount)) {
+                return false;
+            }
+            output->has_amount = true;
+        } else if (field_number == 2) {
+            if (wire_type != TREZOR_PROTOBUF_WIRE_LEN || value_len == 0 || value_len > sizeof(output->script_pubkey)) {
+                return false;
+            }
+            memcpy(output->script_pubkey, value, value_len);
+            output->script_pubkey_len = value_len;
+            output->has_script_pubkey = true;
+        } else {
+            return false;
+        }
+    }
+
+    return output->has_amount && output->has_script_pubkey;
+}
+
 bool trezor_bitcoin_address_encode(
     const char* const address, uint8_t* const output, const size_t output_len, size_t* const written)
 {
