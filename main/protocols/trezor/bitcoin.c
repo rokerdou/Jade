@@ -640,4 +640,22 @@ bool trezor_bitcoin_signing_ready(const trezor_bitcoin_signing_state_t* const st
 {
     return state && state->phase == TREZOR_BITCOIN_SIGNING_PHASE_READY;
 }
+
+bool trezor_bitcoin_signing_to_confirm_request(
+    const trezor_bitcoin_signing_state_t* const state, bitcoin_confirm_request_t* const request)
+{
+    if (!state || !request || !trezor_bitcoin_signing_ready(state) || state->inputs_len == 0 || state->outputs_len != 1
+        || !state->outputs[0].has_address || !state->outputs[0].has_amount
+        || state->inputs[0].address_n_len > CHAIN_CONFIRM_MAX_PATH_LEN) {
+        return false;
+    }
+
+    wally_bzero(request, sizeof(*request));
+    request->path_len = state->inputs[0].address_n_len;
+    memcpy(request->path, state->inputs[0].address_n, request->path_len * sizeof(request->path[0]));
+    memcpy(request->to, state->outputs[0].address, strlen(state->outputs[0].address) + 1);
+    request->amount = state->outputs[0].amount;
+    request->fee = state->fee;
+    return true;
+}
 #endif /* AMALGAMATED_BUILD */

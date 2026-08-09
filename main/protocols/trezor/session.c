@@ -276,13 +276,26 @@ static bool trezor_session_btc_signing_continue(const trezor_session_t* const se
     }
 
     if (trezor_bitcoin_signing_ready(&session->state->pending_btc_signing)) {
-        trezor_trace_set_stage("btcsign:ready_disabled");
+        bitcoin_confirm_request_t confirm_request;
+        wally_bzero(&confirm_request, sizeof(confirm_request));
+        const bool confirm_request_ok
+            = trezor_bitcoin_signing_to_confirm_request(&session->state->pending_btc_signing, &confirm_request);
         trezor_trace_set_note("btc preflight inputs=%lu outputs=%lu fee=%llu",
             (unsigned long)session->state->pending_btc_signing.inputs_len,
             (unsigned long)session->state->pending_btc_signing.outputs_len,
             (unsigned long long)session->state->pending_btc_signing.fee);
+        trezor_trace_set_stage(confirm_request_ok ? "btcsign:confirm" : "btcsign:confirm_req_fail");
+        const bool confirmed = confirm_request_ok && session->confirm_btc_tx
+            && session->confirm_btc_tx(session->confirm_btc_tx_ctx, &confirm_request);
+        wally_bzero(&confirm_request, sizeof(confirm_request));
         wally_bzero(&session->state->pending_btc_signing, sizeof(session->state->pending_btc_signing));
         session->state->has_pending_btc_signing = false;
+        if (!confirmed) {
+            trezor_trace_set_stage("btcsign:confirm_cancel");
+            return trezor_session_failure_payload(TREZOR_FAILURE_ACTION_CANCELLED, "Bitcoin transaction rejected",
+                response_type, response_payload, response_payload_len, response_payload_written);
+        }
+        trezor_trace_set_stage("btcsign:ready_disabled");
         return trezor_session_failure_payload(TREZOR_FAILURE_ACTION_CANCELLED, "Bitcoin signing disabled",
             response_type, response_payload, response_payload_len, response_payload_written);
     }

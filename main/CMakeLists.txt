@@ -122,6 +122,7 @@ if(HOST_CC)
             ${COMPONENT_DIR}/chains/evm_abi.c
             ${COMPONENT_DIR}/crypto/keccak256.c
             ${COMPONENT_DIR}/chains/bitcoin/address.c
+            ${COMPONENT_DIR}/chains/bitcoin/confirm.c
             ${COMPONENT_DIR}/chains/bitcoin/path.c
             ${COMPONENT_DIR}/chains/bitcoin/wallet.c
             ${COMPONENT_DIR}/chains/ethereum/address.c
@@ -166,6 +167,8 @@ if(HOST_CC)
             ${COMPONENT_DIR}/crypto/keccak256.h
             ${COMPONENT_DIR}/chains/bitcoin/address.c
             ${COMPONENT_DIR}/chains/bitcoin/address.h
+            ${COMPONENT_DIR}/chains/bitcoin/confirm.c
+            ${COMPONENT_DIR}/chains/bitcoin/confirm.h
             ${COMPONENT_DIR}/chains/bitcoin/path.c
             ${COMPONENT_DIR}/chains/bitcoin/path.h
             ${COMPONENT_DIR}/chains/bitcoin/wallet.c

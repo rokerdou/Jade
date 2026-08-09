@@ -53,8 +53,10 @@ They also include external-oracle checks against mainstream community libraries:
   bounded Testnet subset. It collects meta, one input at a time, one output at a
   time, validates input/output totals, computes fee, then returns
   `Failure(ActionCancelled, "Bitcoin signing disabled")` before any private key
-  or signature code is reachable. Orphan or out-of-order `TxAck` returns
-  `Failure(DataError)` and clears the pending state.
+  or signature code is reachable. Before that terminal failure it builds a
+  Bitcoin confirmation summary containing path, recipient address, amount, and
+  fee, and asks the hardware UI to confirm it. Orphan or out-of-order `TxAck`
+  returns `Failure(DataError)` and clears the pending state.
 
 These Python packages are development-test dependencies only. They are installed
 into `.host-oracle-venv/` and are not linked into firmware or ESP-IDF builds.
@@ -81,7 +83,9 @@ Current host-gate coverage:
   wire type, truncated varint, overlong varint, truncated length-delimited
   fields, oversized field lengths, and too-large field numbers.
 - Fake hardware confirmation UI rejects summaries that cannot be rendered within
-  the T-Display-S3/Jade message line limits.
+  the T-Display-S3/Jade message line limits. Text fields, including BTC bech32
+  addresses, are paginated into at most four display lines per page; long text
+  must never be silently truncated.
 - Sensitive or unsupported Trezor messages such as `GetEntropy`, `LoadDevice`,
   `ResetDevice`, `TxAckPaymentRequest`, `CipherKeyValue`, `BackupDevice`,
   `RecoveryDevice`, and `UnlockPath` are rejected before reaching key material.

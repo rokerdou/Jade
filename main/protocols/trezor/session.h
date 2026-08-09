@@ -23,6 +23,7 @@ typedef bool (*trezor_session_public_key_callback_t)(
     void* ctx, const trezor_public_key_request_t* request, trezor_public_key_response_t* response);
 typedef bool (*trezor_session_eth_sign_tx_callback_t)(
     void* ctx, const ethereum_tx_preflight_request_t* request, ethereum_signature_t* signature);
+typedef bool (*trezor_session_btc_confirm_tx_callback_t)(void* ctx, const bitcoin_confirm_request_t* request);
 typedef bool (*trezor_session_bool_callback_t)(void* ctx);
 typedef bool (*trezor_session_initialize_callback_t)(void* ctx, const uint8_t* session_id, size_t session_id_len);
 
@@ -54,6 +55,8 @@ typedef struct {
     void* get_public_key_ctx;
     trezor_session_eth_sign_tx_callback_t sign_eth_tx;
     void* sign_eth_tx_ctx;
+    trezor_session_btc_confirm_tx_callback_t confirm_btc_tx;
+    void* confirm_btc_tx_ctx;
 } trezor_session_t;
 
 bool trezor_session_handle_payload(const trezor_session_t* session, uint16_t request_type,

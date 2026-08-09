@@ -30,6 +30,7 @@ void __wrap_abort(void);
 #include "./bcur.c"
 #include "./chains/authorization.c"
 #include "./chains/bitcoin/address.c"
+#include "./chains/bitcoin/confirm.c"
 #include "./chains/bitcoin/path.c"
 #include "./chains/bitcoin/wallet.c"
 #include "./chains/confirm_summary.c"

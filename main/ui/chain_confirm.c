@@ -16,6 +16,8 @@ static const char* chain_name(const chain_confirm_chain_t chain)
     switch (chain) {
     case CHAIN_CONFIRM_CHAIN_ETHEREUM:
         return "Ethereum";
+    case CHAIN_CONFIRM_CHAIN_BITCOIN:
+        return "Bitcoin";
     case CHAIN_CONFIRM_CHAIN_TRON:
         return "Tron";
     }
@@ -68,6 +70,8 @@ static const char* field_name(const chain_confirm_field_kind_t kind)
         return "Token Name";
     case CHAIN_CONFIRM_FIELD_MAX_FEE:
         return "Max Fee";
+    case CHAIN_CONFIRM_FIELD_FEE:
+        return "Fee";
     case CHAIN_CONFIRM_FIELD_FEE_LIMIT:
         return "Fee Limit";
     case CHAIN_CONFIRM_FIELD_CALLDATA_HASH:
@@ -108,6 +112,8 @@ static const char* field_trace_stage(const chain_confirm_field_kind_t kind, cons
         return done ? "ui:token_name_ok" : "ui:token_name";
     case CHAIN_CONFIRM_FIELD_MAX_FEE:
         return done ? "ui:maxfee_ok" : "ui:maxfee";
+    case CHAIN_CONFIRM_FIELD_FEE:
+        return done ? "ui:fee_ok" : "ui:fee";
     case CHAIN_CONFIRM_FIELD_FEE_LIMIT:
         return done ? "ui:feelimit_ok" : "ui:feelimit";
     case CHAIN_CONFIRM_FIELD_CALLDATA_HASH:
@@ -172,6 +178,21 @@ static bool copy_hex_line(char* const output, const size_t output_len, const cha
             return false;
         }
         output[pos] = hex[offset + pos];
+        ++pos;
+    }
+    output[pos] = '\0';
+    return true;
+}
+
+static bool copy_text_line(char* const output, const size_t output_len, const char* const text, const size_t offset)
+{
+    if (!output || output_len == 0 || !text) {
+        return false;
+    }
+
+    size_t pos = 0;
+    while (text[offset + pos] != '\0' && pos < CHAIN_CONFIRM_UI_DISPLAY_LINE_MAX - 1U) {
+        output[pos] = text[offset + pos];
         ++pos;
     }
     output[pos] = '\0';
@@ -263,8 +284,38 @@ static bool show_text_value(const char* const title, const char* const value)
 #ifdef CONFIG_TREZOR_USB_HID
     trace_text_value(title, value);
 #endif
-    const char* message[] = { value };
-    return await_continueback_activity(title, message, 1, true, NULL);
+    size_t offset = 0;
+    unsigned int page = 1;
+    while (value[offset] != '\0') {
+        char lines[CHAIN_CONFIRM_UI_MAX_MESSAGE_LINES][CHAIN_CONFIRM_UI_DISPLAY_LINE_MAX] = { { 0 } };
+        const char* message[CHAIN_CONFIRM_UI_MAX_MESSAGE_LINES] = { lines[0], lines[1], lines[2], lines[3] };
+        size_t num_lines = 0;
+        while (value[offset] != '\0' && num_lines < CHAIN_CONFIRM_UI_MAX_MESSAGE_LINES) {
+            if (!copy_text_line(lines[num_lines], sizeof(lines[num_lines]), value, offset)) {
+                return false;
+            }
+            ++num_lines;
+            offset += CHAIN_CONFIRM_UI_DISPLAY_LINE_MAX - 1U;
+        }
+        if (num_lines == 0 || num_lines > CHAIN_CONFIRM_UI_MAX_MESSAGE_LINES) {
+            return false;
+        }
+
+        char page_title[32];
+        const char* display_title = title;
+        if (page > 1 || value[offset] != '\0') {
+            const int ret = snprintf(page_title, sizeof(page_title), "%s %u", title, page);
+            if (ret <= 0 || (size_t)ret >= sizeof(page_title)) {
+                return false;
+            }
+            display_title = page_title;
+        }
+        if (!await_continueback_activity(display_title, message, num_lines, true, NULL)) {
+            return false;
+        }
+        ++page;
+    }
+    return true;
 }
 
 static bool show_hex_value(const char* const title, const uint8_t* const bytes, const size_t bytes_len)

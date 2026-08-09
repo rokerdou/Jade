@@ -12,6 +12,7 @@
 
 #include "../../chains/bitcoin/path.h"
 #include "../../chains/bitcoin/wallet.h"
+#include "../../chains/bitcoin/confirm.h"
 #include "../../chains/ethereum/address.h"
 #include "../../chains/ethereum/path.h"
 #include "../../chains/ethereum/sign.h"
@@ -541,6 +542,28 @@ static bool trezor_usb_hid_sign_eth_tx(
     return ok;
 }
 
+static bool trezor_usb_hid_confirm_btc_tx(void* ctx, const bitcoin_confirm_request_t* const request)
+{
+    (void)ctx;
+    if (!request || !trezor_usb_hid_ensure_wallet_ready()) {
+        trezor_trace_set_stage("btcsign:confirm_reject");
+        return false;
+    }
+
+    chain_confirm_summary_t summary;
+    if (!bitcoin_confirm_summary_from_request(request, &summary)) {
+        trezor_trace_set_stage("btcsign:summary_fail");
+        return false;
+    }
+
+    trezor_trace_set_stage("btcsign:display");
+    idletimer_set_min_timeout_secs(TREZOR_USB_HID_INTERACTIVE_TIMEOUT_SECS);
+    const bool ok = show_chain_confirm_summary_activity(&summary);
+    idletimer_set_min_timeout_secs(0);
+    trezor_trace_set_stage(ok ? "btcsign:display_ok" : "btcsign:display_cancel");
+    return ok;
+}
+
 static trezor_session_t trezor_usb_hid_session(void)
 {
     const bool initialized = wallet_core_is_initialized();
@@ -588,6 +611,8 @@ static trezor_session_t trezor_usb_hid_session(void)
         .get_public_key_ctx = NULL,
         .sign_eth_tx = trezor_usb_hid_sign_eth_tx,
         .sign_eth_tx_ctx = NULL,
+        .confirm_btc_tx = trezor_usb_hid_confirm_btc_tx,
+        .confirm_btc_tx_ctx = NULL,
     };
     return session;
 }

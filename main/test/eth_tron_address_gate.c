@@ -1,4 +1,5 @@
 #include "chains/bitcoin/address.h"
+#include "chains/bitcoin/confirm.h"
 #include "chains/bitcoin/path.h"
 #include "chains/bitcoin/wallet.h"
 #include "chains/ethereum/address.h"
@@ -110,6 +111,8 @@ static bool g_trezor_public_key_ok = true;
 static trezor_public_key_request_t g_last_trezor_public_key_request;
 static bool g_trezor_eth_sign_ok = true;
 static size_t g_trezor_eth_sign_calls = 0;
+static size_t g_trezor_btc_confirm_calls = 0;
+static bitcoin_confirm_request_t g_last_trezor_btc_confirm_request;
 static ethereum_tx_preflight_request_t g_last_trezor_eth_sign_request;
 static uint32_t g_last_trezor_eth_sign_path[WALLET_CORE_MAX_PATH_LEN];
 static uint8_t g_last_trezor_eth_sign_value[EVM_ABI_WORD_LEN];
@@ -203,7 +206,9 @@ static size_t path_part_len(const uint32_t part)
 static bool test_text_line_fits_display(const char* const text)
 {
     const size_t len = text ? strnlen(text, CHAIN_CONFIRM_MAX_TEXT + 1U) : 0;
-    return len > 0 && len < CHAIN_CONFIRM_UI_DISPLAY_LINE_MAX;
+    const size_t chars_per_line = CHAIN_CONFIRM_UI_DISPLAY_LINE_MAX - 1U;
+    const size_t lines = chars_per_line ? (len + chars_per_line - 1U) / chars_per_line : 0;
+    return len > 0 && len < CHAIN_CONFIRM_MAX_TEXT && lines > 0 && lines <= CHAIN_CONFIRM_UI_MAX_MESSAGE_LINES;
 }
 
 static bool test_path_line_fits_display(const chain_confirm_path_t* const path)
@@ -473,6 +478,23 @@ static bool trezor_test_sign_eth_tx(
         signature->s[i] = (uint8_t)(0xc0 + i);
     }
     return true;
+}
+
+static bool trezor_test_confirm_btc_tx(void* ctx, const bitcoin_confirm_request_t* const request)
+{
+    (void)ctx;
+    if (!request) {
+        return false;
+    }
+
+    chain_confirm_summary_t summary;
+    if (!bitcoin_confirm_summary_from_request(request, &summary)) {
+        return false;
+    }
+
+    ++g_trezor_btc_confirm_calls;
+    memcpy(&g_last_trezor_btc_confirm_request, request, sizeof(g_last_trezor_btc_confirm_request));
+    return show_chain_confirm_summary_activity(&summary);
 }
 
 static bool trezor_test_needs_local_unlock(void* ctx)
@@ -959,6 +981,7 @@ static void make_oracle_test_session(trezor_session_t* const session, trezor_ses
     session->get_eth_address = trezor_test_get_eth_address;
     session->get_public_key = trezor_test_get_public_key;
     session->sign_eth_tx = trezor_test_sign_eth_tx;
+    session->confirm_btc_tx = trezor_test_confirm_btc_tx;
 }
 
 static int run_trezor_wire_oracle(const char* const request_hex)
@@ -2342,6 +2365,8 @@ int main(int argc, char** argv)
         .get_public_key_ctx = NULL,
         .sign_eth_tx = trezor_test_sign_eth_tx,
         .sign_eth_tx_ctx = NULL,
+        .confirm_btc_tx = trezor_test_confirm_btc_tx,
+        .confirm_btc_tx_ctx = NULL,
     };
     uint8_t session_request_chunks[2304];
     uint8_t session_response_chunks[512];
@@ -2547,12 +2572,34 @@ int main(int argc, char** argv)
     CHECK(session_response_payload_len == expected_btc_tx_request_payload_len);
     CHECK(memcmp(session_response_payload, expected_btc_tx_request_payload, expected_btc_tx_request_payload_len) == 0);
 
+    g_ui_calls = 0;
+    g_trezor_btc_confirm_calls = 0;
     CHECK(trezor_session_handle_payload(&trezor_session, TREZOR_MSG_TX_ACK, trezor_btc_output_ack_payload,
         trezor_btc_output_ack_payload_len, &session_response_type, session_response_payload, sizeof(session_response_payload),
         &session_response_payload_len));
     CHECK(session_response_type == TREZOR_MSG_FAILURE);
     CHECK(!trezor_session_state.has_pending_btc_signing);
     CHECK(trezor_session_state.pending_btc_signing.phase == TREZOR_BITCOIN_SIGNING_PHASE_NONE);
+    CHECK(g_trezor_btc_confirm_calls == 1);
+    CHECK(g_ui_calls == 1);
+    CHECK(g_last_trezor_btc_confirm_request.path_len == ARRAY_LEN(btc_state_path));
+    CHECK(memcmp(g_last_trezor_btc_confirm_request.path, btc_state_path, sizeof(btc_state_path)) == 0);
+    CHECK(strcmp(g_last_trezor_btc_confirm_request.to, "tb1qw508d6qejxtdg4y5r3zarvary0c5xw7kxpjzsx") == 0);
+    CHECK(g_last_trezor_btc_confirm_request.amount == 90000);
+    CHECK(g_last_trezor_btc_confirm_request.fee == 10000);
+    CHECK(g_last_ui_summary.chain == CHAIN_CONFIRM_CHAIN_BITCOIN);
+    CHECK(g_last_ui_summary.operation == CHAIN_CONFIRM_OPERATION_NATIVE_TRANSFER);
+    CHECK(chain_confirm_summary_has_field(&g_last_ui_summary, CHAIN_CONFIRM_FIELD_PATH));
+    const chain_confirm_field_t* const btc_to = find_confirm_field(&g_last_ui_summary, CHAIN_CONFIRM_FIELD_TO);
+    CHECK(btc_to && btc_to->value_type == CHAIN_CONFIRM_VALUE_TEXT);
+    CHECK(strcmp(btc_to->value.text, "tb1qw508d6qejxtdg4y5r3zarvary0c5xw7kxpjzsx") == 0);
+    const chain_confirm_field_t* const btc_amount = find_confirm_field(&g_last_ui_summary, CHAIN_CONFIRM_FIELD_AMOUNT);
+    CHECK(btc_amount && btc_amount->value_type == CHAIN_CONFIRM_VALUE_TEXT);
+    CHECK(strcmp(btc_amount->value.text, "90000 sats") == 0);
+    const chain_confirm_field_t* const btc_fee = find_confirm_field(&g_last_ui_summary, CHAIN_CONFIRM_FIELD_FEE);
+    CHECK(btc_fee && btc_fee->value_type == CHAIN_CONFIRM_VALUE_TEXT);
+    CHECK(strcmp(btc_fee->value.text, "10000 sats") == 0);
+    CHECK(test_confirm_summary_fits_tdisplay_s3(&g_last_ui_summary));
     CHECK(trezor_payload_has_varint(
         session_response_payload, session_response_payload_len, 1, TREZOR_FAILURE_ACTION_CANCELLED));
 
@@ -2572,6 +2619,30 @@ int main(int argc, char** argv)
     CHECK(!trezor_session_state.has_pending_btc_signing);
     CHECK(trezor_payload_has_varint(
         session_response_payload, session_response_payload_len, 1, TREZOR_FAILURE_DATA_ERROR));
+
+    CHECK(trezor_session_handle_payload(&trezor_session, TREZOR_MSG_SIGN_TX, trezor_valid_sign_tx_payload,
+        trezor_valid_sign_tx_payload_len, &session_response_type, session_response_payload, sizeof(session_response_payload),
+        &session_response_payload_len));
+    CHECK(session_response_type == TREZOR_MSG_TX_REQUEST);
+    CHECK(trezor_session_handle_payload(&trezor_session, TREZOR_MSG_TX_ACK, trezor_btc_meta_ack_payload,
+        trezor_btc_meta_ack_payload_len, &session_response_type, session_response_payload, sizeof(session_response_payload),
+        &session_response_payload_len));
+    CHECK(session_response_type == TREZOR_MSG_TX_REQUEST);
+    CHECK(trezor_session_handle_payload(&trezor_session, TREZOR_MSG_TX_ACK, trezor_btc_input_ack_payload,
+        trezor_btc_input_ack_payload_len, &session_response_type, session_response_payload, sizeof(session_response_payload),
+        &session_response_payload_len));
+    CHECK(session_response_type == TREZOR_MSG_TX_REQUEST);
+    g_ui_accept = false;
+    g_trezor_btc_confirm_calls = 0;
+    CHECK(trezor_session_handle_payload(&trezor_session, TREZOR_MSG_TX_ACK, trezor_btc_output_ack_payload,
+        trezor_btc_output_ack_payload_len, &session_response_type, session_response_payload, sizeof(session_response_payload),
+        &session_response_payload_len));
+    CHECK(session_response_type == TREZOR_MSG_FAILURE);
+    CHECK(g_trezor_btc_confirm_calls == 1);
+    CHECK(!trezor_session_state.has_pending_btc_signing);
+    CHECK(trezor_payload_has_varint(
+        session_response_payload, session_response_payload_len, 1, TREZOR_FAILURE_ACTION_CANCELLED));
+    g_ui_accept = true;
 
     trezor_protobuf_writer_init(&trezor_bitcoin_writer, trezor_bitcoin_payload, sizeof(trezor_bitcoin_payload));
     for (size_t i = 0; i < ARRAY_LEN(btc_state_path); ++i) {

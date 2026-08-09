@@ -3,6 +3,7 @@
 
 #include "../../wallet_core/wallet_core.h"
 #include "../../chains/bitcoin/address.h"
+#include "../../chains/bitcoin/confirm.h"
 
 #include <stdbool.h>
 #include <stddef.h>
@@ -125,5 +126,7 @@ bool trezor_bitcoin_signing_apply_tx_ack(
 bool trezor_bitcoin_signing_encode_next_request(
     const trezor_bitcoin_signing_state_t* state, uint8_t* output, size_t output_len, size_t* written);
 bool trezor_bitcoin_signing_ready(const trezor_bitcoin_signing_state_t* state);
+bool trezor_bitcoin_signing_to_confirm_request(
+    const trezor_bitcoin_signing_state_t* state, bitcoin_confirm_request_t* request);
 
 #endif /* TREZOR_BITCOIN_H_ */
