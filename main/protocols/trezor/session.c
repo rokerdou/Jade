@@ -1,7 +1,7 @@
 #ifndef AMALGAMATED_BUILD
 #include "session.h"
 
-#include "bitcoin.h"
+#include "bitcoin/protocol.h"
 #include "dispatcher.h"
 #include "ethereum/normalizer.h"
 #include "failure.h"

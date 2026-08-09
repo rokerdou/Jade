@@ -18,7 +18,7 @@
 #include "chains/tron/path.h"
 #include "chains/tron/tx.h"
 #include "crypto/keccak256.h"
-#include "protocols/trezor/bitcoin.h"
+#include "protocols/trezor/bitcoin/protocol.h"
 #include "protocols/trezor/dispatcher.h"
 #include "protocols/trezor/ethereum/protocol.h"
 #include "protocols/trezor/ethereum/definitions.h"

@@ -1,8 +1,8 @@
 #ifndef AMALGAMATED_BUILD
-#include "bitcoin.h"
+#include "protocol.h"
 
-#include "protobuf.h"
-#include "../../chains/bitcoin/path.h"
+#include "../protobuf.h"
+#include "../../../chains/bitcoin/path.h"
 
 #include <string.h>
 #include <wally_address.h>

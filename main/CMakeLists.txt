@@ -56,6 +56,7 @@ idf_component_register(SRC_DIRS "."
                                 "fonts"
                                 "process"
                                 "protocols/trezor"
+                                "protocols/trezor/bitcoin"
                                 "protocols/trezor/ethereum"
                                 "wallet_core"
                                 "utils"
@@ -135,7 +136,7 @@ if(HOST_CC)
             ${COMPONENT_DIR}/chains/ethereum/tx.c
             ${COMPONENT_DIR}/chains/ethereum/tx_request.c
             ${COMPONENT_DIR}/chains/ethereum/wallet.c
-            ${COMPONENT_DIR}/protocols/trezor/bitcoin.c
+            ${COMPONENT_DIR}/protocols/trezor/bitcoin/protocol.c
             ${COMPONENT_DIR}/protocols/trezor/dispatcher.c
             ${COMPONENT_DIR}/protocols/trezor/ethereum/protocol.c
             ${COMPONENT_DIR}/protocols/trezor/ethereum/definitions.c
@@ -193,8 +194,8 @@ if(HOST_CC)
             ${COMPONENT_DIR}/chains/ethereum/tx_request.h
             ${COMPONENT_DIR}/chains/ethereum/wallet.c
             ${COMPONENT_DIR}/chains/ethereum/wallet.h
-            ${COMPONENT_DIR}/protocols/trezor/bitcoin.c
-            ${COMPONENT_DIR}/protocols/trezor/bitcoin.h
+            ${COMPONENT_DIR}/protocols/trezor/bitcoin/protocol.c
+            ${COMPONENT_DIR}/protocols/trezor/bitcoin/protocol.h
             ${COMPONENT_DIR}/protocols/trezor/dispatcher.c
             ${COMPONENT_DIR}/protocols/trezor/dispatcher.h
             ${COMPONENT_DIR}/protocols/trezor/ethereum/protocol.c

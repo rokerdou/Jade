@@ -1,9 +1,9 @@
-#ifndef TREZOR_BITCOIN_H_
-#define TREZOR_BITCOIN_H_
+#ifndef TREZOR_BITCOIN_PROTOCOL_H_
+#define TREZOR_BITCOIN_PROTOCOL_H_
 
-#include "../../wallet_core/wallet_core.h"
-#include "../../chains/bitcoin/address.h"
-#include "../../chains/bitcoin/confirm.h"
+#include "../../../wallet_core/wallet_core.h"
+#include "../../../chains/bitcoin/address.h"
+#include "../../../chains/bitcoin/confirm.h"
 
 #include <stdbool.h>
 #include <stddef.h>
@@ -154,4 +154,4 @@ bool trezor_bitcoin_signing_build_p2wpkh_signed_tx(const trezor_bitcoin_signing_
     const trezor_bitcoin_signature_t* signatures, size_t signatures_len, uint8_t* serialized_tx,
     size_t serialized_tx_len, size_t* serialized_tx_written);
 
-#endif /* TREZOR_BITCOIN_H_ */
+#endif /* TREZOR_BITCOIN_PROTOCOL_H_ */

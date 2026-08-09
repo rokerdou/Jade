@@ -1,7 +1,7 @@
 #ifndef TREZOR_SESSION_H_
 #define TREZOR_SESSION_H_
 
-#include "bitcoin.h"
+#include "bitcoin/protocol.h"
 #include "ethereum/protocol.h"
 #include "features.h"
 #include "public_key.h"

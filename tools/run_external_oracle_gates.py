@@ -434,6 +434,21 @@ def run_local_wire_oracle(gate: Path, message_type: int, message: messages.Messa
     return int(parsed["response_type"]), bytes.fromhex(parsed["response_payload"])
 
 
+def assert_trezor_failure(
+    gate: Path,
+    message_type: int,
+    message: messages.MessageType,
+    expected_code: messages.FailureType,
+    case_name: str,
+) -> None:
+    response_type, payload = run_local_wire_oracle(gate, message_type, message)
+    if response_type != messages.MessageType.Failure:
+        raise AssertionError(f"{case_name} must fail, got response type {response_type}")
+    failure = protobuf.load_message(io.BytesIO(payload), messages.Failure)
+    if failure.code != expected_code:
+        raise AssertionError(f"{case_name} failure code mismatch: actual={failure.code} expected={expected_code}")
+
+
 @dataclass(frozen=True)
 class BtcSignTxHostStep:
     request_type: messages.RequestType
@@ -855,6 +870,83 @@ def check_trezorlib_protocol_oracle(gate: Path, local_vectors: dict[str, str]) -
         raise AssertionError(f"unexpected ERC20 definitions signature v: {tx_request.signature_v}")
     if len(tx_request.signature_r or b"") != 32 or len(tx_request.signature_s or b"") != 32:
         raise AssertionError("ERC20 definitions signature response has invalid r/s length")
+
+    assert_trezor_failure(
+        gate,
+        messages.MessageType.EthereumSignTx,
+        messages.EthereumSignTx(
+            address_n=eth_path,
+            nonce=b"\x01",
+            gas_price=b"\x01",
+            gas_limit=b"\x52\x08",
+            to="",
+            value=b"",
+            data_initial_chunk=b"\x60",
+            data_length=1,
+            chain_id=1,
+        ),
+        messages.FailureType.DataError,
+        "Ethereum contract creation",
+    )
+    assert_trezor_failure(
+        gate,
+        messages.MessageType.EthereumSignTx,
+        messages.EthereumSignTx(
+            address_n=eth_path,
+            nonce=b"\x09",
+            gas_price=b"\x04\xa8\x17\xc8\x00",
+            gas_limit=b"\xea\x60",
+            to="0x" + "11" * 20,
+            value=b"",
+            data_initial_chunk=bytes.fromhex(local_vectors["erc20_transfer_call"]),
+            data_length=len(bytes.fromhex(local_vectors["erc20_transfer_call"])),
+            chain_id=2,
+            definitions=messages.EthereumDefinitions(
+                encoded_token=bytes.fromhex(local_vectors["trezor_usdt_signed_token_definition"])
+            ),
+        ),
+        messages.FailureType.ActionCancelled,
+        "Ethereum token definition chain mismatch",
+    )
+    assert_trezor_failure(
+        gate,
+        messages.MessageType.EthereumSignTx,
+        messages.EthereumSignTx(
+            address_n=eth_path,
+            nonce=b"\x09",
+            gas_price=b"\x04\xa8\x17\xc8\x00",
+            gas_limit=b"\xea\x60",
+            to="0x" + "11" * 20,
+            value=b"",
+            data_initial_chunk=bytes.fromhex(local_vectors["erc20_transfer_call"]),
+            data_length=len(bytes.fromhex(local_vectors["erc20_transfer_call"])),
+            chain_id=1,
+            definitions=messages.EthereumDefinitions(encoded_token=b"not-a-signed-definition"),
+        ),
+        messages.FailureType.DataError,
+        "Ethereum malformed token definition",
+    )
+    assert_trezor_failure(
+        gate,
+        messages.MessageType.EthereumSignTxEIP1559,
+        messages.EthereumSignTxEIP1559(
+            address_n=eth_path,
+            nonce=b"",
+            max_gas_fee=b"\x02",
+            max_priority_fee=b"\x01",
+            gas_limit=b"\x52\x08",
+            to="0x" + "35" * 20,
+            value=b"",
+            data_initial_chunk=b"",
+            data_length=0,
+            chain_id=1,
+            access_list=[
+                messages.EthereumAccessList(address="0x" + "12" * 20, storage_keys=[b"\x00" * 32])
+            ],
+        ),
+        messages.FailureType.DataError,
+        "Ethereum EIP1559 access list",
+    )
 
     response_type, payload = run_local_wire_oracle(
         gate,
