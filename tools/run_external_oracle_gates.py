@@ -14,6 +14,8 @@ from pathlib import Path
 import base58
 import rlp
 from bech32 import bech32_encode, convertbits
+from eth_account import Account
+from eth_account.typed_transactions import TypedTransaction
 from eth_abi import decode as abi_decode
 from eth_keys import keys
 from eth_utils import keccak, to_checksum_address
@@ -230,6 +232,71 @@ def check_eth_signed_raw_tx_oracle(local_vectors: dict[str, str], expected: dict
         if actual_value != expected_value:
             raise AssertionError(
                 f"Ethereum signed raw tx oracle mismatch for {key}: actual={actual_value} expected={expected_value}"
+            )
+
+
+def check_eth_eip1559_signed_raw_tx_oracle(local_vectors: dict[str, str], expected: dict[str, str]) -> None:
+    """Verify EIP-1559 raw tx semantics with eth-account's typed tx support."""
+
+    tx_before: dict[str, object] = {
+        "type": 2,
+        "chainId": 1,
+        "nonce": 0,
+        "maxPriorityFeePerGas": 1,
+        "maxFeePerGas": 2,
+        "gas": 21_000,
+        "to": "0x3535353535353535353535353535353535353535",
+        "value": 0,
+        "data": b"",
+        "accessList": [],
+    }
+    signed = Account.sign_transaction(tx_before, PRIVATE_KEY_ONE)
+    raw_tx = signed.raw_transaction
+    if not raw_tx or raw_tx[0] != 2:
+        raise AssertionError(f"EIP1559 signed raw tx must start with type 0x02: {raw_tx.hex()}")
+
+    decoded = TypedTransaction.from_bytes(raw_tx)
+    decoded_dict = decoded.as_dict()
+    signing_hash = decoded.hash()
+    expected_signing_hash = keccak(bytes.fromhex(local_vectors["eth_eip1559_signing_payload"]))
+    if signing_hash != expected_signing_hash:
+        raise AssertionError(
+            f"EIP1559 signing hash mismatch: actual={signing_hash.hex()} expected={expected_signing_hash.hex()}"
+        )
+
+    recovered = Account.recover_transaction(raw_tx)
+    if recovered != expected["eth_checksum_address"]:
+        raise AssertionError(f"EIP1559 recovered from mismatch: actual={recovered} expected={expected['eth_checksum_address']}")
+
+    expected_after: dict[str, object] = {
+        "type": tx_before["type"],
+        "chainId": tx_before["chainId"],
+        "nonce": tx_before["nonce"],
+        "maxPriorityFeePerGas": tx_before["maxPriorityFeePerGas"],
+        "maxFeePerGas": tx_before["maxFeePerGas"],
+        "gas": tx_before["gas"],
+        "to": tx_before["to"],
+        "value": tx_before["value"],
+        "data": "0x",
+        "accessList": (),
+    }
+    actual_after: dict[str, object] = {
+        "type": decoded_dict["type"],
+        "chainId": decoded_dict["chainId"],
+        "nonce": decoded_dict["nonce"],
+        "maxPriorityFeePerGas": decoded_dict["maxPriorityFeePerGas"],
+        "maxFeePerGas": decoded_dict["maxFeePerGas"],
+        "gas": decoded_dict["gas"],
+        "to": "0x" + bytes(decoded_dict["to"]).hex(),
+        "value": decoded_dict["value"],
+        "data": "0x" + bytes(decoded_dict["data"]).hex(),
+        "accessList": decoded_dict["accessList"],
+    }
+    for key, expected_value in expected_after.items():
+        actual_value = actual_after[key]
+        if actual_value != expected_value:
+            raise AssertionError(
+                f"EIP1559 signed raw tx oracle mismatch for {key}: actual={actual_value} expected={expected_value}"
             )
 
 
@@ -799,6 +866,7 @@ def main() -> int:
             return 1
 
     check_eth_signed_raw_tx_oracle(local, expected)
+    check_eth_eip1559_signed_raw_tx_oracle(local, expected)
     check_erc20_calldata_oracle(local, expected)
     check_trezorlib_btc_protobuf_oracle()
     check_trezorlib_btc_signtx_host_flow_oracle()
