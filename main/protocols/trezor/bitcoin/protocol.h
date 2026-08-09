@@ -115,6 +115,21 @@ typedef struct {
     size_t script_pubkey_len;
 } trezor_bitcoin_prev_output_t;
 
+typedef struct {
+    struct wally_tx* tx;
+    bool initialized;
+    uint8_t expected_txid[SHA256_LEN];
+    uint32_t inputs_count;
+    uint32_t outputs_count;
+    uint32_t prev_index;
+    size_t inputs_seen;
+    size_t outputs_seen;
+    bool has_prevout;
+    uint64_t prevout_amount;
+    uint8_t prevout_script[TREZOR_BITCOIN_PREV_SCRIPT_MAX_LEN];
+    size_t prevout_script_len;
+} trezor_bitcoin_prev_tx_verifier_t;
+
 typedef enum {
     TREZOR_BITCOIN_SIGNING_PHASE_NONE = 0,
     TREZOR_BITCOIN_SIGNING_PHASE_EXPECT_META,
@@ -157,6 +172,16 @@ bool trezor_bitcoin_prev_input_decode(
     const uint8_t* payload, size_t payload_len, trezor_bitcoin_prev_input_t* output);
 bool trezor_bitcoin_prev_output_decode(
     const uint8_t* payload, size_t payload_len, trezor_bitcoin_prev_output_t* output);
+void trezor_bitcoin_prev_tx_verifier_reset(trezor_bitcoin_prev_tx_verifier_t* verifier);
+bool trezor_bitcoin_prev_tx_verifier_init(trezor_bitcoin_prev_tx_verifier_t* verifier,
+    const trezor_bitcoin_transaction_t* meta, const uint8_t* expected_txid, size_t expected_txid_len,
+    uint32_t prev_index);
+bool trezor_bitcoin_prev_tx_verifier_apply_input(
+    trezor_bitcoin_prev_tx_verifier_t* verifier, const trezor_bitcoin_prev_input_t* input);
+bool trezor_bitcoin_prev_tx_verifier_apply_output(
+    trezor_bitcoin_prev_tx_verifier_t* verifier, const trezor_bitcoin_prev_output_t* output);
+bool trezor_bitcoin_prev_tx_verifier_finish(trezor_bitcoin_prev_tx_verifier_t* verifier, uint64_t* amount,
+    uint8_t* script_pubkey, size_t script_pubkey_len, size_t* script_pubkey_written);
 bool trezor_bitcoin_address_encode(const char* address, uint8_t* output, size_t output_len, size_t* written);
 bool trezor_bitcoin_tx_request_encode(trezor_bitcoin_request_type_t request_type, bool has_request_index,
     uint32_t request_index, uint8_t* output, size_t output_len, size_t* written);

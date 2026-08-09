@@ -1345,6 +1345,85 @@ int wally_tx_to_bytes(const struct wally_tx* tx, uint32_t flags, unsigned char* 
     return WALLY_OK;
 }
 
+int wally_tx_get_txid(const struct wally_tx* tx, unsigned char* bytes_out, size_t len)
+{
+    if (!tx || !bytes_out || len != SHA256_LEN || tx->num_inputs == 0 || tx->num_outputs == 0) {
+        return WALLY_EINVAL;
+    }
+    uint8_t serialized[2048];
+    size_t pos = 0;
+#define WRITE_BYTE(value)                                                                                              \
+    do {                                                                                                               \
+        if (pos >= sizeof(serialized)) {                                                                               \
+            return WALLY_EINVAL;                                                                                       \
+        }                                                                                                              \
+        serialized[pos++] = (uint8_t)(value);                                                                          \
+    } while (false)
+#define WRITE_BYTES(bytes, bytes_len)                                                                                  \
+    do {                                                                                                               \
+        if ((bytes_len) > sizeof(serialized) - pos) {                                                                  \
+            return WALLY_EINVAL;                                                                                       \
+        }                                                                                                              \
+        memcpy(serialized + pos, (bytes), (bytes_len));                                                                \
+        pos += (bytes_len);                                                                                            \
+    } while (false)
+#define WRITE_U32_LE(value)                                                                                            \
+    do {                                                                                                               \
+        uint32_t local_value = (uint32_t)(value);                                                                      \
+        WRITE_BYTE(local_value & 0xffU);                                                                               \
+        WRITE_BYTE((local_value >> 8) & 0xffU);                                                                        \
+        WRITE_BYTE((local_value >> 16) & 0xffU);                                                                       \
+        WRITE_BYTE((local_value >> 24) & 0xffU);                                                                       \
+    } while (false)
+#define WRITE_U64_LE(value)                                                                                            \
+    do {                                                                                                               \
+        uint64_t local_value = (uint64_t)(value);                                                                      \
+        for (size_t local_i = 0; local_i < 8; ++local_i) {                                                             \
+            WRITE_BYTE((local_value >> (8U * local_i)) & 0xffU);                                                       \
+        }                                                                                                              \
+    } while (false)
+#define WRITE_COMPACT(value)                                                                                           \
+    do {                                                                                                               \
+        size_t local_value = (size_t)(value);                                                                          \
+        if (local_value >= 0xfdU) {                                                                                    \
+            return WALLY_EINVAL;                                                                                       \
+        }                                                                                                              \
+        WRITE_BYTE(local_value);                                                                                       \
+    } while (false)
+
+    WRITE_U32_LE(tx->version);
+    WRITE_COMPACT(tx->num_inputs);
+    for (size_t i = 0; i < tx->num_inputs; ++i) {
+        const struct wally_tx_input* const input = &tx->inputs[i];
+        WRITE_BYTES(input->txhash, sizeof(input->txhash));
+        WRITE_U32_LE(input->index);
+        WRITE_COMPACT(input->script_len);
+        if (input->script_len) {
+            WRITE_BYTES(input->script, input->script_len);
+        }
+        WRITE_U32_LE(input->sequence);
+    }
+    WRITE_COMPACT(tx->num_outputs);
+    for (size_t i = 0; i < tx->num_outputs; ++i) {
+        const struct wally_tx_output* const output = &tx->outputs[i];
+        WRITE_U64_LE(output->satoshi);
+        WRITE_COMPACT(output->script_len);
+        WRITE_BYTES(output->script, output->script_len);
+    }
+    WRITE_U32_LE(tx->locktime);
+    uint8_t first_hash[SHA256_LEN];
+    const bool ok = wally_sha256(serialized, pos, first_hash, sizeof(first_hash)) == WALLY_OK
+        && wally_sha256(first_hash, sizeof(first_hash), bytes_out, len) == WALLY_OK;
+    memset(serialized, 0, sizeof(serialized));
+    memset(first_hash, 0, sizeof(first_hash));
+#undef WRITE_COMPACT
+#undef WRITE_U64_LE
+#undef WRITE_U32_LE
+#undef WRITE_BYTES
+#undef WRITE_BYTE
+    return ok ? WALLY_OK : WALLY_EINVAL;
+}
+
 int wally_tx_witness_stack_init_alloc(size_t allocation_len, struct wally_tx_witness_stack** output)
 {
     if (allocation_len != 2 || !output) {
@@ -2471,6 +2550,7 @@ int main(int argc, char** argv)
     CHECK(trezor_btc_prev_input.has_script_sig && trezor_btc_prev_input.script_sig_len == sizeof(trezor_btc_prev_script));
     CHECK(memcmp(trezor_btc_prev_input.script_sig, trezor_btc_prev_script, sizeof(trezor_btc_prev_script)) == 0);
     CHECK(trezor_btc_prev_input.has_sequence && trezor_btc_prev_input.sequence == 0xfffffffeUL);
+    const trezor_bitcoin_prev_input_t trezor_btc_valid_prev_input = trezor_btc_prev_input;
 
     trezor_protobuf_writer_init(
         &trezor_btc_prev_item_writer, trezor_btc_prev_item_payload, sizeof(trezor_btc_prev_item_payload));
@@ -2508,6 +2588,7 @@ int main(int argc, char** argv)
     CHECK(memcmp(trezor_btc_prev_output.script_pubkey, EXPECTED_BTC_P2WPKH_SCRIPTPUBKEY,
               sizeof(EXPECTED_BTC_P2WPKH_SCRIPTPUBKEY))
         == 0);
+    const trezor_bitcoin_prev_output_t trezor_btc_valid_prev_output = trezor_btc_prev_output;
 
     trezor_protobuf_writer_init(
         &trezor_btc_prev_item_writer, trezor_btc_prev_item_payload, sizeof(trezor_btc_prev_item_payload));
@@ -2523,6 +2604,70 @@ int main(int argc, char** argv)
     CHECK(trezor_protobuf_write_varint_field(&trezor_btc_prev_item_writer, 3, 0));
     CHECK(!trezor_bitcoin_prev_output_decode(
         trezor_btc_prev_item_payload, trezor_btc_prev_item_writer.len, &trezor_btc_prev_output));
+
+    struct wally_tx* expected_prev_tx = NULL;
+    uint8_t expected_prev_txid[SHA256_LEN];
+    CHECK(wally_tx_init_alloc(2, 0, 1, 2, &expected_prev_tx) == WALLY_OK);
+    CHECK(expected_prev_tx);
+    CHECK(wally_tx_add_raw_input(expected_prev_tx, trezor_btc_prev_hash, sizeof(trezor_btc_prev_hash), 7,
+              0xfffffffeUL, trezor_btc_prev_script, sizeof(trezor_btc_prev_script), NULL, 0)
+        == WALLY_OK);
+    CHECK(wally_tx_add_raw_output(expected_prev_tx, 90000, EXPECTED_BTC_P2WPKH_SCRIPTPUBKEY,
+              sizeof(EXPECTED_BTC_P2WPKH_SCRIPTPUBKEY), 0)
+        == WALLY_OK);
+    CHECK(wally_tx_add_raw_output(expected_prev_tx, 1000, EXPECTED_BTC_P2WPKH_SCRIPTPUBKEY,
+              sizeof(EXPECTED_BTC_P2WPKH_SCRIPTPUBKEY), 0)
+        == WALLY_OK);
+    CHECK(wally_tx_get_txid(expected_prev_tx, expected_prev_txid, sizeof(expected_prev_txid)) == WALLY_OK);
+    CHECK(wally_tx_free(expected_prev_tx) == WALLY_OK);
+
+    trezor_bitcoin_transaction_t trezor_btc_prev_meta;
+    memset(&trezor_btc_prev_meta, 0, sizeof(trezor_btc_prev_meta));
+    trezor_btc_prev_meta.has_version = true;
+    trezor_btc_prev_meta.version = 2;
+    trezor_btc_prev_meta.has_lock_time = true;
+    trezor_btc_prev_meta.lock_time = 0;
+    trezor_btc_prev_meta.has_inputs_cnt = true;
+    trezor_btc_prev_meta.inputs_cnt = 1;
+    trezor_btc_prev_meta.has_outputs_cnt = true;
+    trezor_btc_prev_meta.outputs_cnt = 2;
+
+    trezor_bitcoin_prev_output_t trezor_btc_prev_output_change = trezor_btc_valid_prev_output;
+    trezor_btc_prev_output_change.amount = 1000;
+    trezor_bitcoin_prev_tx_verifier_t trezor_btc_prev_verifier;
+    memset(&trezor_btc_prev_verifier, 0, sizeof(trezor_btc_prev_verifier));
+    CHECK(trezor_bitcoin_prev_tx_verifier_init(&trezor_btc_prev_verifier, &trezor_btc_prev_meta,
+        expected_prev_txid, sizeof(expected_prev_txid), 0));
+    CHECK(!trezor_bitcoin_prev_tx_verifier_apply_output(&trezor_btc_prev_verifier, &trezor_btc_valid_prev_output));
+    CHECK(trezor_bitcoin_prev_tx_verifier_apply_input(&trezor_btc_prev_verifier, &trezor_btc_valid_prev_input));
+    CHECK(trezor_bitcoin_prev_tx_verifier_apply_output(&trezor_btc_prev_verifier, &trezor_btc_valid_prev_output));
+    CHECK(trezor_bitcoin_prev_tx_verifier_apply_output(&trezor_btc_prev_verifier, &trezor_btc_prev_output_change));
+    uint64_t verified_prevout_amount = 0;
+    uint8_t verified_prevout_script[TREZOR_BITCOIN_PREV_SCRIPT_MAX_LEN];
+    size_t verified_prevout_script_len = 0;
+    CHECK(trezor_bitcoin_prev_tx_verifier_finish(&trezor_btc_prev_verifier, &verified_prevout_amount,
+        verified_prevout_script, sizeof(verified_prevout_script), &verified_prevout_script_len));
+    CHECK(verified_prevout_amount == 90000);
+    CHECK(verified_prevout_script_len == sizeof(EXPECTED_BTC_P2WPKH_SCRIPTPUBKEY));
+    CHECK(memcmp(verified_prevout_script, EXPECTED_BTC_P2WPKH_SCRIPTPUBKEY,
+              sizeof(EXPECTED_BTC_P2WPKH_SCRIPTPUBKEY))
+        == 0);
+
+    uint8_t wrong_prev_txid[SHA256_LEN];
+    memcpy(wrong_prev_txid, expected_prev_txid, sizeof(wrong_prev_txid));
+    wrong_prev_txid[0] ^= 0x01;
+    CHECK(trezor_bitcoin_prev_tx_verifier_init(&trezor_btc_prev_verifier, &trezor_btc_prev_meta,
+        wrong_prev_txid, sizeof(wrong_prev_txid), 0));
+    CHECK(trezor_bitcoin_prev_tx_verifier_apply_input(&trezor_btc_prev_verifier, &trezor_btc_valid_prev_input));
+    CHECK(trezor_bitcoin_prev_tx_verifier_apply_output(&trezor_btc_prev_verifier, &trezor_btc_valid_prev_output));
+    CHECK(trezor_bitcoin_prev_tx_verifier_apply_output(&trezor_btc_prev_verifier, &trezor_btc_prev_output_change));
+    CHECK(!trezor_bitcoin_prev_tx_verifier_finish(&trezor_btc_prev_verifier, &verified_prevout_amount,
+        verified_prevout_script, sizeof(verified_prevout_script), &verified_prevout_script_len));
+    CHECK(verified_prevout_amount == 0);
+    CHECK(verified_prevout_script_len == 0);
+
+    CHECK(!trezor_bitcoin_prev_tx_verifier_init(&trezor_btc_prev_verifier, &trezor_btc_prev_meta,
+        expected_prev_txid, sizeof(expected_prev_txid), trezor_btc_prev_meta.outputs_cnt));
 
     trezor_protobuf_writer_init(&trezor_btc_output_writer, trezor_btc_output_payload, sizeof(trezor_btc_output_payload));
     CHECK(trezor_protobuf_write_string_field(
