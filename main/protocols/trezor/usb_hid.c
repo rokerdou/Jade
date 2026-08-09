@@ -3,15 +3,12 @@
 
 #ifdef CONFIG_TREZOR_USB_HID
 
-#include "messages.h"
-#include "protobuf.h"
 #include "public_key.h"
 #include "session.h"
 #include "trace.h"
 #include "auth_bridge.h"
 #include "wire.h"
 
-#include "../../chains/bitcoin/path.h"
 #include "../../chains/bitcoin/wallet.h"
 #include "../../chains/bitcoin/confirm.h"
 #include "../../chains/ethereum/address.h"
@@ -323,50 +320,6 @@ static bool trezor_usb_hid_response_header(
     return true;
 }
 
-static bool trezor_usb_hid_response_is_eth_signature(const uint8_t* const chunks, const size_t chunks_len)
-{
-    if (!chunks || chunks_len == 0) {
-        return false;
-    }
-
-    uint16_t message_type = 0;
-    uint8_t payload[96];
-    size_t payload_len = 0;
-    bool is_signature = false;
-    if (!trezor_wire_decode_message(chunks, chunks_len, &message_type, payload, sizeof(payload), &payload_len)
-        || message_type != TREZOR_MSG_ETHEREUM_TX_REQUEST) {
-        wally_bzero(payload, sizeof(payload));
-        return false;
-    }
-
-    bool has_v = false;
-    bool has_r = false;
-    bool has_s = false;
-    trezor_protobuf_reader_t reader;
-    trezor_protobuf_reader_init(&reader, payload, payload_len);
-    uint32_t field_number = 0;
-    uint8_t wire_type = 0;
-    const uint8_t* value = NULL;
-    size_t value_len = 0;
-    while (reader.pos < reader.len) {
-        if (!trezor_protobuf_reader_next(&reader, &field_number, &wire_type, &value, &value_len)) {
-            wally_bzero(payload, sizeof(payload));
-            return false;
-        }
-        if (field_number == 2 && wire_type == TREZOR_PROTOBUF_WIRE_VARINT) {
-            has_v = true;
-        } else if (field_number == 3 && wire_type == TREZOR_PROTOBUF_WIRE_LEN && value_len == 32) {
-            has_r = true;
-        } else if (field_number == 4 && wire_type == TREZOR_PROTOBUF_WIRE_LEN && value_len == 32) {
-            has_s = true;
-        }
-    }
-
-    is_signature = has_v && has_r && has_s;
-    wally_bzero(payload, sizeof(payload));
-    return is_signature;
-}
-
 static void trezor_usb_hid_show_signed_notice(void)
 {
     if (s_signed_notice_active) {
@@ -675,8 +628,9 @@ static void trezor_usb_hid_task(void* ignore)
             size_t tx_len = 0;
             trezor_trace_set_stage("usb:handle");
             bool show_signed_notice = false;
-            if (trezor_session_handle_wire(
-                    &session, s_hid_rx_chunks, rx_len, s_hid_tx_chunks, sizeof(s_hid_tx_chunks), &tx_len)) {
+            trezor_session_response_event_t response_event = TREZOR_SESSION_RESPONSE_EVENT_NONE;
+            if (trezor_session_handle_wire_ex(&session, s_hid_rx_chunks, rx_len, s_hid_tx_chunks,
+                    sizeof(s_hid_tx_chunks), &tx_len, &response_event)) {
                 trezor_trace_set_stage("usb:handled");
                 uint32_t available = 0;
                 uint32_t written = 0;
@@ -684,20 +638,22 @@ static void trezor_usb_hid_task(void* ignore)
                 size_t response_payload_len = 0;
                 const bool response_header_ok = trezor_usb_hid_response_header(
                     s_hid_tx_chunks, tx_len, &response_message_type, &response_payload_len);
-                if (response_header_ok && response_message_type == TREZOR_MSG_ETHEREUM_TX_REQUEST) {
+                const bool response_is_signed_result
+                    = response_event == TREZOR_SESSION_RESPONSE_EVENT_SIGNED_RESULT;
+                if (response_is_signed_result && response_header_ok) {
                     trezor_trace_checkpoint("usb:tx_start", "type=%u payload=%lu len=%lu",
                         (unsigned int)response_message_type, (unsigned long)response_payload_len,
                         (unsigned long)tx_len);
                 }
                 const bool sent = trezor_usb_hid_send_chunks(s_hid_tx_chunks, tx_len, &available, &written,
-                    response_header_ok && response_message_type == TREZOR_MSG_ETHEREUM_TX_REQUEST);
-                show_signed_notice = sent && trezor_usb_hid_response_is_eth_signature(s_hid_tx_chunks, tx_len);
+                    response_is_signed_result);
+                show_signed_notice = sent && response_is_signed_result;
                 trezor_trace_record_transport_result(sent, tx_len, available, written);
                 trezor_trace_set_note("usb tx sent=%u len=%lu av=%lu wr=%lu sig=%u", sent ? 1 : 0,
                     (unsigned long)tx_len, (unsigned long)available, (unsigned long)written,
                     show_signed_notice ? 1 : 0);
                 trezor_trace_set_stage(sent ? "usb:txdone" : "usb:txfail");
-                if (response_header_ok && response_message_type == TREZOR_MSG_ETHEREUM_TX_REQUEST) {
+                if (response_is_signed_result && response_header_ok) {
                     trezor_trace_checkpoint(sent ? "usb:txdone" : "usb:txfail", "type=%u payload=%lu len=%lu av=%lu wr=%lu sig=%u",
                         (unsigned int)response_message_type, (unsigned long)response_payload_len,
                         (unsigned long)tx_len, (unsigned long)available, (unsigned long)written,

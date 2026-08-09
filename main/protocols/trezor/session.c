@@ -17,6 +17,10 @@ static uint8_t s_trezor_session_request_payload[TREZOR_SESSION_MAX_REQUEST_PAYLO
 static uint8_t s_trezor_session_response_payload[TREZOR_SESSION_MAX_RESPONSE_PAYLOAD_LEN];
 static uint8_t s_trezor_session_pending_payload[TREZOR_SESSION_MAX_REQUEST_PAYLOAD_LEN];
 
+static bool trezor_session_handle_payload_ex(const trezor_session_t* session, uint16_t request_type,
+    const uint8_t* request_payload, size_t request_payload_len, uint16_t* response_type, uint8_t* response_payload,
+    size_t response_payload_len, size_t* response_payload_written, trezor_session_response_event_t* response_event);
+
 static bool trezor_session_failure_payload(const trezor_failure_type_t code, const char* const message,
     uint16_t* const response_type, uint8_t* const response_payload, const size_t response_payload_len,
     size_t* const response_payload_written)
@@ -111,7 +115,8 @@ static bool trezor_session_maybe_defer_for_local_unlock(const trezor_session_t* 
 
 static bool trezor_session_handle_button_ack(const trezor_session_t* const session, const uint8_t* const request_payload,
     const size_t request_payload_len, uint16_t* const response_type, uint8_t* const response_payload,
-    const size_t response_payload_len, size_t* const response_payload_written)
+    const size_t response_payload_len, size_t* const response_payload_written,
+    trezor_session_response_event_t* const response_event)
 {
     (void)request_payload;
     if (request_payload_len != 0) {
@@ -146,8 +151,8 @@ static bool trezor_session_handle_button_ack(const trezor_session_t* const sessi
     }
 
     trezor_trace_set_stage("unlock:replay");
-    const bool ok = trezor_session_handle_payload(session, pending_type, pending_payload, pending_payload_len,
-        response_type, response_payload, response_payload_len, response_payload_written);
+    const bool ok = trezor_session_handle_payload_ex(session, pending_type, pending_payload, pending_payload_len,
+        response_type, response_payload, response_payload_len, response_payload_written, response_event);
     trezor_trace_set_stage(ok ? "unlock:replay_ok" : "unlock:replay_fail");
     wally_bzero(pending_payload, TREZOR_SESSION_MAX_REQUEST_PAYLOAD_LEN);
     return ok;
@@ -238,7 +243,8 @@ static bool trezor_session_initialize_payload_read_session_id(const uint8_t* con
 }
 
 static bool trezor_session_eth_signing_continue(const trezor_session_t* const session, uint16_t* const response_type,
-    uint8_t* const response_payload, const size_t response_payload_len, size_t* const response_payload_written)
+    uint8_t* const response_payload, const size_t response_payload_len, size_t* const response_payload_written,
+    trezor_session_response_event_t* const response_event)
 {
     trezor_trace_set_stage("ethsign:cont");
     if (!session || !session->state || !response_type || !response_payload || !response_payload_written
@@ -290,12 +296,16 @@ static bool trezor_session_eth_signing_continue(const trezor_session_t* const se
     trezor_trace_set_stage(encoded ? "ethsign:encoded" : "ethsign:encode_fail");
     trezor_trace_checkpoint(encoded ? "ethsign:encoded" : "ethsign:encode_fail", "out=%lu",
         (unsigned long)(response_payload_written ? *response_payload_written : 0));
+    if (encoded && response_event) {
+        *response_event = TREZOR_SESSION_RESPONSE_EVENT_SIGNED_RESULT;
+    }
     wally_bzero(&signature, sizeof(signature));
     return encoded;
 }
 
 static bool trezor_session_btc_signing_continue(const trezor_session_t* const session, uint16_t* const response_type,
-    uint8_t* const response_payload, const size_t response_payload_len, size_t* const response_payload_written)
+    uint8_t* const response_payload, const size_t response_payload_len, size_t* const response_payload_written,
+    trezor_session_response_event_t* const response_event)
 {
     trezor_trace_set_stage("btcsign:cont");
     if (!session || !session->state || !response_type || !response_payload || !response_payload_written
@@ -367,6 +377,7 @@ static bool trezor_session_btc_signing_continue(const trezor_session_t* const se
         *response_type = TREZOR_MSG_TX_REQUEST;
         ok = ok && trezor_bitcoin_signed_tx_encode_next(&signed_tx, response_payload, response_payload_len,
                        response_payload_written);
+        const bool final_signed_response = ok && signed_tx.next_signature_index >= signed_tx.signatures_len;
         trezor_trace_set_stage(ok ? "btcsign:encoded" : "btcsign:encode_fail");
 
         wally_bzero(&session->state->pending_btc_signing, sizeof(session->state->pending_btc_signing));
@@ -380,6 +391,9 @@ static bool trezor_session_btc_signing_continue(const trezor_session_t* const se
             session->state->pending_btc_signed_tx = signed_tx;
             session->state->has_pending_btc_signed_tx = true;
         }
+        if (final_signed_response && response_event) {
+            *response_event = TREZOR_SESSION_RESPONSE_EVENT_SIGNED_RESULT;
+        }
         wally_bzero(&signed_tx, sizeof(signed_tx));
         return true;
     }
@@ -392,7 +406,8 @@ static bool trezor_session_btc_signing_continue(const trezor_session_t* const se
 }
 
 static bool trezor_session_btc_signed_tx_continue(const trezor_session_t* const session, uint16_t* const response_type,
-    uint8_t* const response_payload, const size_t response_payload_len, size_t* const response_payload_written)
+    uint8_t* const response_payload, const size_t response_payload_len, size_t* const response_payload_written,
+    trezor_session_response_event_t* const response_event)
 {
     if (!session || !session->state || !session->state->has_pending_btc_signed_tx || !response_type
         || !response_payload || !response_payload_written) {
@@ -404,8 +419,9 @@ static bool trezor_session_btc_signed_tx_continue(const trezor_session_t* const 
     const bool ok = trezor_bitcoin_signed_tx_encode_next(
         &session->state->pending_btc_signed_tx, response_payload, response_payload_len, response_payload_written);
     trezor_trace_set_stage(ok ? "btcsign:emit" : "btcsign:emit_fail");
-    if (ok && session->state->pending_btc_signed_tx.next_signature_index
-            >= session->state->pending_btc_signed_tx.signatures_len) {
+    const bool final_signed_response = ok && session->state->pending_btc_signed_tx.next_signature_index
+        >= session->state->pending_btc_signed_tx.signatures_len;
+    if (final_signed_response) {
         wally_bzero(&session->state->pending_btc_signed_tx, sizeof(session->state->pending_btc_signed_tx));
         session->state->has_pending_btc_signed_tx = false;
     }
@@ -414,18 +430,25 @@ static bool trezor_session_btc_signed_tx_continue(const trezor_session_t* const 
         return trezor_session_failure_payload(TREZOR_FAILURE_DATA_ERROR, "Bitcoin signed response failed",
             response_type, response_payload, response_payload_len, response_payload_written);
     }
+    if (final_signed_response && response_event) {
+        *response_event = TREZOR_SESSION_RESPONSE_EVENT_SIGNED_RESULT;
+    }
     return true;
 }
 
-bool trezor_session_handle_payload(const trezor_session_t* const session, const uint16_t request_type,
+static bool trezor_session_handle_payload_ex(const trezor_session_t* const session, const uint16_t request_type,
     const uint8_t* const request_payload, const size_t request_payload_len, uint16_t* const response_type,
-    uint8_t* const response_payload, const size_t response_payload_len, size_t* const response_payload_written)
+    uint8_t* const response_payload, const size_t response_payload_len, size_t* const response_payload_written,
+    trezor_session_response_event_t* const response_event)
 {
     if (!session || !response_type || !response_payload || !response_payload_written
         || (!request_payload && request_payload_len) || request_payload_len > TREZOR_SESSION_MAX_REQUEST_PAYLOAD_LEN) {
         return false;
     }
 
+    if (response_event) {
+        *response_event = TREZOR_SESSION_RESPONSE_EVENT_NONE;
+    }
     *response_payload_written = 0;
     if (!trezor_dispatcher_message_allowed(request_type)) {
         return trezor_session_failure_payload(TREZOR_FAILURE_UNEXPECTED_MESSAGE, "Unsupported message", response_type,
@@ -490,7 +513,7 @@ bool trezor_session_handle_payload(const trezor_session_t* const session, const 
 
     if (request_type == TREZOR_MSG_BUTTON_ACK) {
         return trezor_session_handle_button_ack(session, request_payload, request_payload_len, response_type,
-            response_payload, response_payload_len, response_payload_written);
+            response_payload, response_payload_len, response_payload_written, response_event);
     }
 
     if (request_type == TREZOR_MSG_GET_ADDRESS) {
@@ -599,7 +622,7 @@ bool trezor_session_handle_payload(const trezor_session_t* const session, const 
         session->state->has_pending_eth_signing = true;
         trezor_trace_set_stage("ethsign:continue");
         return trezor_session_eth_signing_continue(
-            session, response_type, response_payload, response_payload_len, response_payload_written);
+            session, response_type, response_payload, response_payload_len, response_payload_written, response_event);
     }
 
     if (request_type == TREZOR_MSG_ETHEREUM_TX_ACK) {
@@ -611,7 +634,7 @@ bool trezor_session_handle_payload(const trezor_session_t* const session, const 
                 response_type, response_payload, response_payload_len, response_payload_written);
         }
         return trezor_session_eth_signing_continue(
-            session, response_type, response_payload, response_payload_len, response_payload_written);
+            session, response_type, response_payload, response_payload_len, response_payload_written, response_event);
     }
 
     if (request_type == TREZOR_MSG_SIGN_TX) {
@@ -643,7 +666,7 @@ bool trezor_session_handle_payload(const trezor_session_t* const session, const 
 
         session->state->has_pending_btc_signing = true;
         return trezor_session_btc_signing_continue(
-            session, response_type, response_payload, response_payload_len, response_payload_written);
+            session, response_type, response_payload, response_payload_len, response_payload_written, response_event);
     }
 
     if (request_type == TREZOR_MSG_TX_ACK) {
@@ -658,7 +681,8 @@ bool trezor_session_handle_payload(const trezor_session_t* const session, const 
             }
             wally_bzero(&discard_tx_ack, sizeof(discard_tx_ack));
             return trezor_session_btc_signed_tx_continue(
-                session, response_type, response_payload, response_payload_len, response_payload_written);
+                session, response_type, response_payload, response_payload_len, response_payload_written,
+                response_event);
         }
         if (!session->state || !session->state->has_pending_btc_signing
             || !trezor_bitcoin_signing_apply_tx_ack(
@@ -669,7 +693,7 @@ bool trezor_session_handle_payload(const trezor_session_t* const session, const 
                 response_type, response_payload, response_payload_len, response_payload_written);
         }
         return trezor_session_btc_signing_continue(
-            session, response_type, response_payload, response_payload_len, response_payload_written);
+            session, response_type, response_payload, response_payload_len, response_payload_written, response_event);
     }
 
     if (request_type == TREZOR_MSG_GET_PUBLIC_KEY || request_type == TREZOR_MSG_ETHEREUM_GET_PUBLIC_KEY) {
@@ -717,14 +741,25 @@ bool trezor_session_handle_payload(const trezor_session_t* const session, const 
         response_payload, response_payload_len, response_payload_written);
 }
 
-bool trezor_session_handle_wire(const trezor_session_t* const session, const uint8_t* const request_chunks,
+bool trezor_session_handle_payload(const trezor_session_t* const session, const uint16_t request_type,
+    const uint8_t* const request_payload, const size_t request_payload_len, uint16_t* const response_type,
+    uint8_t* const response_payload, const size_t response_payload_len, size_t* const response_payload_written)
+{
+    return trezor_session_handle_payload_ex(session, request_type, request_payload, request_payload_len, response_type,
+        response_payload, response_payload_len, response_payload_written, NULL);
+}
+
+bool trezor_session_handle_wire_ex(const trezor_session_t* const session, const uint8_t* const request_chunks,
     const size_t request_chunks_len, uint8_t* const response_chunks, const size_t response_chunks_len,
-    size_t* const response_chunks_written)
+    size_t* const response_chunks_written, trezor_session_response_event_t* const response_event)
 {
     if (!response_chunks || !response_chunks_written) {
         return false;
     }
 
+    if (response_event) {
+        *response_event = TREZOR_SESSION_RESPONSE_EVENT_NONE;
+    }
     uint16_t request_type = 0;
     uint8_t* const request_payload = s_trezor_session_request_payload;
     size_t request_payload_len = 0;
@@ -742,8 +777,9 @@ bool trezor_session_handle_wire(const trezor_session_t* const session, const uin
         trezor_trace_set_stage("wire:trace_start");
         trezor_trace_record_request_start(request_type, request_payload, request_payload_len);
         trezor_trace_set_stage("wire:payload");
-        ok = trezor_session_handle_payload(session, request_type, request_payload, request_payload_len, &response_type,
-            response_payload, TREZOR_SESSION_MAX_RESPONSE_PAYLOAD_LEN, &response_payload_len);
+        ok = trezor_session_handle_payload_ex(session, request_type, request_payload, request_payload_len,
+            &response_type, response_payload, TREZOR_SESSION_MAX_RESPONSE_PAYLOAD_LEN, &response_payload_len,
+            response_event);
         trezor_trace_set_note("wire handled ok=%u resp=%u payload=%lu", ok ? 1 : 0, (unsigned int)response_type,
             (unsigned long)response_payload_len);
         trezor_trace_set_stage(ok ? "wire:handled_ok" : "wire:handled_fail");
@@ -767,12 +803,20 @@ bool trezor_session_handle_wire(const trezor_session_t* const session, const uin
     trezor_trace_set_note("wire encode ok=%u resp=%u chunks=%lu", ok ? 1 : 0, (unsigned int)response_type,
         (unsigned long)(response_chunks_written ? *response_chunks_written : 0));
     trezor_trace_set_stage(ok ? "wire:encode_ok" : "wire:encode_fail");
-    if (response_type == TREZOR_MSG_ETHEREUM_TX_REQUEST) {
+    if (response_event && *response_event == TREZOR_SESSION_RESPONSE_EVENT_SIGNED_RESULT) {
         trezor_trace_checkpoint(ok ? "wire:encode_ok" : "wire:encode_fail", "resp=%u payload=%lu chunks=%lu",
             (unsigned int)response_type, (unsigned long)response_payload_len,
             (unsigned long)(response_chunks_written ? *response_chunks_written : 0));
     }
     wally_bzero(response_payload, TREZOR_SESSION_MAX_RESPONSE_PAYLOAD_LEN);
     return ok;
+}
+
+bool trezor_session_handle_wire(const trezor_session_t* const session, const uint8_t* const request_chunks,
+    const size_t request_chunks_len, uint8_t* const response_chunks, const size_t response_chunks_len,
+    size_t* const response_chunks_written)
+{
+    return trezor_session_handle_wire_ex(
+        session, request_chunks, request_chunks_len, response_chunks, response_chunks_len, response_chunks_written, NULL);
 }
 #endif /* AMALGAMATED_BUILD */

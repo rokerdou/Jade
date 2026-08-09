@@ -710,6 +710,29 @@ static bool trezor_check_invalid_wire_failure(const trezor_session_t* const sess
         && trezor_payload_has_varint(response_payload, response_payload_len, 1, TREZOR_FAILURE_INVALID_PROTOCOL);
 }
 
+static bool trezor_test_handle_wire_payload_event(const trezor_session_t* const session, const uint16_t request_type,
+    const uint8_t* const request_payload, const size_t request_payload_len, uint16_t* const response_type,
+    uint8_t* const response_payload, const size_t response_payload_len, size_t* const response_payload_written,
+    trezor_session_response_event_t* const response_event)
+{
+    uint8_t request_chunks[2304];
+    uint8_t response_chunks[2304];
+    size_t request_chunks_len = 0;
+    size_t response_chunks_len = 0;
+    if (!session || !response_type || !response_payload || !response_payload_written
+        || (!request_payload && request_payload_len)
+        || !trezor_wire_encode_message(
+            request_type, request_payload, request_payload_len, request_chunks, sizeof(request_chunks),
+            &request_chunks_len)
+        || !trezor_session_handle_wire_ex(session, request_chunks, request_chunks_len, response_chunks,
+            sizeof(response_chunks), &response_chunks_len, response_event)
+        || !trezor_wire_decode_message(response_chunks, response_chunks_len, response_type, response_payload,
+            response_payload_len, response_payload_written)) {
+        return false;
+    }
+    return true;
+}
+
 static bool trezor_payload_contains_bytes(const uint8_t* const payload, const size_t payload_len,
     const uint8_t* const needle, const size_t needle_len)
 {
@@ -2680,6 +2703,7 @@ int main(int argc, char** argv)
     size_t session_response_len = 0;
     size_t session_response_payload_len = 0;
     uint16_t session_response_type = 0;
+    trezor_session_response_event_t session_response_event = TREZOR_SESSION_RESPONSE_EVENT_NONE;
     trezor_trace_snapshot_t trace_snapshot;
     char trace_text[TREZOR_TRACE_FORMATTED_LEN];
 
@@ -3063,6 +3087,47 @@ int main(int argc, char** argv)
     CHECK(trezor_btc_tx_request_has_signed_payload(session_response_payload, session_response_payload_len,
         TREZOR_BITCOIN_REQUEST_TXFINISHED, 1, true, 2, 1));
 
+    wally_bzero(&trezor_session_state, sizeof(trezor_session_state));
+    g_trezor_btc_sign_calls = 0;
+    session_response_event = TREZOR_SESSION_RESPONSE_EVENT_SIGNED_RESULT;
+    CHECK(trezor_test_handle_wire_payload_event(&trezor_session, TREZOR_MSG_SIGN_TX,
+        trezor_btc_two_input_sign_tx_payload, trezor_btc_two_input_sign_tx_payload_len, &session_response_type,
+        session_response_payload, sizeof(session_response_payload), &session_response_payload_len,
+        &session_response_event));
+    CHECK(session_response_type == TREZOR_MSG_TX_REQUEST);
+    CHECK(session_response_event == TREZOR_SESSION_RESPONSE_EVENT_NONE);
+    CHECK(trezor_test_handle_wire_payload_event(&trezor_session, TREZOR_MSG_TX_ACK,
+        trezor_btc_two_input_meta_ack_payload, trezor_btc_two_input_meta_ack_payload_len, &session_response_type,
+        session_response_payload, sizeof(session_response_payload), &session_response_payload_len,
+        &session_response_event));
+    CHECK(session_response_type == TREZOR_MSG_TX_REQUEST);
+    CHECK(session_response_event == TREZOR_SESSION_RESPONSE_EVENT_NONE);
+    CHECK(trezor_test_handle_wire_payload_event(&trezor_session, TREZOR_MSG_TX_ACK, trezor_btc_input_ack_payload,
+        trezor_btc_input_ack_payload_len, &session_response_type, session_response_payload,
+        sizeof(session_response_payload), &session_response_payload_len, &session_response_event));
+    CHECK(session_response_type == TREZOR_MSG_TX_REQUEST);
+    CHECK(session_response_event == TREZOR_SESSION_RESPONSE_EVENT_NONE);
+    CHECK(trezor_test_handle_wire_payload_event(&trezor_session, TREZOR_MSG_TX_ACK, trezor_btc_input1_ack_payload,
+        trezor_btc_input1_ack_payload_len, &session_response_type, session_response_payload,
+        sizeof(session_response_payload), &session_response_payload_len, &session_response_event));
+    CHECK(session_response_type == TREZOR_MSG_TX_REQUEST);
+    CHECK(session_response_event == TREZOR_SESSION_RESPONSE_EVENT_NONE);
+    CHECK(trezor_test_handle_wire_payload_event(&trezor_session, TREZOR_MSG_TX_ACK, trezor_btc_output_ack_payload,
+        trezor_btc_output_ack_payload_len, &session_response_type, session_response_payload,
+        sizeof(session_response_payload), &session_response_payload_len, &session_response_event));
+    CHECK(session_response_type == TREZOR_MSG_TX_REQUEST);
+    CHECK(session_response_event == TREZOR_SESSION_RESPONSE_EVENT_NONE);
+    CHECK(trezor_btc_tx_request_has_signed_payload(session_response_payload, session_response_payload_len,
+        TREZOR_BITCOIN_REQUEST_TXMETA, 0, false, 0, 0));
+    CHECK(trezor_test_handle_wire_payload_event(&trezor_session, TREZOR_MSG_TX_ACK,
+        trezor_btc_two_input_meta_ack_payload, trezor_btc_two_input_meta_ack_payload_len, &session_response_type,
+        session_response_payload, sizeof(session_response_payload), &session_response_payload_len,
+        &session_response_event));
+    CHECK(session_response_type == TREZOR_MSG_TX_REQUEST);
+    CHECK(session_response_event == TREZOR_SESSION_RESPONSE_EVENT_SIGNED_RESULT);
+    CHECK(trezor_btc_tx_request_has_signed_payload(session_response_payload, session_response_payload_len,
+        TREZOR_BITCOIN_REQUEST_TXFINISHED, 1, true, 2, 1));
+
     CHECK(trezor_session_handle_payload(&trezor_session, TREZOR_MSG_SIGN_TX, trezor_valid_sign_tx_payload,
         trezor_valid_sign_tx_payload_len, &session_response_type, session_response_payload, sizeof(session_response_payload),
         &session_response_payload_len));
@@ -3235,8 +3300,10 @@ int main(int argc, char** argv)
     CHECK(trezor_protobuf_write_bytes_field(&trezor_sign_writer, 12, NULL, 0));
     CHECK(trezor_wire_encode_message(TREZOR_MSG_ETHEREUM_SIGN_TX, trezor_sign_payload, trezor_sign_writer.len,
         session_request_chunks, sizeof(session_request_chunks), &session_request_len));
-    CHECK(trezor_session_handle_wire(&trezor_session, session_request_chunks, session_request_len,
-        session_response_chunks, sizeof(session_response_chunks), &session_response_len));
+    session_response_event = TREZOR_SESSION_RESPONSE_EVENT_SIGNED_RESULT;
+    CHECK(trezor_session_handle_wire_ex(&trezor_session, session_request_chunks, session_request_len,
+        session_response_chunks, sizeof(session_response_chunks), &session_response_len, &session_response_event));
+    CHECK(session_response_event == TREZOR_SESSION_RESPONSE_EVENT_NONE);
     CHECK(trezor_wire_decode_message(session_response_chunks, session_response_len, &session_response_type,
         session_response_payload, sizeof(session_response_payload), &session_response_payload_len));
     CHECK(session_response_type == TREZOR_MSG_ETHEREUM_TX_REQUEST);
@@ -3252,8 +3319,10 @@ int main(int argc, char** argv)
         &trezor_ack_writer, 1, trezor_sign_data_ack, sizeof(trezor_sign_data_ack)));
     CHECK(trezor_wire_encode_message(TREZOR_MSG_ETHEREUM_TX_ACK, trezor_ack_payload, trezor_ack_writer.len,
         session_request_chunks, sizeof(session_request_chunks), &session_request_len));
-    CHECK(trezor_session_handle_wire(&trezor_session, session_request_chunks, session_request_len,
-        session_response_chunks, sizeof(session_response_chunks), &session_response_len));
+    session_response_event = TREZOR_SESSION_RESPONSE_EVENT_NONE;
+    CHECK(trezor_session_handle_wire_ex(&trezor_session, session_request_chunks, session_request_len,
+        session_response_chunks, sizeof(session_response_chunks), &session_response_len, &session_response_event));
+    CHECK(session_response_event == TREZOR_SESSION_RESPONSE_EVENT_SIGNED_RESULT);
     CHECK(trezor_wire_decode_message(session_response_chunks, session_response_len, &session_response_type,
         session_response_payload, sizeof(session_response_payload), &session_response_payload_len));
     CHECK(session_response_type == TREZOR_MSG_ETHEREUM_TX_REQUEST);
@@ -3294,8 +3363,10 @@ int main(int argc, char** argv)
     CHECK(trezor_protobuf_write_bytes_field(&trezor_sign_writer, 12, NULL, 0));
     CHECK(trezor_wire_encode_message(TREZOR_MSG_ETHEREUM_SIGN_TX_EIP1559, trezor_sign_payload,
         trezor_sign_writer.len, session_request_chunks, sizeof(session_request_chunks), &session_request_len));
-    CHECK(trezor_session_handle_wire(&trezor_session, session_request_chunks, session_request_len,
-        session_response_chunks, sizeof(session_response_chunks), &session_response_len));
+    session_response_event = TREZOR_SESSION_RESPONSE_EVENT_NONE;
+    CHECK(trezor_session_handle_wire_ex(&trezor_session, session_request_chunks, session_request_len,
+        session_response_chunks, sizeof(session_response_chunks), &session_response_len, &session_response_event));
+    CHECK(session_response_event == TREZOR_SESSION_RESPONSE_EVENT_SIGNED_RESULT);
     CHECK(trezor_wire_decode_message(session_response_chunks, session_response_len, &session_response_type,
         session_response_payload, sizeof(session_response_payload), &session_response_payload_len));
     CHECK(session_response_type == TREZOR_MSG_ETHEREUM_TX_REQUEST);

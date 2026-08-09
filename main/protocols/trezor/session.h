@@ -29,6 +29,11 @@ typedef bool (*trezor_session_btc_sign_digest_callback_t)(
 typedef bool (*trezor_session_bool_callback_t)(void* ctx);
 typedef bool (*trezor_session_initialize_callback_t)(void* ctx, const uint8_t* session_id, size_t session_id_len);
 
+typedef enum {
+    TREZOR_SESSION_RESPONSE_EVENT_NONE = 0,
+    TREZOR_SESSION_RESPONSE_EVENT_SIGNED_RESULT,
+} trezor_session_response_event_t;
+
 typedef struct {
     bool has_pending_local_unlock;
     bool has_pending_eth_signing;
@@ -68,6 +73,9 @@ typedef struct {
 bool trezor_session_handle_payload(const trezor_session_t* session, uint16_t request_type,
     const uint8_t* request_payload, size_t request_payload_len, uint16_t* response_type, uint8_t* response_payload,
     size_t response_payload_len, size_t* response_payload_written);
+bool trezor_session_handle_wire_ex(const trezor_session_t* session, const uint8_t* request_chunks,
+    size_t request_chunks_len, uint8_t* response_chunks, size_t response_chunks_len, size_t* response_chunks_written,
+    trezor_session_response_event_t* response_event);
 bool trezor_session_handle_wire(const trezor_session_t* session, const uint8_t* request_chunks,
     size_t request_chunks_len, uint8_t* response_chunks, size_t response_chunks_len, size_t* response_chunks_written);
 
