@@ -199,6 +199,15 @@ static bool copy_text_line(char* const output, const size_t output_len, const ch
     return true;
 }
 
+static void init_blank_message_lines(
+    char lines[CHAIN_CONFIRM_UI_MAX_MESSAGE_LINES][CHAIN_CONFIRM_UI_DISPLAY_LINE_MAX])
+{
+    for (size_t i = 0; i < CHAIN_CONFIRM_UI_MAX_MESSAGE_LINES; ++i) {
+        lines[i][0] = ' ';
+        lines[i][1] = '\0';
+    }
+}
+
 #ifdef CONFIG_TREZOR_USB_HID
 static char trace_printable_char(const char c)
 {
@@ -288,6 +297,7 @@ static bool show_text_value(const char* const title, const char* const value)
     unsigned int page = 1;
     while (value[offset] != '\0') {
         char lines[CHAIN_CONFIRM_UI_MAX_MESSAGE_LINES][CHAIN_CONFIRM_UI_DISPLAY_LINE_MAX] = { { 0 } };
+        init_blank_message_lines(lines);
         const char* message[CHAIN_CONFIRM_UI_MAX_MESSAGE_LINES] = { lines[0], lines[1], lines[2], lines[3] };
         size_t num_lines = 0;
         while (value[offset] != '\0' && num_lines < CHAIN_CONFIRM_UI_MAX_MESSAGE_LINES) {
@@ -310,7 +320,7 @@ static bool show_text_value(const char* const title, const char* const value)
             }
             display_title = page_title;
         }
-        if (!await_continueback_activity(display_title, message, num_lines, true, NULL)) {
+        if (!await_continueback_activity(display_title, message, CHAIN_CONFIRM_UI_MAX_MESSAGE_LINES, true, NULL)) {
             return false;
         }
         ++page;
@@ -332,6 +342,7 @@ static bool show_hex_value(const char* const title, const uint8_t* const bytes, 
     unsigned int page = 1;
     while (hex[offset] != '\0') {
         char lines[CHAIN_CONFIRM_UI_MAX_MESSAGE_LINES][CHAIN_CONFIRM_UI_DISPLAY_LINE_MAX] = { { 0 } };
+        init_blank_message_lines(lines);
         const char* message[CHAIN_CONFIRM_UI_MAX_MESSAGE_LINES] = { lines[0], lines[1], lines[2], lines[3] };
         size_t num_lines = 0;
         while (hex[offset] != '\0' && num_lines < CHAIN_CONFIRM_UI_MAX_MESSAGE_LINES) {
@@ -357,7 +368,7 @@ static bool show_hex_value(const char* const title, const uint8_t* const bytes, 
             }
             display_title = page_title;
         }
-        if (!await_continueback_activity(display_title, message, num_lines, true, NULL)) {
+        if (!await_continueback_activity(display_title, message, CHAIN_CONFIRM_UI_MAX_MESSAGE_LINES, true, NULL)) {
             return false;
         }
         ++page;

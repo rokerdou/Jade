@@ -698,3 +698,47 @@ Before adding signing flows, design a single wallet-core access boundary:
 This is a safety and availability issue first: a malicious host must not be able
 to trigger assert/reboot loops, and no sensitive key material may be exposed or
 left uncleared.
+
+## Architecture Guardrails
+
+Treat code layout as part of the security boundary. Large files such as
+`gui.c`, `dashboard.c`, or protocol/session files are not automatically unsafe,
+but they make it harder to prove that PIN handling, USB parsing, UI confirmation,
+and signing cannot interfere with each other.
+
+Current guardrails:
+
+- USB transport owns TinyUSB/WebUSB packet I/O only.
+- Trezor session owns message state, pending requests, and protobuf response
+  selection only.
+- Chain modules own path policy, address derivation, transaction parsing, UI
+  summary construction, and digest construction.
+- The signer boundary signs a 32-byte digest for an approved path. Chain and USB
+  code must not request or receive private keys, seed, mnemonic, xpriv, or PIN.
+- Local unlock is isolated behind `protocols/trezor/auth_bridge.*`; USB code
+  asks whether unlock is needed and asks the bridge to perform local PIN entry.
+- UI confirmation must fit the T-Display-S3 dialog constraints before hardware
+  testing. Every chain confirmation page must respect the line-count limit.
+
+User-visible errors must be product errors, not developer locations. PIN errors,
+unsupported protocol payloads, UI-size violations, and wallet-not-ready states
+should become controlled error codes/messages. Source file and line details
+belong in retained diagnostics only, and diagnostics must never contain secrets.
+
+## BTC Signing Gate
+
+The BTC SignTx gate must cover the full protocol chain:
+
+```text
+SignTx -> TxRequest(TXMETA) -> TxAck(meta)
+       -> TxRequest(TXINPUT) -> TxAck(input)
+       -> TxRequest(TXOUTPUT) -> TxAck(output)
+       -> local UI confirm
+       -> build sighash with libwally
+       -> sign_digest(path, digest)
+       -> TxRequest(TXFINISHED, serialized.signature, serialized.serialized_tx)
+```
+
+Do not treat "UI confirmation was shown" as a signing test. A gate must verify
+the final `TxRequest(TXFINISHED)` shape and must keep P2PKH state-probe paths
+separate from P2WPKH signing paths.

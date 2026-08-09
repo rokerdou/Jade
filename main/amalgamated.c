@@ -150,6 +150,7 @@ void __wrap_abort(void);
 #include "./protocols/trezor/public_key.c"
 #include "./protocols/trezor/session.c"
 #include "./protocols/trezor/trace.c"
+#include "./protocols/trezor/auth_bridge.c"
 #include "./protocols/trezor/usb_hid.c"
 #include "./protocols/trezor/wire.c"
 #ifdef CONFIG_ETH_USE_OPENETH

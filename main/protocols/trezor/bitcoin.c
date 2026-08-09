@@ -5,7 +5,13 @@
 #include "../../chains/bitcoin/path.h"
 
 #include <string.h>
+#include <wally_address.h>
+#include <wally_map.h>
+#include <wally_script.h>
+#include <wally_transaction.h>
 #include <wally_crypto.h>
+
+#define TREZOR_BITCOIN_SIGHASH_ALL 1U
 
 static bool trezor_bitcoin_bool_value(const uint8_t* const value, const size_t value_len, bool* const output)
 {
@@ -505,6 +511,39 @@ bool trezor_bitcoin_tx_request_encode(const trezor_bitcoin_request_type_t reques
     return true;
 }
 
+bool trezor_bitcoin_tx_request_encode_signed(const trezor_bitcoin_signing_state_t* const state,
+    const uint8_t* const signature, const size_t signature_len, const uint8_t* const serialized_tx,
+    const size_t serialized_tx_len, uint8_t* const output, const size_t output_len, size_t* const written)
+{
+    if (!state || !signature || !signature_len || (!serialized_tx && serialized_tx_len) || !output || !written) {
+        return false;
+    }
+
+    uint8_t serialized[1024];
+    trezor_protobuf_writer_t serialized_writer;
+    trezor_protobuf_writer_init(&serialized_writer, serialized, sizeof(serialized));
+    if (!trezor_protobuf_write_varint_field(&serialized_writer, 1, 0)
+        || !trezor_protobuf_write_bytes_field(&serialized_writer, 2, signature, signature_len)
+        || (serialized_tx_len
+            && !trezor_protobuf_write_bytes_field(&serialized_writer, 3, serialized_tx, serialized_tx_len))) {
+        wally_bzero(serialized, sizeof(serialized));
+        return false;
+    }
+
+    trezor_protobuf_writer_t writer;
+    trezor_protobuf_writer_init(&writer, output, output_len);
+    const bool ok = trezor_protobuf_write_varint_field(&writer, 1, TREZOR_BITCOIN_REQUEST_TXFINISHED)
+        && trezor_protobuf_write_bytes_field(&writer, 3, serialized, serialized_writer.len);
+    wally_bzero(serialized, sizeof(serialized));
+    if (!ok) {
+        wally_bzero(output, output_len);
+        return false;
+    }
+
+    *written = writer.len;
+    return true;
+}
+
 bool trezor_bitcoin_signing_init(
     trezor_bitcoin_signing_state_t* const state, const uint8_t* const payload, const size_t payload_len)
 {
@@ -657,5 +696,166 @@ bool trezor_bitcoin_signing_to_confirm_request(
     request->amount = state->outputs[0].amount;
     request->fee = state->fee;
     return true;
+}
+
+static bool trezor_bitcoin_signing_is_minimal_p2wpkh_testnet(const trezor_bitcoin_signing_state_t* const state)
+{
+    if (!state || !trezor_bitcoin_signing_ready(state) || state->request.inputs_count != 1
+        || state->request.outputs_count != 1 || state->inputs_len != 1 || state->outputs_len != 1
+        || !state->request.serialize || (state->request.has_coin_name && strcmp(state->request.coin_name, "Testnet") != 0)) {
+        return false;
+    }
+
+    const trezor_bitcoin_tx_input_t* const input = &state->inputs[0];
+    const trezor_bitcoin_tx_output_t* const output = &state->outputs[0];
+    return input->script_type == BITCOIN_P2WPKH_SPENDWITNESS && input->has_prev_hash && input->has_prev_index
+        && input->has_amount && bitcoin_path_is_testnet_p2wpkh_signing(input->address_n, input->address_n_len)
+        && output->has_address && output->address_n_len == 0 && output->has_amount && output->script_type == 0
+        && state->total_input >= state->total_output;
+}
+
+static bool trezor_bitcoin_path_from_input(const trezor_bitcoin_tx_input_t* const input, wallet_core_path_t* const path)
+{
+    if (!input || !path || input->address_n_len == 0 || input->address_n_len > WALLET_CORE_MAX_PATH_LEN) {
+        return false;
+    }
+    wally_bzero(path, sizeof(*path));
+    path->len = input->address_n_len;
+    memcpy(path->parts, input->address_n, input->address_n_len * sizeof(input->address_n[0]));
+    return true;
+}
+
+bool trezor_bitcoin_signing_build_p2wpkh_testnet_hash(const trezor_bitcoin_signing_state_t* const state,
+    wallet_core_path_t* const path, uint8_t* const digest, const size_t digest_len, uint8_t* const serialized_tx,
+    const size_t serialized_tx_len, size_t* const serialized_tx_written)
+{
+    if (!trezor_bitcoin_signing_is_minimal_p2wpkh_testnet(state) || !path || !digest || digest_len != SHA256_LEN
+        || !serialized_tx || !serialized_tx_written) {
+        return false;
+    }
+
+    const trezor_bitcoin_tx_input_t* const input = &state->inputs[0];
+    const trezor_bitcoin_tx_output_t* const output = &state->outputs[0];
+    bool ok = false;
+    struct wally_tx* tx = NULL;
+    struct wally_map values;
+    memset(&values, 0, sizeof(values));
+
+    uint8_t pubkey[EC_PUBLIC_KEY_LEN];
+    uint8_t prevout_script[WALLY_SCRIPTPUBKEY_P2WPKH_LEN];
+    uint8_t output_script[WALLY_SEGWIT_ADDRESS_PUBKEY_MAX_LEN];
+    size_t prevout_script_len = 0;
+    size_t output_script_len = 0;
+    wally_bzero(pubkey, sizeof(pubkey));
+    wally_bzero(prevout_script, sizeof(prevout_script));
+    wally_bzero(output_script, sizeof(output_script));
+    wally_bzero(digest, digest_len);
+    *serialized_tx_written = 0;
+
+    wallet_core_path_t local_path;
+    if (!trezor_bitcoin_path_from_input(input, &local_path)) {
+        goto cleanup;
+    }
+
+    ok = wallet_core_get_public_key(&local_path, WALLET_CORE_PUBKEY_COMPRESSED, pubkey, sizeof(pubkey))
+        && wally_witness_program_from_bytes(pubkey, sizeof(pubkey), WALLY_SCRIPT_HASH160, prevout_script,
+               sizeof(prevout_script), &prevout_script_len)
+            == WALLY_OK
+        && prevout_script_len == sizeof(prevout_script)
+        && wally_addr_segwit_to_bytes(output->address, "tb", 0, output_script, sizeof(output_script),
+               &output_script_len)
+            == WALLY_OK
+        && output_script_len > 0;
+    if (!ok) {
+        goto cleanup;
+    }
+
+    ok = wally_tx_init_alloc(state->request.version, state->request.lock_time, 1, 1, &tx) == WALLY_OK && tx
+        && wally_tx_add_raw_input(tx, input->prev_hash, sizeof(input->prev_hash), input->prev_index, input->sequence,
+               NULL, 0, NULL, 0)
+            == WALLY_OK
+        && wally_tx_add_raw_output(tx, output->amount, output_script, output_script_len, 0) == WALLY_OK
+        && wally_map_init(1, NULL, &values) == WALLY_OK
+        && wally_map_add_integer(&values, 0, (const uint8_t*)&input->amount, sizeof(input->amount)) == WALLY_OK
+        && wally_tx_get_input_signature_hash(tx, 0, NULL, NULL, &values, prevout_script, prevout_script_len, 0,
+               WALLY_NO_CODESEPARATOR, NULL, 0, NULL, 0, TREZOR_BITCOIN_SIGHASH_ALL, WALLY_SIGTYPE_SW_V0, NULL,
+               digest, digest_len)
+            == WALLY_OK
+        && wally_tx_to_bytes(tx, WALLY_TX_FLAG_USE_WITNESS, serialized_tx, serialized_tx_len, serialized_tx_written)
+            == WALLY_OK;
+    if (ok) {
+        *path = local_path;
+    }
+
+cleanup:
+    if (tx) {
+        wally_tx_free(tx);
+    }
+    wally_map_clear(&values);
+    wally_bzero(&local_path, sizeof(local_path));
+    wally_bzero(pubkey, sizeof(pubkey));
+    wally_bzero(prevout_script, sizeof(prevout_script));
+    wally_bzero(output_script, sizeof(output_script));
+    if (!ok) {
+        wally_bzero(digest, digest_len);
+        if (serialized_tx && serialized_tx_len) {
+            wally_bzero(serialized_tx, serialized_tx_len);
+        }
+        *serialized_tx_written = 0;
+    }
+    return ok;
+}
+
+bool trezor_bitcoin_signing_build_p2wpkh_testnet_signed_tx(const trezor_bitcoin_signing_state_t* const state,
+    const wallet_core_path_t* const path, const uint8_t* const signature, const size_t signature_len,
+    uint8_t* const serialized_tx, const size_t serialized_tx_len, size_t* const serialized_tx_written)
+{
+    if (!trezor_bitcoin_signing_is_minimal_p2wpkh_testnet(state) || !path || !wallet_core_path_valid(path)
+        || !signature || signature_len < 2 || !serialized_tx || !serialized_tx_written) {
+        return false;
+    }
+
+    const trezor_bitcoin_tx_input_t* const input = &state->inputs[0];
+    const trezor_bitcoin_tx_output_t* const output = &state->outputs[0];
+    bool ok = false;
+    struct wally_tx* tx = NULL;
+    struct wally_tx_witness_stack* witness = NULL;
+
+    uint8_t pubkey[EC_PUBLIC_KEY_LEN];
+    uint8_t output_script[WALLY_SEGWIT_ADDRESS_PUBKEY_MAX_LEN];
+    size_t output_script_len = 0;
+    wally_bzero(pubkey, sizeof(pubkey));
+    wally_bzero(output_script, sizeof(output_script));
+    *serialized_tx_written = 0;
+
+    ok = wallet_core_get_public_key(path, WALLET_CORE_PUBKEY_COMPRESSED, pubkey, sizeof(pubkey))
+        && wally_addr_segwit_to_bytes(output->address, "tb", 0, output_script, sizeof(output_script),
+               &output_script_len)
+            == WALLY_OK
+        && output_script_len > 0 && wally_tx_init_alloc(state->request.version, state->request.lock_time, 1, 1, &tx)
+            == WALLY_OK
+        && tx && wally_tx_witness_stack_init_alloc(2, &witness) == WALLY_OK && witness
+        && wally_tx_witness_stack_add(witness, signature, signature_len) == WALLY_OK
+        && wally_tx_witness_stack_add(witness, pubkey, sizeof(pubkey)) == WALLY_OK
+        && wally_tx_add_raw_input(tx, input->prev_hash, sizeof(input->prev_hash), input->prev_index, input->sequence,
+               NULL, 0, witness, 0)
+            == WALLY_OK
+        && wally_tx_add_raw_output(tx, output->amount, output_script, output_script_len, 0) == WALLY_OK
+        && wally_tx_to_bytes(tx, WALLY_TX_FLAG_USE_WITNESS, serialized_tx, serialized_tx_len, serialized_tx_written)
+            == WALLY_OK;
+
+    if (tx) {
+        wally_tx_free(tx);
+    }
+    if (witness) {
+        wally_tx_witness_stack_free(witness);
+    }
+    wally_bzero(pubkey, sizeof(pubkey));
+    wally_bzero(output_script, sizeof(output_script));
+    if (!ok) {
+        wally_bzero(serialized_tx, serialized_tx_len);
+        *serialized_tx_written = 0;
+    }
+    return ok;
 }
 #endif /* AMALGAMATED_BUILD */

@@ -119,6 +119,9 @@ bool trezor_bitcoin_tx_ack_decode(const uint8_t* payload, size_t payload_len, tr
 bool trezor_bitcoin_address_encode(const char* address, uint8_t* output, size_t output_len, size_t* written);
 bool trezor_bitcoin_tx_request_encode(trezor_bitcoin_request_type_t request_type, bool has_request_index,
     uint32_t request_index, uint8_t* output, size_t output_len, size_t* written);
+bool trezor_bitcoin_tx_request_encode_signed(const trezor_bitcoin_signing_state_t* state,
+    const uint8_t* signature, size_t signature_len, const uint8_t* serialized_tx, size_t serialized_tx_len,
+    uint8_t* output, size_t output_len, size_t* written);
 bool trezor_bitcoin_signing_init(
     trezor_bitcoin_signing_state_t* state, const uint8_t* payload, size_t payload_len);
 bool trezor_bitcoin_signing_apply_tx_ack(
@@ -128,5 +131,11 @@ bool trezor_bitcoin_signing_encode_next_request(
 bool trezor_bitcoin_signing_ready(const trezor_bitcoin_signing_state_t* state);
 bool trezor_bitcoin_signing_to_confirm_request(
     const trezor_bitcoin_signing_state_t* state, bitcoin_confirm_request_t* request);
+bool trezor_bitcoin_signing_build_p2wpkh_testnet_hash(const trezor_bitcoin_signing_state_t* state,
+    wallet_core_path_t* path, uint8_t* digest, size_t digest_len, uint8_t* serialized_tx, size_t serialized_tx_len,
+    size_t* serialized_tx_written);
+bool trezor_bitcoin_signing_build_p2wpkh_testnet_signed_tx(const trezor_bitcoin_signing_state_t* state,
+    const wallet_core_path_t* path, const uint8_t* signature, size_t signature_len, uint8_t* serialized_tx,
+    size_t serialized_tx_len, size_t* serialized_tx_written);
 
 #endif /* TREZOR_BITCOIN_H_ */

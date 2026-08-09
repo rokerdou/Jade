@@ -8,6 +8,7 @@
 #include "public_key.h"
 #include "session.h"
 #include "trace.h"
+#include "auth_bridge.h"
 #include "wire.h"
 
 #include "../../chains/bitcoin/path.h"
@@ -20,8 +21,6 @@
 #include "../../idletimer.h"
 #include "../../jade_assert.h"
 #include "../../jade_tasks.h"
-#include "../../process/auth_user.h"
-#include "../../process.h"
 #include "../../sensitive.h"
 #include "../../ui.h"
 #include "../../wallet_core/wallet_core.h"
@@ -380,35 +379,13 @@ static void trezor_usb_hid_show_signed_notice(void)
     s_signed_notice_active = false;
 }
 
-static bool trezor_usb_hid_ensure_wallet_ready(void)
-{
-    return wallet_core_is_ready();
-}
-
-static bool trezor_usb_hid_needs_local_unlock(void* ctx)
-{
-    (void)ctx;
-    return wallet_core_is_initialized() && !wallet_core_is_ready() && !wallet_core_is_unlocked();
-}
-
-static bool trezor_usb_hid_perform_local_unlock(void* ctx)
-{
-    (void)ctx;
-    trezor_trace_set_stage("unlock:pin_ui");
-    const bool auth_ok = auth_user_unlock_wallet_with_pin(SOURCE_SERIAL);
-    const bool ready = wallet_core_is_ready();
-    trezor_trace_set_note("unlock auth=%u ready=%u", auth_ok ? 1U : 0U, ready ? 1U : 0U);
-    trezor_trace_set_stage(auth_ok && ready ? "unlock:pin_ok" : "unlock:pin_fail");
-    return auth_ok && ready;
-}
-
 static bool trezor_usb_hid_get_eth_address(
     void* ctx, const trezor_ethereum_get_address_t* const request, char* const address, const size_t address_len)
 {
     (void)ctx;
     trezor_trace_set_stage("eth:req");
     if (!request || !address || address_len != ETHEREUM_CHECKSUM_ADDRESS_STRING_LEN
-        || !trezor_usb_hid_ensure_wallet_ready()
+        || !trezor_auth_bridge_wallet_ready()
         || !ethereum_path_is_supported(request->address_n, request->address_n_len)) {
         trezor_trace_set_stage("eth:reject");
         return false;
@@ -451,7 +428,7 @@ static bool trezor_usb_hid_get_bitcoin_address(
     void* ctx, const trezor_bitcoin_get_address_t* const request, char* const address, const size_t address_len)
 {
     (void)ctx;
-    if (!request || !address || !trezor_usb_hid_ensure_wallet_ready()
+    if (!request || !address || !trezor_auth_bridge_wallet_ready()
         || !bitcoin_path_is_trezor_connect_state_testnet_p2pkh(request->address_n, request->address_n_len)
         || (request->has_coin_name && strcmp(request->coin_name, "Testnet") != 0)
         || (request->has_script_type && request->script_type != BITCOIN_P2PKH_SPENDADDRESS
@@ -493,7 +470,7 @@ static bool trezor_usb_hid_get_public_key(
         && request->has_coin_name && strcmp(request->coin_name, "Testnet") == 0
         && (!request->has_script_type || request->script_type == BITCOIN_P2PKH_SPENDADDRESS)
         && bitcoin_path_is_testnet_p2pkh_account_public_node(request->address_n, request->address_n_len);
-    if (!request || !response || !trezor_usb_hid_ensure_wallet_ready()
+    if (!request || !response || !trezor_auth_bridge_wallet_ready()
         || (!root_fingerprint_probe && !supported_eth_public_node && !supported_btc_testnet_public_node)
         || (request->has_show_display && request->show_display)) {
         return false;
@@ -530,7 +507,7 @@ static bool trezor_usb_hid_sign_eth_tx(
     void* ctx, const ethereum_tx_preflight_request_t* const request, ethereum_signature_t* const signature)
 {
     (void)ctx;
-    if (!request || !signature || !trezor_usb_hid_ensure_wallet_ready()) {
+    if (!request || !signature || !trezor_auth_bridge_wallet_ready()) {
         trezor_trace_set_stage("ethsign:reject");
         return false;
     }
@@ -545,7 +522,7 @@ static bool trezor_usb_hid_sign_eth_tx(
 static bool trezor_usb_hid_confirm_btc_tx(void* ctx, const bitcoin_confirm_request_t* const request)
 {
     (void)ctx;
-    if (!request || !trezor_usb_hid_ensure_wallet_ready()) {
+    if (!request || !trezor_auth_bridge_wallet_ready()) {
         trezor_trace_set_stage("btcsign:confirm_reject");
         return false;
     }
@@ -561,6 +538,21 @@ static bool trezor_usb_hid_confirm_btc_tx(void* ctx, const bitcoin_confirm_reque
     const bool ok = show_chain_confirm_summary_activity(&summary);
     idletimer_set_min_timeout_secs(0);
     trezor_trace_set_stage(ok ? "btcsign:display_ok" : "btcsign:display_cancel");
+    return ok;
+}
+
+static bool trezor_usb_hid_sign_btc_digest(void* ctx, const wallet_core_path_t* const path, const uint8_t* const digest,
+    const size_t digest_len, uint8_t* const signature, const size_t signature_len)
+{
+    (void)ctx;
+    if (!path || !digest || !signature || !trezor_auth_bridge_wallet_ready()) {
+        trezor_trace_set_stage("btcsign:sign_reject");
+        return false;
+    }
+
+    trezor_trace_set_stage("btcsign:wallet_sign");
+    const bool ok = wallet_core_sign_digest_ecdsa_recoverable(path, digest, digest_len, signature, signature_len);
+    trezor_trace_set_stage(ok ? "btcsign:wallet_ok" : "btcsign:wallet_fail");
     return ok;
 }
 
@@ -599,9 +591,9 @@ static trezor_session_t trezor_usb_hid_session(void)
         .state = &s_trezor_session_state,
         .initialize_session = trezor_usb_hid_initialize_session,
         .initialize_session_ctx = NULL,
-        .needs_local_unlock = trezor_usb_hid_needs_local_unlock,
+        .needs_local_unlock = trezor_auth_bridge_needs_local_unlock,
         .needs_local_unlock_ctx = NULL,
-        .perform_local_unlock = trezor_usb_hid_perform_local_unlock,
+        .perform_local_unlock = trezor_auth_bridge_perform_local_unlock,
         .perform_local_unlock_ctx = NULL,
         .get_bitcoin_address = trezor_usb_hid_get_bitcoin_address,
         .get_bitcoin_address_ctx = NULL,
@@ -613,6 +605,8 @@ static trezor_session_t trezor_usb_hid_session(void)
         .sign_eth_tx_ctx = NULL,
         .confirm_btc_tx = trezor_usb_hid_confirm_btc_tx,
         .confirm_btc_tx_ctx = NULL,
+        .sign_btc_digest = trezor_usb_hid_sign_btc_digest,
+        .sign_btc_digest_ctx = NULL,
     };
     return session;
 }
