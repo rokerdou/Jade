@@ -88,9 +88,12 @@ static uint32_t wallet_core_fingerprint_to_u32(const uint8_t fingerprint[BIP32_K
         | (uint32_t)fingerprint[3];
 }
 
-bool wallet_core_get_public_node(const wallet_core_path_t* const path, wallet_core_public_node_t* const output)
+bool wallet_core_get_public_node_with_version(
+    const wallet_core_path_t* const path, const uint32_t bip32_public_version, wallet_core_public_node_t* const output)
 {
-    if (!wallet_core_is_unlocked() || !wallet_core_path_valid(path) || !output) {
+    if (!wallet_core_is_unlocked() || !wallet_core_path_valid(path) || !output
+        || (bip32_public_version != 0 && bip32_public_version != BIP32_VER_MAIN_PUBLIC
+            && bip32_public_version != BIP32_VER_TEST_PUBLIC)) {
         return false;
     }
 
@@ -99,6 +102,9 @@ bool wallet_core_get_public_node(const wallet_core_path_t* const path, wallet_co
     wally_bzero(output, sizeof(*output));
 
     bool ok = wallet_get_hdkey(path->parts, path->len, BIP32_FLAG_KEY_PUBLIC, &derived);
+    if (ok && bip32_public_version != 0) {
+        derived.version = bip32_public_version;
+    }
     if (ok) {
         ok = bip32_key_to_base58(&derived, BIP32_FLAG_KEY_PUBLIC, &xpub) == WALLY_OK && xpub
             && strlen(xpub) < sizeof(output->xpub);
@@ -125,6 +131,11 @@ bool wallet_core_get_public_node(const wallet_core_path_t* const path, wallet_co
     }
     JADE_WALLY_VERIFY(wally_bzero(&derived, sizeof(derived)));
     return ok;
+}
+
+bool wallet_core_get_public_node(const wallet_core_path_t* const path, wallet_core_public_node_t* const output)
+{
+    return wallet_core_get_public_node_with_version(path, 0, output);
 }
 
 bool wallet_core_sign_digest_ecdsa_recoverable(const wallet_core_path_t* const path, const uint8_t* const digest,

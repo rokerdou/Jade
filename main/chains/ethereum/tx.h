@@ -9,6 +9,9 @@
 #include "address.h"
 
 #define ETHEREUM_TX_MAX_PREFLIGHT_DATA_LEN 6144
+#define ETHEREUM_TOKEN_SYMBOL_MAX_LEN 16
+#define ETHEREUM_TOKEN_NAME_MAX_LEN 48
+#define ETHEREUM_TOKEN_DECIMALS_MAX 36
 
 typedef enum {
     ETHEREUM_TX_TYPE_LEGACY = 0,
@@ -23,6 +26,14 @@ typedef enum {
     ETHEREUM_TX_SUMMARY_ERC20_APPROVE,
     ETHEREUM_TX_SUMMARY_CONTRACT_CALL,
 } ethereum_tx_summary_type_t;
+
+typedef struct {
+    uint8_t address[ETHEREUM_ADDRESS_LEN];
+    uint64_t chain_id;
+    uint32_t decimals;
+    char symbol[ETHEREUM_TOKEN_SYMBOL_MAX_LEN];
+    char name[ETHEREUM_TOKEN_NAME_MAX_LEN];
+} ethereum_token_metadata_t;
 
 typedef struct {
     const uint32_t* path;
@@ -45,6 +56,8 @@ typedef struct {
     const uint8_t* expected_sender_address;
     size_t expected_sender_address_len;
     bool allow_unknown_contract_call;
+    bool has_token_definition;
+    ethereum_token_metadata_t token_definition;
 } ethereum_tx_preflight_request_t;
 
 typedef struct {

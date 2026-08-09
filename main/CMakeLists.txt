@@ -112,6 +112,7 @@ if(HOST_CC)
     set(wallet_core_public_node_gate_stamp ${CMAKE_BINARY_DIR}/wallet_core_public_node_gate.stamp)
     add_custom_command(OUTPUT ${eth_tron_address_gate_stamp}
         COMMAND ${HOST_CC} -std=c11 -Wall -Wextra -Werror
+            -DTREZOR_ETHEREUM_DEFINITIONS_HOST_TEST
             -I${COMPONENT_DIR}
             -I${COMPONENT_DIR}/test/host_shims
             -I${PROJECT_DIR}/components/libwally-core/upstream/include
@@ -135,6 +136,7 @@ if(HOST_CC)
             ${COMPONENT_DIR}/protocols/trezor/bitcoin.c
             ${COMPONENT_DIR}/protocols/trezor/dispatcher.c
             ${COMPONENT_DIR}/protocols/trezor/ethereum.c
+            ${COMPONENT_DIR}/protocols/trezor/ethereum_definitions.c
             ${COMPONENT_DIR}/protocols/trezor/failure.c
             ${COMPONENT_DIR}/protocols/trezor/features.c
             ${COMPONENT_DIR}/protocols/trezor/protobuf.c
@@ -192,6 +194,8 @@ if(HOST_CC)
             ${COMPONENT_DIR}/protocols/trezor/dispatcher.h
             ${COMPONENT_DIR}/protocols/trezor/ethereum.c
             ${COMPONENT_DIR}/protocols/trezor/ethereum.h
+            ${COMPONENT_DIR}/protocols/trezor/ethereum_definitions.c
+            ${COMPONENT_DIR}/protocols/trezor/ethereum_definitions.h
             ${COMPONENT_DIR}/protocols/trezor/failure.c
             ${COMPONENT_DIR}/protocols/trezor/failure.h
             ${COMPONENT_DIR}/protocols/trezor/features.c

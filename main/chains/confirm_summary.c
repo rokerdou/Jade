@@ -75,6 +75,23 @@ bool chain_confirm_summary_add_path(chain_confirm_summary_t* const summary, cons
     return true;
 }
 
+bool chain_confirm_summary_add_text(
+    chain_confirm_summary_t* const summary, const chain_confirm_field_kind_t kind, const char* const text)
+{
+    if (!text || text[0] == '\0' || strnlen(text, CHAIN_CONFIRM_MAX_TEXT) >= CHAIN_CONFIRM_MAX_TEXT) {
+        return false;
+    }
+
+    chain_confirm_field_t* const field = next_field(summary);
+    if (!field) {
+        return false;
+    }
+    field->kind = kind;
+    field->value_type = CHAIN_CONFIRM_VALUE_TEXT;
+    memcpy(field->value.text, text, strlen(text) + 1);
+    return true;
+}
+
 bool chain_confirm_summary_has_field(
     const chain_confirm_summary_t* const summary, const chain_confirm_field_kind_t kind)
 {

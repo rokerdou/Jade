@@ -69,12 +69,20 @@ bool ethereum_confirm_summary_from_preflight(const ethereum_tx_preflight_request
     }
 
     if (result->type == ETHEREUM_TX_SUMMARY_ERC20_TRANSFER || result->type == ETHEREUM_TX_SUMMARY_ERC20_APPROVE) {
-        return chain_confirm_summary_add_bytes(
-                   summary, CHAIN_CONFIRM_FIELD_TOKEN_CONTRACT, result->token_contract, sizeof(result->token_contract))
+        bool ok = chain_confirm_summary_add_bytes(
+                      summary, CHAIN_CONFIRM_FIELD_TOKEN_CONTRACT, result->token_contract, sizeof(result->token_contract))
             && chain_confirm_summary_add_bytes(
                 summary, CHAIN_CONFIRM_FIELD_TOKEN_RECIPIENT, result->token_recipient, sizeof(result->token_recipient))
             && chain_confirm_summary_add_bytes(
                 summary, CHAIN_CONFIRM_FIELD_TOKEN_AMOUNT, result->token_amount, sizeof(result->token_amount));
+        if (ok && request->has_token_definition) {
+            ok = chain_confirm_summary_add_text(
+                     summary, CHAIN_CONFIRM_FIELD_TOKEN_SYMBOL, request->token_definition.symbol)
+                && chain_confirm_summary_add_u64(
+                    summary, CHAIN_CONFIRM_FIELD_TOKEN_DECIMALS, request->token_definition.decimals)
+                && chain_confirm_summary_add_text(summary, CHAIN_CONFIRM_FIELD_TOKEN_NAME, request->token_definition.name);
+        }
+        return ok;
     }
 
     if (result->type == ETHEREUM_TX_SUMMARY_CONTRACT_CALL) {

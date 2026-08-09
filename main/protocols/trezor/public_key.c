@@ -79,9 +79,16 @@ static bool trezor_public_key_decode_common(const uint8_t* const payload, const 
         } else if (field_number == 4 && kind == TREZOR_PUBLIC_KEY_REQUEST_GENERIC) {
             const bool allowed_coin = value_len == 0 || (value_len == 3 && memcmp(value, "ETH", value_len) == 0)
                 || (value_len == 7 && memcmp(value, "Bitcoin", value_len) == 0)
+                || (value_len == 7 && memcmp(value, "Testnet", value_len) == 0)
                 || (value_len == 8 && memcmp(value, "Ethereum", value_len) == 0);
-            if (wire_type != TREZOR_PROTOBUF_WIRE_LEN || !allowed_coin) {
+            if (wire_type != TREZOR_PROTOBUF_WIRE_LEN || !allowed_coin
+                || value_len >= sizeof(output->coin_name)) {
                 return false;
+            }
+            if (value_len) {
+                memcpy(output->coin_name, value, value_len);
+                output->coin_name[value_len] = '\0';
+                output->has_coin_name = true;
             }
         } else if (field_number == 5 && kind == TREZOR_PUBLIC_KEY_REQUEST_GENERIC) {
             uint64_t script_type = 0;
@@ -89,6 +96,8 @@ static bool trezor_public_key_decode_common(const uint8_t* const payload, const 
                 || !trezor_protobuf_read_varint_value(value, value_len, &script_type) || script_type != 0) {
                 return false;
             }
+            output->script_type = (uint32_t)script_type;
+            output->has_script_type = true;
         } else if (field_number == 6 && kind == TREZOR_PUBLIC_KEY_REQUEST_GENERIC) {
             bool ignored = false;
             if (wire_type != TREZOR_PROTOBUF_WIRE_VARINT

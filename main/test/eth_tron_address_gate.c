@@ -20,6 +20,7 @@
 #include "protocols/trezor/bitcoin.h"
 #include "protocols/trezor/dispatcher.h"
 #include "protocols/trezor/ethereum.h"
+#include "protocols/trezor/ethereum_definitions.h"
 #include "protocols/trezor/failure.h"
 #include "protocols/trezor/features.h"
 #include "protocols/trezor/protobuf.h"
@@ -92,12 +93,25 @@ static trezor_bitcoin_get_address_t g_last_trezor_bitcoin_address_request;
 static trezor_ethereum_get_address_t g_last_trezor_eth_address_request;
 static bool g_trezor_public_key_ok = true;
 static trezor_public_key_request_t g_last_trezor_public_key_request;
+static bool g_trezor_eth_sign_ok = true;
+static size_t g_trezor_eth_sign_calls = 0;
+static ethereum_tx_preflight_request_t g_last_trezor_eth_sign_request;
+static uint32_t g_last_trezor_eth_sign_path[WALLET_CORE_MAX_PATH_LEN];
+static uint8_t g_last_trezor_eth_sign_value[EVM_ABI_WORD_LEN];
+static uint8_t g_last_trezor_eth_sign_data[ETHEREUM_TX_MAX_PREFLIGHT_DATA_LEN];
 static bool g_trezor_needs_local_unlock = false;
 static bool g_trezor_local_unlock_ok = true;
 static size_t g_trezor_local_unlock_calls = 0;
 static bool g_trezor_initialize_session_ok = true;
 static uint8_t g_trezor_last_initialize_session_id[TREZOR_FEATURES_SESSION_ID_LEN];
 static size_t g_trezor_last_initialize_session_id_len = 0;
+
+bool trezor_ethereum_definitions_host_verify(
+    const uint8_t root[SHA256_LEN], const uint8_t sigmask, const uint8_t signature[64])
+{
+    (void)root;
+    return sigmask == 0x03 && signature && signature[0] == 0xa5;
+}
 
 static bool hex_char_to_nibble(const char c, uint8_t* const output)
 {
@@ -202,6 +216,37 @@ static bool trezor_test_get_public_key(
         response->public_key[i] = (uint8_t)(0x80 + i);
     }
     memcpy(response->xpub, "xpub-test-only", sizeof("xpub-test-only"));
+    return true;
+}
+
+static bool trezor_test_sign_eth_tx(
+    void* ctx, const ethereum_tx_preflight_request_t* const request, ethereum_signature_t* const signature)
+{
+    (void)ctx;
+    if (!g_trezor_eth_sign_ok || !request || !signature) {
+        return false;
+    }
+
+    ++g_trezor_eth_sign_calls;
+    memcpy(&g_last_trezor_eth_sign_request, request, sizeof(g_last_trezor_eth_sign_request));
+    wally_bzero(g_last_trezor_eth_sign_path, sizeof(g_last_trezor_eth_sign_path));
+    wally_bzero(g_last_trezor_eth_sign_value, sizeof(g_last_trezor_eth_sign_value));
+    wally_bzero(g_last_trezor_eth_sign_data, sizeof(g_last_trezor_eth_sign_data));
+    if (request->path && request->path_len <= WALLET_CORE_MAX_PATH_LEN) {
+        memcpy(g_last_trezor_eth_sign_path, request->path, request->path_len * sizeof(request->path[0]));
+    }
+    if (request->value && request->value_len <= EVM_ABI_WORD_LEN) {
+        memcpy(g_last_trezor_eth_sign_value, request->value, request->value_len);
+    }
+    if (request->data && request->data_len <= ETHEREUM_TX_MAX_PREFLIGHT_DATA_LEN) {
+        memcpy(g_last_trezor_eth_sign_data, request->data, request->data_len);
+    }
+    wally_bzero(signature, sizeof(*signature));
+    signature->v = request->tx_type == ETHEREUM_TX_TYPE_EIP1559 ? 1 : (2U * request->chain_id) + 35U;
+    for (size_t i = 0; i < sizeof(signature->r); ++i) {
+        signature->r[i] = (uint8_t)(0xa0 + i);
+        signature->s[i] = (uint8_t)(0xc0 + i);
+    }
     return true;
 }
 
@@ -337,6 +382,75 @@ static void make_erc20_address_uint256_call(uint8_t selector0, uint8_t selector1
     output[3] = selector3;
     memcpy(output + EVM_ABI_SELECTOR_LEN + EVM_ABI_ADDRESS_PAD_LEN, address, EVM_ABI_ADDRESS_LEN);
     memcpy(output + EVM_ABI_SELECTOR_LEN + EVM_ABI_WORD_LEN, amount, EVM_ABI_WORD_LEN);
+}
+
+static void write_u16_le(uint8_t output[2], const uint16_t value)
+{
+    output[0] = (uint8_t)value;
+    output[1] = (uint8_t)(value >> 8);
+}
+
+static void write_u32_le(uint8_t output[4], const uint32_t value)
+{
+    output[0] = (uint8_t)value;
+    output[1] = (uint8_t)(value >> 8);
+    output[2] = (uint8_t)(value >> 16);
+    output[3] = (uint8_t)(value >> 24);
+}
+
+static bool make_signed_eth_token_definition(const uint8_t address[ETHEREUM_ADDRESS_LEN], const uint64_t chain_id,
+    const char* const symbol, const uint32_t decimals, const char* const name, const bool valid_signature,
+    uint8_t* const output, const size_t output_len, size_t* const written)
+{
+    if (!address || !symbol || !name || !output || !written || output_len < 128) {
+        return false;
+    }
+
+    uint8_t payload[128];
+    trezor_protobuf_writer_t writer;
+    trezor_protobuf_writer_init(&writer, payload, sizeof(payload));
+    if (!trezor_protobuf_write_bytes_field(&writer, 1, address, ETHEREUM_ADDRESS_LEN)
+        || !trezor_protobuf_write_varint_field(&writer, 2, chain_id)
+        || !trezor_protobuf_write_string_field(&writer, 3, symbol)
+        || !trezor_protobuf_write_varint_field(&writer, 4, decimals)
+        || !trezor_protobuf_write_string_field(&writer, 5, name)) {
+        return false;
+    }
+
+    size_t pos = 0;
+    const uint8_t magic[] = { 't', 'r', 'z', 'd', '1' };
+    memcpy(output + pos, magic, sizeof(magic));
+    pos += sizeof(magic);
+    output[pos++] = 1;
+    write_u32_le(output + pos, 0xffffffffU);
+    pos += 4;
+    write_u16_le(output + pos, (uint16_t)writer.len);
+    pos += 2;
+    memcpy(output + pos, payload, writer.len);
+    pos += writer.len;
+    output[pos++] = 0;
+    output[pos++] = valid_signature ? 0x03 : 0x01;
+    memset(output + pos, 0x5a, 64);
+    output[pos] = valid_signature ? 0xa5 : 0x00;
+    pos += 64;
+    *written = pos;
+    return true;
+}
+
+static bool make_eth_definitions_with_token(const uint8_t* const token_definition, const size_t token_definition_len,
+    uint8_t* const output, const size_t output_len, size_t* const written)
+{
+    if (!token_definition || !token_definition_len || !output || !written) {
+        return false;
+    }
+
+    trezor_protobuf_writer_t writer;
+    trezor_protobuf_writer_init(&writer, output, output_len);
+    if (!trezor_protobuf_write_bytes_field(&writer, 2, token_definition, token_definition_len)) {
+        return false;
+    }
+    *written = writer.len;
+    return true;
 }
 
 bool wallet_core_path_valid(const wallet_core_path_t* path)
@@ -508,10 +622,14 @@ int main(void)
 
     const uint32_t btc_state_path[]
         = { chain_path_harden(44), chain_path_harden(1), chain_path_harden(0), 0, 0 };
+    const uint32_t btc_account_path[] = { chain_path_harden(44), chain_path_harden(1), chain_path_harden(0) };
     const uint32_t btc_wrong_coin[]
         = { chain_path_harden(44), chain_path_harden(0), chain_path_harden(0), 0, 0 };
     CHECK(bitcoin_path_is_trezor_connect_state_testnet_p2pkh(btc_state_path, ARRAY_LEN(btc_state_path)));
     CHECK(!bitcoin_path_is_trezor_connect_state_testnet_p2pkh(btc_wrong_coin, ARRAY_LEN(btc_wrong_coin)));
+    CHECK(bitcoin_path_is_testnet_p2pkh_account_public_node(btc_account_path, ARRAY_LEN(btc_account_path)));
+    CHECK(!bitcoin_path_is_testnet_p2pkh_account_public_node(btc_state_path, ARRAY_LEN(btc_state_path)));
+    CHECK(!bitcoin_path_is_testnet_p2pkh_account_public_node(btc_wrong_coin, 3));
 
     char btc_address[BITCOIN_P2PKH_ADDRESS_MAX_LEN];
     CHECK(bitcoin_p2pkh_testnet_address_from_compressed_pubkey(
@@ -766,6 +884,41 @@ int main(void)
     CHECK(chain_confirm_summary_has_field(&confirm_summary, CHAIN_CONFIRM_FIELD_TOKEN_CONTRACT));
     CHECK(chain_confirm_summary_has_field(&confirm_summary, CHAIN_CONFIRM_FIELD_TOKEN_RECIPIENT));
     CHECK(chain_confirm_summary_has_field(&confirm_summary, CHAIN_CONFIRM_FIELD_TOKEN_AMOUNT));
+
+    ethereum_token_metadata_t usdt_metadata = { 0 };
+    memcpy(usdt_metadata.address, token_contract, sizeof(token_contract));
+    usdt_metadata.chain_id = 1;
+    usdt_metadata.decimals = 6;
+    memcpy(usdt_metadata.symbol, "USDT", sizeof("USDT"));
+    memcpy(usdt_metadata.name, "Tether USD", sizeof("Tether USD"));
+    eth_req.has_token_definition = true;
+    memcpy(&eth_req.token_definition, &usdt_metadata, sizeof(eth_req.token_definition));
+    CHECK(ethereum_tx_preflight(&eth_req, &eth_res));
+    CHECK(ethereum_confirm_summary_from_preflight(&eth_req, &eth_res, &confirm_summary));
+    CHECK(confirm_summary.operation == CHAIN_CONFIRM_OPERATION_TOKEN_TRANSFER);
+    CHECK(chain_confirm_summary_has_field(&confirm_summary, CHAIN_CONFIRM_FIELD_TOKEN_SYMBOL));
+    CHECK(chain_confirm_summary_has_field(&confirm_summary, CHAIN_CONFIRM_FIELD_TOKEN_DECIMALS));
+    CHECK(chain_confirm_summary_has_field(&confirm_summary, CHAIN_CONFIRM_FIELD_TOKEN_NAME));
+    const chain_confirm_field_t* const token_symbol
+        = find_confirm_field(&confirm_summary, CHAIN_CONFIRM_FIELD_TOKEN_SYMBOL);
+    CHECK(token_symbol && token_symbol->value_type == CHAIN_CONFIRM_VALUE_TEXT);
+    CHECK(strcmp(token_symbol->value.text, "USDT") == 0);
+    const chain_confirm_field_t* const token_decimals
+        = find_confirm_field(&confirm_summary, CHAIN_CONFIRM_FIELD_TOKEN_DECIMALS);
+    CHECK(token_decimals && token_decimals->value_type == CHAIN_CONFIRM_VALUE_U64 && token_decimals->value.u64 == 6);
+    eth_req.token_definition.chain_id = 2;
+    CHECK(!ethereum_tx_preflight(&eth_req, &eth_res));
+    eth_req.token_definition.chain_id = 1;
+    eth_req.token_definition.address[0] ^= 0x01;
+    CHECK(!ethereum_tx_preflight(&eth_req, &eth_res));
+    eth_req.token_definition.address[0] ^= 0x01;
+    eth_req.data = NULL;
+    eth_req.data_len = 0;
+    CHECK(!ethereum_tx_preflight(&eth_req, &eth_res));
+    eth_req.data = erc20_transfer_data;
+    eth_req.data_len = sizeof(erc20_transfer_data);
+    eth_req.has_token_definition = false;
+    wally_bzero(&eth_req.token_definition, sizeof(eth_req.token_definition));
 
     uint8_t one_wei[EVM_ABI_WORD_LEN] = { 0 };
     one_wei[EVM_ABI_WORD_LEN - 1] = 1;
@@ -1022,6 +1175,25 @@ int main(void)
     CHECK(trezor_public_key_request.address_n_len == ARRAY_LEN(eth_ledger_live_legacy));
     CHECK(memcmp(trezor_public_key_request.address_n, eth_ledger_live_legacy, sizeof(eth_ledger_live_legacy)) == 0);
     const size_t trezor_public_key_payload_len = trezor_public_key_writer.len;
+
+    uint8_t trezor_btc_public_key_payload[256];
+    trezor_protobuf_writer_t trezor_btc_public_key_writer;
+    trezor_protobuf_writer_init(
+        &trezor_btc_public_key_writer, trezor_btc_public_key_payload, sizeof(trezor_btc_public_key_payload));
+    for (size_t i = 0; i < ARRAY_LEN(btc_account_path); ++i) {
+        CHECK(trezor_protobuf_write_varint_field(&trezor_btc_public_key_writer, 1, btc_account_path[i]));
+    }
+    CHECK(trezor_protobuf_write_string_field(&trezor_btc_public_key_writer, 4, "Testnet"));
+    CHECK(trezor_protobuf_write_varint_field(&trezor_btc_public_key_writer, 5, BITCOIN_P2PKH_SPENDADDRESS));
+    CHECK(trezor_public_key_decode_generic(
+        trezor_btc_public_key_payload, trezor_btc_public_key_writer.len, &trezor_public_key_request));
+    CHECK(trezor_public_key_request.kind == TREZOR_PUBLIC_KEY_REQUEST_GENERIC);
+    CHECK(trezor_public_key_request.has_coin_name && strcmp(trezor_public_key_request.coin_name, "Testnet") == 0);
+    CHECK(trezor_public_key_request.has_script_type
+        && trezor_public_key_request.script_type == BITCOIN_P2PKH_SPENDADDRESS);
+    CHECK(trezor_public_key_request.address_n_len == ARRAY_LEN(btc_account_path));
+    CHECK(memcmp(trezor_public_key_request.address_n, btc_account_path, sizeof(btc_account_path)) == 0);
+    const size_t trezor_btc_public_key_payload_len = trezor_btc_public_key_writer.len;
 
     uint8_t trezor_root_fingerprint_payload[64];
     trezor_protobuf_writer_t trezor_root_fingerprint_writer;
@@ -1449,8 +1621,10 @@ int main(void)
         .get_eth_address_ctx = NULL,
         .get_public_key = trezor_test_get_public_key,
         .get_public_key_ctx = NULL,
+        .sign_eth_tx = trezor_test_sign_eth_tx,
+        .sign_eth_tx_ctx = NULL,
     };
-    uint8_t session_request_chunks[1408];
+    uint8_t session_request_chunks[2304];
     uint8_t session_response_chunks[512];
     uint8_t session_response_payload[256];
     size_t session_request_len = 0;
@@ -1682,6 +1856,20 @@ int main(void)
     CHECK(strstr(trace_text, "node/xpub omitted") != NULL);
     CHECK(strstr(trace_text, "xpub-test-only") == NULL);
 
+    CHECK(trezor_wire_encode_message(TREZOR_MSG_GET_PUBLIC_KEY, trezor_btc_public_key_payload,
+        trezor_btc_public_key_payload_len, session_request_chunks, sizeof(session_request_chunks), &session_request_len));
+    CHECK(trezor_session_handle_wire(&trezor_session, session_request_chunks, session_request_len,
+        session_response_chunks, sizeof(session_response_chunks), &session_response_len));
+    CHECK(trezor_wire_decode_message(session_response_chunks, session_response_len, &session_response_type,
+        session_response_payload, sizeof(session_response_payload), &session_response_payload_len));
+    CHECK(session_response_type == TREZOR_MSG_PUBLIC_KEY);
+    CHECK(!trezor_public_key_payload_has_private_key_field(session_response_payload, session_response_payload_len));
+    CHECK(g_last_trezor_public_key_request.kind == TREZOR_PUBLIC_KEY_REQUEST_GENERIC);
+    CHECK(g_last_trezor_public_key_request.has_coin_name
+        && strcmp(g_last_trezor_public_key_request.coin_name, "Testnet") == 0);
+    CHECK(g_last_trezor_public_key_request.address_n_len == ARRAY_LEN(btc_account_path));
+    CHECK(memcmp(g_last_trezor_public_key_request.address_n, btc_account_path, sizeof(btc_account_path)) == 0);
+
     CHECK(trezor_wire_encode_message(TREZOR_MSG_ETHEREUM_GET_PUBLIC_KEY, trezor_eth_public_key_payload,
         trezor_eth_public_key_payload_len, session_request_chunks, sizeof(session_request_chunks), &session_request_len));
     CHECK(trezor_session_handle_wire(&trezor_session, session_request_chunks, session_request_len,
@@ -1693,6 +1881,175 @@ int main(void)
     CHECK(g_last_trezor_public_key_request.kind == TREZOR_PUBLIC_KEY_REQUEST_ETHEREUM);
     CHECK(g_last_trezor_public_key_request.address_n_len == ARRAY_LEN(eth_sep5));
 
+    static const uint8_t trezor_sign_to[] = "0x52908400098527886E0F7030069857D2E4169EE7";
+    static const uint8_t trezor_sign_value[] = { 0x01 };
+    static const uint8_t trezor_sign_data_initial[] = { 0xde, 0xad };
+    static const uint8_t trezor_sign_data_ack[] = { 0xbe, 0xef };
+    uint8_t trezor_sign_payload[1024];
+    trezor_protobuf_writer_t trezor_sign_writer;
+    trezor_protobuf_writer_init(&trezor_sign_writer, trezor_sign_payload, sizeof(trezor_sign_payload));
+    for (size_t i = 0; i < ARRAY_LEN(eth_bip44); ++i) {
+        CHECK(trezor_protobuf_write_varint_field(&trezor_sign_writer, 1, eth_bip44[i]));
+    }
+    CHECK(trezor_protobuf_write_bytes_field(&trezor_sign_writer, 3, (const uint8_t*)"\x09", 1));
+    CHECK(trezor_protobuf_write_bytes_field(&trezor_sign_writer, 4, (const uint8_t*)"\x52\x08", 2));
+    CHECK(trezor_protobuf_write_string_field(&trezor_sign_writer, 11, (const char*)trezor_sign_to));
+    CHECK(trezor_protobuf_write_bytes_field(
+        &trezor_sign_writer, 6, trezor_sign_value, sizeof(trezor_sign_value)));
+    CHECK(trezor_protobuf_write_bytes_field(
+        &trezor_sign_writer, 7, trezor_sign_data_initial, sizeof(trezor_sign_data_initial)));
+    CHECK(trezor_protobuf_write_varint_field(
+        &trezor_sign_writer, 8, sizeof(trezor_sign_data_initial) + sizeof(trezor_sign_data_ack)));
+    CHECK(trezor_protobuf_write_varint_field(&trezor_sign_writer, 9, 1));
+    CHECK(trezor_protobuf_write_bytes_field(&trezor_sign_writer, 12, NULL, 0));
+    CHECK(trezor_wire_encode_message(TREZOR_MSG_ETHEREUM_SIGN_TX, trezor_sign_payload, trezor_sign_writer.len,
+        session_request_chunks, sizeof(session_request_chunks), &session_request_len));
+    CHECK(trezor_session_handle_wire(&trezor_session, session_request_chunks, session_request_len,
+        session_response_chunks, sizeof(session_response_chunks), &session_response_len));
+    CHECK(trezor_wire_decode_message(session_response_chunks, session_response_len, &session_response_type,
+        session_response_payload, sizeof(session_response_payload), &session_response_payload_len));
+    CHECK(session_response_type == TREZOR_MSG_ETHEREUM_TX_REQUEST);
+    CHECK(trezor_payload_has_varint(
+        session_response_payload, session_response_payload_len, 1, sizeof(trezor_sign_data_ack)));
+    CHECK(trezor_session_state.has_pending_eth_signing);
+    CHECK(g_trezor_eth_sign_calls == 0);
+
+    uint8_t trezor_ack_payload[64];
+    trezor_protobuf_writer_t trezor_ack_writer;
+    trezor_protobuf_writer_init(&trezor_ack_writer, trezor_ack_payload, sizeof(trezor_ack_payload));
+    CHECK(trezor_protobuf_write_bytes_field(
+        &trezor_ack_writer, 1, trezor_sign_data_ack, sizeof(trezor_sign_data_ack)));
+    CHECK(trezor_wire_encode_message(TREZOR_MSG_ETHEREUM_TX_ACK, trezor_ack_payload, trezor_ack_writer.len,
+        session_request_chunks, sizeof(session_request_chunks), &session_request_len));
+    CHECK(trezor_session_handle_wire(&trezor_session, session_request_chunks, session_request_len,
+        session_response_chunks, sizeof(session_response_chunks), &session_response_len));
+    CHECK(trezor_wire_decode_message(session_response_chunks, session_response_len, &session_response_type,
+        session_response_payload, sizeof(session_response_payload), &session_response_payload_len));
+    CHECK(session_response_type == TREZOR_MSG_ETHEREUM_TX_REQUEST);
+    CHECK(trezor_payload_has_varint(session_response_payload, session_response_payload_len, 2, 37));
+    CHECK(trezor_payload_contains_bytes(session_response_payload, session_response_payload_len,
+        (const uint8_t*)"\xa0\xa1\xa2\xa3", 4));
+    CHECK(trezor_payload_contains_bytes(session_response_payload, session_response_payload_len,
+        (const uint8_t*)"\xc0\xc1\xc2\xc3", 4));
+    CHECK(!trezor_session_state.has_pending_eth_signing);
+    CHECK(g_trezor_eth_sign_calls == 1);
+    CHECK(g_last_trezor_eth_sign_request.tx_type == ETHEREUM_TX_TYPE_LEGACY);
+    CHECK(g_last_trezor_eth_sign_request.chain_id == 1);
+    CHECK(g_last_trezor_eth_sign_request.path_len == ARRAY_LEN(eth_bip44));
+    CHECK(memcmp(g_last_trezor_eth_sign_path, eth_bip44, sizeof(eth_bip44)) == 0);
+    CHECK(g_last_trezor_eth_sign_request.value_len == sizeof(trezor_sign_value));
+    CHECK(memcmp(g_last_trezor_eth_sign_value, trezor_sign_value, sizeof(trezor_sign_value)) == 0);
+    CHECK(g_last_trezor_eth_sign_request.data_len == sizeof(trezor_sign_data_initial) + sizeof(trezor_sign_data_ack));
+    CHECK(memcmp(g_last_trezor_eth_sign_data, trezor_sign_data_initial, sizeof(trezor_sign_data_initial)) == 0);
+    CHECK(memcmp(g_last_trezor_eth_sign_data + sizeof(trezor_sign_data_initial), trezor_sign_data_ack,
+              sizeof(trezor_sign_data_ack))
+        == 0);
+    CHECK(trezor_trace_format_latest(trace_text, sizeof(trace_text)));
+    CHECK(strstr(trace_text, "EthereumTxAck") != NULL);
+    CHECK(strstr(trace_text, "EthereumTxRequest") != NULL);
+
+    trezor_protobuf_writer_init(&trezor_sign_writer, trezor_sign_payload, sizeof(trezor_sign_payload));
+    for (size_t i = 0; i < ARRAY_LEN(eth_bip44); ++i) {
+        CHECK(trezor_protobuf_write_varint_field(&trezor_sign_writer, 1, eth_bip44[i]));
+    }
+    CHECK(trezor_protobuf_write_bytes_field(&trezor_sign_writer, 2, NULL, 0));
+    CHECK(trezor_protobuf_write_bytes_field(&trezor_sign_writer, 3, (const uint8_t*)"\x64", 1));
+    CHECK(trezor_protobuf_write_bytes_field(&trezor_sign_writer, 4, (const uint8_t*)"\x01", 1));
+    CHECK(trezor_protobuf_write_bytes_field(&trezor_sign_writer, 5, (const uint8_t*)"\x52\x08", 2));
+    CHECK(trezor_protobuf_write_string_field(&trezor_sign_writer, 6, (const char*)trezor_sign_to));
+    CHECK(trezor_protobuf_write_bytes_field(&trezor_sign_writer, 7, NULL, 0));
+    CHECK(trezor_protobuf_write_varint_field(&trezor_sign_writer, 9, 0));
+    CHECK(trezor_protobuf_write_varint_field(&trezor_sign_writer, 10, 1));
+    CHECK(trezor_protobuf_write_bytes_field(&trezor_sign_writer, 12, NULL, 0));
+    CHECK(trezor_wire_encode_message(TREZOR_MSG_ETHEREUM_SIGN_TX_EIP1559, trezor_sign_payload,
+        trezor_sign_writer.len, session_request_chunks, sizeof(session_request_chunks), &session_request_len));
+    CHECK(trezor_session_handle_wire(&trezor_session, session_request_chunks, session_request_len,
+        session_response_chunks, sizeof(session_response_chunks), &session_response_len));
+    CHECK(trezor_wire_decode_message(session_response_chunks, session_response_len, &session_response_type,
+        session_response_payload, sizeof(session_response_payload), &session_response_payload_len));
+    CHECK(session_response_type == TREZOR_MSG_ETHEREUM_TX_REQUEST);
+    CHECK(trezor_payload_has_varint(session_response_payload, session_response_payload_len, 2, 1));
+    CHECK(!trezor_session_state.has_pending_eth_signing);
+    CHECK(g_trezor_eth_sign_calls == 2);
+    CHECK(g_last_trezor_eth_sign_request.tx_type == ETHEREUM_TX_TYPE_EIP1559);
+    CHECK(g_last_trezor_eth_sign_request.max_fee_per_gas == 100);
+    CHECK(g_last_trezor_eth_sign_request.max_priority_fee_per_gas == 1);
+
+    uint8_t signed_token_definition[256];
+    size_t signed_token_definition_len = 0;
+    uint8_t eth_definitions[512];
+    size_t eth_definitions_len = 0;
+    CHECK(make_signed_eth_token_definition(token_contract, 1, "USDT", 6, "Tether USD", true,
+        signed_token_definition, sizeof(signed_token_definition), &signed_token_definition_len));
+    CHECK(make_eth_definitions_with_token(
+        signed_token_definition, signed_token_definition_len, eth_definitions, sizeof(eth_definitions), &eth_definitions_len));
+    trezor_ethereum_definitions_t decoded_definitions;
+    CHECK(trezor_ethereum_definitions_decode(eth_definitions, eth_definitions_len, &decoded_definitions));
+    CHECK(decoded_definitions.has_token);
+    CHECK(decoded_definitions.token.chain_id == 1);
+    CHECK(decoded_definitions.token.decimals == 6);
+    CHECK(strcmp(decoded_definitions.token.symbol, "USDT") == 0);
+    CHECK(strcmp(decoded_definitions.token.name, "Tether USD") == 0);
+    CHECK(memcmp(decoded_definitions.token.address, token_contract, sizeof(token_contract)) == 0);
+
+    uint8_t bad_token_definition[256];
+    size_t bad_token_definition_len = 0;
+    CHECK(make_signed_eth_token_definition(token_contract, 1, "USDT", 6, "Tether USD", false,
+        bad_token_definition, sizeof(bad_token_definition), &bad_token_definition_len));
+    CHECK(make_eth_definitions_with_token(
+        bad_token_definition, bad_token_definition_len, eth_definitions, sizeof(eth_definitions), &eth_definitions_len));
+    CHECK(!trezor_ethereum_definitions_decode(eth_definitions, eth_definitions_len, &decoded_definitions));
+
+    CHECK(make_eth_definitions_with_token(
+        signed_token_definition, signed_token_definition_len, eth_definitions, sizeof(eth_definitions), &eth_definitions_len));
+    static const uint8_t trezor_token_contract[] = "0x1111111111111111111111111111111111111111";
+    trezor_protobuf_writer_init(&trezor_sign_writer, trezor_sign_payload, sizeof(trezor_sign_payload));
+    for (size_t i = 0; i < ARRAY_LEN(eth_bip44); ++i) {
+        CHECK(trezor_protobuf_write_varint_field(&trezor_sign_writer, 1, eth_bip44[i]));
+    }
+    CHECK(trezor_protobuf_write_bytes_field(&trezor_sign_writer, 3, (const uint8_t*)"\x09", 1));
+    CHECK(trezor_protobuf_write_bytes_field(&trezor_sign_writer, 4, (const uint8_t*)"\x52\x08", 2));
+    CHECK(trezor_protobuf_write_string_field(&trezor_sign_writer, 11, (const char*)trezor_token_contract));
+    CHECK(trezor_protobuf_write_bytes_field(&trezor_sign_writer, 7, erc20_transfer_data, sizeof(erc20_transfer_data)));
+    CHECK(trezor_protobuf_write_varint_field(&trezor_sign_writer, 8, sizeof(erc20_transfer_data)));
+    CHECK(trezor_protobuf_write_varint_field(&trezor_sign_writer, 9, 1));
+    CHECK(trezor_protobuf_write_bytes_field(&trezor_sign_writer, 12, eth_definitions, eth_definitions_len));
+    CHECK(trezor_wire_encode_message(TREZOR_MSG_ETHEREUM_SIGN_TX, trezor_sign_payload, trezor_sign_writer.len,
+        session_request_chunks, sizeof(session_request_chunks), &session_request_len));
+    CHECK(trezor_session_handle_wire(&trezor_session, session_request_chunks, session_request_len,
+        session_response_chunks, sizeof(session_response_chunks), &session_response_len));
+    CHECK(trezor_wire_decode_message(session_response_chunks, session_response_len, &session_response_type,
+        session_response_payload, sizeof(session_response_payload), &session_response_payload_len));
+    CHECK(session_response_type == TREZOR_MSG_ETHEREUM_TX_REQUEST);
+    CHECK(trezor_payload_has_varint(session_response_payload, session_response_payload_len, 2, 37));
+    CHECK(g_trezor_eth_sign_calls == 3);
+    CHECK(g_last_trezor_eth_sign_request.has_token_definition);
+    CHECK(g_last_trezor_eth_sign_request.token_definition.chain_id == 1);
+    CHECK(g_last_trezor_eth_sign_request.token_definition.decimals == 6);
+    CHECK(strcmp(g_last_trezor_eth_sign_request.token_definition.symbol, "USDT") == 0);
+    CHECK(memcmp(g_last_trezor_eth_sign_request.token_definition.address, token_contract, sizeof(token_contract)) == 0);
+
+    trezor_protobuf_writer_init(&trezor_sign_writer, trezor_sign_payload, sizeof(trezor_sign_payload));
+    for (size_t i = 0; i < ARRAY_LEN(eth_bip44); ++i) {
+        CHECK(trezor_protobuf_write_varint_field(&trezor_sign_writer, 1, eth_bip44[i]));
+    }
+    CHECK(trezor_protobuf_write_bytes_field(&trezor_sign_writer, 3, (const uint8_t*)"\x09", 1));
+    CHECK(trezor_protobuf_write_bytes_field(&trezor_sign_writer, 4, (const uint8_t*)"\x52\x08", 2));
+    CHECK(trezor_protobuf_write_string_field(&trezor_sign_writer, 11, (const char*)trezor_sign_to));
+    CHECK(trezor_protobuf_write_bytes_field(
+        &trezor_sign_writer, 6, trezor_sign_value, sizeof(trezor_sign_value)));
+    CHECK(trezor_protobuf_write_varint_field(&trezor_sign_writer, 8, 0));
+    CHECK(trezor_protobuf_write_varint_field(&trezor_sign_writer, 9, 1));
+    CHECK(trezor_protobuf_write_bytes_field(&trezor_sign_writer, 12, (const uint8_t*)"\x0a\x01x", 3));
+    CHECK(trezor_wire_encode_message(TREZOR_MSG_ETHEREUM_SIGN_TX, trezor_sign_payload, trezor_sign_writer.len,
+        session_request_chunks, sizeof(session_request_chunks), &session_request_len));
+    CHECK(trezor_session_handle_wire(&trezor_session, session_request_chunks, session_request_len,
+        session_response_chunks, sizeof(session_response_chunks), &session_response_len));
+    CHECK(trezor_wire_decode_message(session_response_chunks, session_response_len, &session_response_type,
+        session_response_payload, sizeof(session_response_payload), &session_response_payload_len));
+    CHECK(session_response_type == TREZOR_MSG_FAILURE);
+    CHECK(trezor_payload_has_varint(session_response_payload, session_response_payload_len, 1, TREZOR_FAILURE_DATA_ERROR));
+
     CHECK(trezor_wire_encode_message(TREZOR_MSG_ETHEREUM_SIGN_TX, NULL, 0, session_request_chunks,
         sizeof(session_request_chunks), &session_request_len));
     CHECK(trezor_session_handle_wire(&trezor_session, session_request_chunks, session_request_len,
@@ -1700,8 +2057,7 @@ int main(void)
     CHECK(trezor_wire_decode_message(session_response_chunks, session_response_len, &session_response_type,
         session_response_payload, sizeof(session_response_payload), &session_response_payload_len));
     CHECK(session_response_type == TREZOR_MSG_FAILURE);
-    CHECK(trezor_payload_has_varint(
-        session_response_payload, session_response_payload_len, 1, TREZOR_FAILURE_UNEXPECTED_MESSAGE));
+    CHECK(trezor_payload_has_varint(session_response_payload, session_response_payload_len, 1, TREZOR_FAILURE_DATA_ERROR));
 
     session_request_chunks[0] = 0;
     CHECK(trezor_session_handle_wire(&trezor_session, session_request_chunks, session_request_len,
@@ -1717,8 +2073,7 @@ int main(void)
     CHECK(strstr(trace_text, "wire=bad") != NULL);
     CHECK(trezor_trace_format_history(trace_text, sizeof(trace_text)));
     CHECK(strstr(trace_text, "Recent USB messages") != NULL);
-    CHECK(strstr(trace_text, "GetPub>Pub") != NULL);
-    CHECK(strstr(trace_text, "EthPub?>EthPub") != NULL);
+    CHECK(strstr(trace_text, "EthSign>EthTxReq") != NULL);
     CHECK(strstr(trace_text, "EthSign>Fail") != NULL);
     CHECK(strstr(trace_text, "BadWire>Fail") != NULL);
     CHECK(strstr(trace_text, "xpub-test-only") == NULL);
@@ -1785,6 +2140,9 @@ int main(void)
     CHECK(trezor_dispatcher_message_allowed(TREZOR_MSG_ETHEREUM_GET_ADDRESS));
     CHECK(trezor_dispatcher_message_allowed(TREZOR_MSG_GET_PUBLIC_KEY));
     CHECK(trezor_dispatcher_message_allowed(TREZOR_MSG_ETHEREUM_GET_PUBLIC_KEY));
+    CHECK(trezor_dispatcher_message_allowed(TREZOR_MSG_ETHEREUM_SIGN_TX));
+    CHECK(trezor_dispatcher_message_allowed(TREZOR_MSG_ETHEREUM_SIGN_TX_EIP1559));
+    CHECK(trezor_dispatcher_message_allowed(TREZOR_MSG_ETHEREUM_TX_ACK));
     CHECK(trezor_dispatcher_message_sensitive_or_unsupported(TREZOR_MSG_LOAD_DEVICE));
     CHECK(trezor_dispatcher_message_sensitive_or_unsupported(TREZOR_MSG_RESET_DEVICE));
     CHECK(trezor_dispatcher_message_sensitive_or_unsupported(TREZOR_MSG_RECOVERY_DEVICE));
@@ -1797,8 +2155,6 @@ int main(void)
     CHECK(trezor_dispatcher_message_sensitive_or_unsupported(TREZOR_MSG_SIGN_IDENTITY));
     CHECK(trezor_dispatcher_message_sensitive_or_unsupported(TREZOR_MSG_GET_ECDH_SESSION_KEY));
     CHECK(trezor_dispatcher_message_sensitive_or_unsupported(TREZOR_MSG_UNLOCK_PATH));
-    CHECK(trezor_dispatcher_message_sensitive_or_unsupported(TREZOR_MSG_ETHEREUM_SIGN_TX));
-    CHECK(trezor_dispatcher_message_sensitive_or_unsupported(TREZOR_MSG_ETHEREUM_SIGN_TX_EIP1559));
 
     CHECK(!trezor_check_rejected_message(&trezor_session, TREZOR_MSG_GET_ENTROPY, "GetEntropy"));
     CHECK(!trezor_check_rejected_message(&trezor_session, TREZOR_MSG_LOAD_DEVICE, "LoadDevice"));
@@ -1812,9 +2168,6 @@ int main(void)
     CHECK(!trezor_check_rejected_message(&trezor_session, TREZOR_MSG_SIGN_IDENTITY, "SignIdentity"));
     CHECK(!trezor_check_rejected_message(&trezor_session, TREZOR_MSG_GET_ECDH_SESSION_KEY, "GetECDHSessionKey"));
     CHECK(!trezor_check_rejected_message(&trezor_session, TREZOR_MSG_UNLOCK_PATH, "UnlockPath"));
-    CHECK(!trezor_check_rejected_message(&trezor_session, TREZOR_MSG_ETHEREUM_SIGN_TX, "EthereumSignTx"));
-    CHECK(!trezor_check_rejected_message(
-        &trezor_session, TREZOR_MSG_ETHEREUM_SIGN_TX_EIP1559, "EthereumSignTxEIP1559"));
 
     return 0;
 }

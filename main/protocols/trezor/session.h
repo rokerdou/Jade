@@ -10,7 +10,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#define TREZOR_SESSION_MAX_REQUEST_PAYLOAD_LEN 1024
+#define TREZOR_SESSION_MAX_REQUEST_PAYLOAD_LEN 2048
 #define TREZOR_SESSION_MAX_RESPONSE_PAYLOAD_LEN 1024
 #define TREZOR_SESSION_BITCOIN_ADDRESS_STRING_LEN BITCOIN_P2PKH_ADDRESS_MAX_LEN
 #define TREZOR_SESSION_ETH_ADDRESS_STRING_LEN 43
@@ -21,14 +21,18 @@ typedef bool (*trezor_session_eth_address_callback_t)(
     void* ctx, const trezor_ethereum_get_address_t* request, char* address, size_t address_len);
 typedef bool (*trezor_session_public_key_callback_t)(
     void* ctx, const trezor_public_key_request_t* request, trezor_public_key_response_t* response);
+typedef bool (*trezor_session_eth_sign_tx_callback_t)(
+    void* ctx, const ethereum_tx_preflight_request_t* request, ethereum_signature_t* signature);
 typedef bool (*trezor_session_bool_callback_t)(void* ctx);
 typedef bool (*trezor_session_initialize_callback_t)(void* ctx, const uint8_t* session_id, size_t session_id_len);
 
 typedef struct {
     bool has_pending_local_unlock;
+    bool has_pending_eth_signing;
     uint16_t pending_request_type;
     uint8_t pending_request_payload[TREZOR_SESSION_MAX_REQUEST_PAYLOAD_LEN];
     size_t pending_request_payload_len;
+    trezor_ethereum_signing_state_t pending_eth_signing;
 } trezor_session_state_t;
 
 typedef struct {
@@ -46,6 +50,8 @@ typedef struct {
     void* get_eth_address_ctx;
     trezor_session_public_key_callback_t get_public_key;
     void* get_public_key_ctx;
+    trezor_session_eth_sign_tx_callback_t sign_eth_tx;
+    void* sign_eth_tx_ctx;
 } trezor_session_t;
 
 bool trezor_session_handle_payload(const trezor_session_t* session, uint16_t request_type,

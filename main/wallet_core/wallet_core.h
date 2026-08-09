@@ -43,6 +43,8 @@ bool wallet_core_get_fingerprint(uint8_t* output, size_t output_len);
 WARN_UNUSED_RESULT bool wallet_core_get_public_key(
     const wallet_core_path_t* path, wallet_core_pubkey_format_t format, uint8_t* output, size_t output_len);
 WARN_UNUSED_RESULT bool wallet_core_get_public_node(const wallet_core_path_t* path, wallet_core_public_node_t* output);
+WARN_UNUSED_RESULT bool wallet_core_get_public_node_with_version(
+    const wallet_core_path_t* path, uint32_t bip32_public_version, wallet_core_public_node_t* output);
 
 /*
  * Low-level digest signing primitive.

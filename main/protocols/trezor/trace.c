@@ -128,6 +128,10 @@ const char* trezor_trace_message_name(const uint16_t message_type)
         return "EthereumAddress";
     case TREZOR_MSG_ETHEREUM_SIGN_TX:
         return "EthereumSignTx";
+    case TREZOR_MSG_ETHEREUM_TX_REQUEST:
+        return "EthereumTxRequest";
+    case TREZOR_MSG_ETHEREUM_TX_ACK:
+        return "EthereumTxAck";
     case TREZOR_MSG_ETHEREUM_GET_PUBLIC_KEY:
         return "EthereumGetPublicKey";
     case TREZOR_MSG_ETHEREUM_PUBLIC_KEY:
@@ -198,6 +202,10 @@ static const char* trezor_trace_message_short_name(const uint16_t message_type)
         return "EthAddr";
     case TREZOR_MSG_ETHEREUM_SIGN_TX:
         return "EthSign";
+    case TREZOR_MSG_ETHEREUM_TX_REQUEST:
+        return "EthTxReq";
+    case TREZOR_MSG_ETHEREUM_TX_ACK:
+        return "EthAck";
     case TREZOR_MSG_ETHEREUM_GET_PUBLIC_KEY:
         return "EthPub?";
     case TREZOR_MSG_ETHEREUM_PUBLIC_KEY:

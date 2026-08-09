@@ -141,6 +141,7 @@ void __wrap_abort(void);
 #include "./process/update_pinserver.c"
 #include "./protocols/trezor/dispatcher.c"
 #include "./protocols/trezor/bitcoin.c"
+#include "./protocols/trezor/ethereum_definitions.c"
 #include "./protocols/trezor/ethereum.c"
 #include "./protocols/trezor/failure.c"
 #include "./protocols/trezor/features.c"

@@ -7,6 +7,8 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#define TREZOR_PUBLIC_KEY_COIN_NAME_MAX_LEN 16
+
 typedef enum {
     TREZOR_PUBLIC_KEY_REQUEST_GENERIC = 0,
     TREZOR_PUBLIC_KEY_REQUEST_ETHEREUM,
@@ -17,6 +19,10 @@ typedef struct {
     size_t address_n_len;
     bool show_display;
     bool has_show_display;
+    bool has_coin_name;
+    char coin_name[TREZOR_PUBLIC_KEY_COIN_NAME_MAX_LEN];
+    bool has_script_type;
+    uint32_t script_type;
     trezor_public_key_request_kind_t kind;
 } trezor_public_key_request_t;
 

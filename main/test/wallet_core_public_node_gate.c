@@ -29,6 +29,7 @@ static const uint8_t TEST_ROOT_FINGERPRINT[BIP32_KEY_FINGERPRINT_LEN] = { 0xaa, 
 static const char TEST_XPUB[] = "xpub-parent-fingerprint-test";
 
 static keychain_t s_keychain;
+static uint32_t s_last_bip32_base58_version = 0;
 
 const keychain_t* keychain_get(void) { return &s_keychain; }
 
@@ -69,6 +70,7 @@ int bip32_key_to_base58(const struct ext_key* const hdkey, const uint32_t flags,
         return WALLY_EINVAL;
     }
 
+    s_last_bip32_base58_version = hdkey->version;
     *output = malloc(sizeof(TEST_XPUB));
     if (!*output) {
         return WALLY_ENOMEM;
@@ -161,6 +163,13 @@ int main(void)
     CHECK(strcmp(node.xpub, TEST_XPUB) == 0);
     CHECK(node.chain_code[0] == 0xc0);
     CHECK(node.chain_code[31] == 0xdf);
+    CHECK(s_last_bip32_base58_version == 0);
+
+    memset(&node, 0, sizeof(node));
+    CHECK(wallet_core_get_public_node_with_version(&path, BIP32_VER_TEST_PUBLIC, &node));
+    CHECK(strcmp(node.xpub, TEST_XPUB) == 0);
+    CHECK(s_last_bip32_base58_version == BIP32_VER_TEST_PUBLIC);
+    CHECK(!wallet_core_get_public_node_with_version(&path, BIP32_VER_TEST_PRIVATE, &node));
 
     return 0;
 }

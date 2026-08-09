@@ -198,6 +198,48 @@ static bool trezor_session_initialize_payload_read_session_id(const uint8_t* con
     return true;
 }
 
+static bool trezor_session_eth_signing_continue(const trezor_session_t* const session, uint16_t* const response_type,
+    uint8_t* const response_payload, const size_t response_payload_len, size_t* const response_payload_written)
+{
+    if (!session || !session->state || !response_type || !response_payload || !response_payload_written
+        || !session->state->has_pending_eth_signing) {
+        return trezor_session_failure_payload(TREZOR_FAILURE_UNEXPECTED_MESSAGE, "Ethereum signing not active",
+            response_type, response_payload, response_payload_len, response_payload_written);
+    }
+
+    if (!trezor_ethereum_signing_state_ready(&session->state->pending_eth_signing)) {
+        *response_type = TREZOR_MSG_ETHEREUM_TX_REQUEST;
+        return trezor_ethereum_tx_request_encode_data(session->state->pending_eth_signing.next_chunk_len,
+            response_payload, response_payload_len, response_payload_written);
+    }
+
+    ethereum_tx_preflight_request_t request;
+    ethereum_signature_t signature;
+    wally_bzero(&request, sizeof(request));
+    wally_bzero(&signature, sizeof(signature));
+
+    const bool ok = session->sign_eth_tx
+        && trezor_ethereum_signing_state_to_request(&session->state->pending_eth_signing, &request)
+        && session->sign_eth_tx(session->sign_eth_tx_ctx, &request, &signature);
+
+    session->state->has_pending_eth_signing = false;
+    wally_bzero(&session->state->pending_eth_signing, sizeof(session->state->pending_eth_signing));
+    wally_bzero(&request, sizeof(request));
+
+    if (!ok) {
+        wally_bzero(&signature, sizeof(signature));
+        return trezor_session_failure_payload(TREZOR_FAILURE_ACTION_CANCELLED, "Ethereum signing rejected",
+            response_type, response_payload, response_payload_len, response_payload_written);
+    }
+
+    *response_type = TREZOR_MSG_ETHEREUM_TX_REQUEST;
+    const bool encoded
+        = trezor_ethereum_tx_request_encode_signature(&signature, response_payload, response_payload_len,
+            response_payload_written);
+    wally_bzero(&signature, sizeof(signature));
+    return encoded;
+}
+
 bool trezor_session_handle_payload(const trezor_session_t* const session, const uint16_t request_type,
     const uint8_t* const request_payload, const size_t request_payload_len, uint16_t* const response_type,
     uint8_t* const response_payload, const size_t response_payload_len, size_t* const response_payload_written)
@@ -337,6 +379,44 @@ bool trezor_session_handle_payload(const trezor_session_t* const session, const 
         wally_bzero(&request, sizeof(request));
         wally_bzero(address, sizeof(address));
         return ok;
+    }
+
+    if (request_type == TREZOR_MSG_ETHEREUM_SIGN_TX || request_type == TREZOR_MSG_ETHEREUM_SIGN_TX_EIP1559) {
+        trezor_ethereum_signing_state_t signing_state;
+        if (!session->state || !session->sign_eth_tx
+            || !trezor_ethereum_sign_tx_init(&signing_state, request_type, request_payload, request_payload_len)) {
+            return trezor_session_failure_payload(TREZOR_FAILURE_DATA_ERROR, "Invalid Ethereum signing request",
+                response_type, response_payload, response_payload_len, response_payload_written);
+        }
+
+        bool deferred = false;
+        if (!trezor_session_maybe_defer_for_local_unlock(session, request_type, request_payload, request_payload_len,
+                response_type, response_payload, response_payload_len, response_payload_written, &deferred)) {
+            wally_bzero(&signing_state, sizeof(signing_state));
+            return false;
+        }
+        if (deferred) {
+            wally_bzero(&signing_state, sizeof(signing_state));
+            return true;
+        }
+
+        session->state->has_pending_eth_signing = true;
+        memcpy(&session->state->pending_eth_signing, &signing_state, sizeof(session->state->pending_eth_signing));
+        wally_bzero(&signing_state, sizeof(signing_state));
+        return trezor_session_eth_signing_continue(
+            session, response_type, response_payload, response_payload_len, response_payload_written);
+    }
+
+    if (request_type == TREZOR_MSG_ETHEREUM_TX_ACK) {
+        if (!session->state || !session->state->has_pending_eth_signing
+            || !trezor_ethereum_tx_ack_apply(
+                &session->state->pending_eth_signing, request_payload, request_payload_len)) {
+            trezor_session_clear_pending(session->state);
+            return trezor_session_failure_payload(TREZOR_FAILURE_DATA_ERROR, "Invalid Ethereum data chunk",
+                response_type, response_payload, response_payload_len, response_payload_written);
+        }
+        return trezor_session_eth_signing_continue(
+            session, response_type, response_payload, response_payload_len, response_payload_written);
     }
 
     if (request_type == TREZOR_MSG_GET_PUBLIC_KEY || request_type == TREZOR_MSG_ETHEREUM_GET_PUBLIC_KEY) {

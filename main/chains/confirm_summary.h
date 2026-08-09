@@ -5,8 +5,9 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#define CHAIN_CONFIRM_MAX_FIELDS 12
+#define CHAIN_CONFIRM_MAX_FIELDS 14
 #define CHAIN_CONFIRM_MAX_BYTES 32
+#define CHAIN_CONFIRM_MAX_TEXT 48
 #define CHAIN_CONFIRM_MAX_PATH_LEN 16
 
 #define CHAIN_CONFIRM_FLAG_USER_CONFIRM (1U << 0)
@@ -37,6 +38,9 @@ typedef enum {
     CHAIN_CONFIRM_FIELD_TOKEN_CONTRACT,
     CHAIN_CONFIRM_FIELD_TOKEN_RECIPIENT,
     CHAIN_CONFIRM_FIELD_TOKEN_AMOUNT,
+    CHAIN_CONFIRM_FIELD_TOKEN_SYMBOL,
+    CHAIN_CONFIRM_FIELD_TOKEN_DECIMALS,
+    CHAIN_CONFIRM_FIELD_TOKEN_NAME,
     CHAIN_CONFIRM_FIELD_MAX_FEE,
     CHAIN_CONFIRM_FIELD_FEE_LIMIT,
     CHAIN_CONFIRM_FIELD_CALLDATA_HASH,
@@ -46,6 +50,7 @@ typedef enum {
     CHAIN_CONFIRM_VALUE_U64 = 0,
     CHAIN_CONFIRM_VALUE_BYTES,
     CHAIN_CONFIRM_VALUE_PATH,
+    CHAIN_CONFIRM_VALUE_TEXT,
 } chain_confirm_value_type_t;
 
 typedef struct {
@@ -62,6 +67,7 @@ typedef struct {
             uint8_t bytes[CHAIN_CONFIRM_MAX_BYTES];
             size_t len;
         } bytes;
+        char text[CHAIN_CONFIRM_MAX_TEXT];
         chain_confirm_path_t path;
     } value;
 } chain_confirm_field_t;
@@ -81,6 +87,7 @@ bool chain_confirm_summary_add_bytes(
     chain_confirm_summary_t* summary, chain_confirm_field_kind_t kind, const uint8_t* bytes, size_t bytes_len);
 bool chain_confirm_summary_add_path(
     chain_confirm_summary_t* summary, chain_confirm_field_kind_t kind, const uint32_t* path, size_t path_len);
+bool chain_confirm_summary_add_text(chain_confirm_summary_t* summary, chain_confirm_field_kind_t kind, const char* text);
 bool chain_confirm_summary_has_field(const chain_confirm_summary_t* summary, chain_confirm_field_kind_t kind);
 
 #endif /* CHAIN_CONFIRM_SUMMARY_H_ */

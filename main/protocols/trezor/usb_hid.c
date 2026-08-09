@@ -13,6 +13,7 @@
 #include "../../chains/bitcoin/wallet.h"
 #include "../../chains/ethereum/address.h"
 #include "../../chains/ethereum/path.h"
+#include "../../chains/ethereum/sign.h"
 #include "../../chains/ethereum/wallet.h"
 #include "../../jade_assert.h"
 #include "../../jade_tasks.h"
@@ -31,6 +32,7 @@
 #include <string.h>
 #include <tinyusb.h>
 #include <tusb.h>
+#include <wally_bip32.h>
 #include <wally_crypto.h>
 
 #define TREZOR_USB_HID_VID 0x1209
@@ -40,8 +42,8 @@
 #define TREZOR_USB_HID_QUEUE_LEN 4
 #define TREZOR_USB_HID_TASK_STACK 16384
 #define TREZOR_USB_HID_TASK_PRIORITY 5
-#define TREZOR_USB_HID_RX_BUF_LEN 1152
-#define TREZOR_USB_HID_TX_BUF_LEN 1152
+#define TREZOR_USB_HID_RX_BUF_LEN 2304
+#define TREZOR_USB_HID_TX_BUF_LEN 2304
 #define TREZOR_USB_WEBUSB_VENDOR_CODE 0x01
 #define TREZOR_USB_WEBUSB_GET_URL 0x02
 #define TREZOR_USB_WEBUSB_URL_INDEX 0x01
@@ -356,8 +358,13 @@ static bool trezor_usb_hid_get_public_key(
     const bool root_fingerprint_probe = trezor_public_key_is_root_fingerprint_probe(request);
     const bool supported_eth_public_node
         = request && ethereum_path_is_public_key_export_supported(request->address_n, request->address_n_len);
+    const bool supported_btc_testnet_public_node = request && request->kind == TREZOR_PUBLIC_KEY_REQUEST_GENERIC
+        && request->has_coin_name && strcmp(request->coin_name, "Testnet") == 0
+        && (!request->has_script_type || request->script_type == BITCOIN_P2PKH_SPENDADDRESS)
+        && bitcoin_path_is_testnet_p2pkh_account_public_node(request->address_n, request->address_n_len);
     if (!request || !response || !trezor_usb_hid_ensure_wallet_ready()
-        || (!root_fingerprint_probe && !supported_eth_public_node) || (request->has_show_display && request->show_display)) {
+        || (!root_fingerprint_probe && !supported_eth_public_node && !supported_btc_testnet_public_node)
+        || (request->has_show_display && request->show_display)) {
         return false;
     }
 
@@ -367,7 +374,8 @@ static bool trezor_usb_hid_get_public_key(
     memcpy(path.parts, request->address_n, request->address_n_len * sizeof(request->address_n[0]));
 
     wallet_core_public_node_t node;
-    bool ok = wallet_core_get_public_node(&path, &node);
+    const uint32_t bip32_public_version = supported_btc_testnet_public_node ? BIP32_VER_TEST_PUBLIC : 0;
+    bool ok = wallet_core_get_public_node_with_version(&path, bip32_public_version, &node);
     if (ok) {
         response->depth = node.depth;
         response->fingerprint = node.fingerprint;
@@ -385,6 +393,16 @@ static bool trezor_usb_hid_get_public_key(
         wally_bzero(response, sizeof(*response));
     }
     return ok;
+}
+
+static bool trezor_usb_hid_sign_eth_tx(
+    void* ctx, const ethereum_tx_preflight_request_t* const request, ethereum_signature_t* const signature)
+{
+    (void)ctx;
+    if (!request || !signature || !trezor_usb_hid_ensure_wallet_ready()) {
+        return false;
+    }
+    return ethereum_sign_tx(request, signature);
 }
 
 static trezor_session_t trezor_usb_hid_session(void)
@@ -432,6 +450,8 @@ static trezor_session_t trezor_usb_hid_session(void)
         .get_eth_address_ctx = NULL,
         .get_public_key = trezor_usb_hid_get_public_key,
         .get_public_key_ctx = NULL,
+        .sign_eth_tx = trezor_usb_hid_sign_eth_tx,
+        .sign_eth_tx_ctx = NULL,
     };
     return session;
 }

@@ -60,6 +60,12 @@ static const char* field_name(const chain_confirm_field_kind_t kind)
         return "Token Recipient";
     case CHAIN_CONFIRM_FIELD_TOKEN_AMOUNT:
         return "Token Amount";
+    case CHAIN_CONFIRM_FIELD_TOKEN_SYMBOL:
+        return "Token Symbol";
+    case CHAIN_CONFIRM_FIELD_TOKEN_DECIMALS:
+        return "Token Decimals";
+    case CHAIN_CONFIRM_FIELD_TOKEN_NAME:
+        return "Token Name";
     case CHAIN_CONFIRM_FIELD_MAX_FEE:
         return "Max Fee";
     case CHAIN_CONFIRM_FIELD_FEE_LIMIT:
@@ -163,6 +169,9 @@ static bool show_field(const chain_confirm_field_t* const field)
     }
     if (field->value_type == CHAIN_CONFIRM_VALUE_PATH) {
         return format_path(&field->value.path, value, sizeof(value)) && show_text_value(title, value);
+    }
+    if (field->value_type == CHAIN_CONFIRM_VALUE_TEXT) {
+        return show_text_value(title, field->value.text);
     }
     if (field->value_type == CHAIN_CONFIRM_VALUE_BYTES) {
         return show_hex_value(title, field->value.bytes.bytes, field->value.bytes.len);

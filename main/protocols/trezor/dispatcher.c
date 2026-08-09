@@ -7,7 +7,8 @@ bool trezor_dispatcher_message_allowed(const uint32_t message_type)
         || message_type == TREZOR_MSG_CANCEL || message_type == TREZOR_MSG_END_SESSION
         || message_type == TREZOR_MSG_BUTTON_ACK || message_type == TREZOR_MSG_GET_ADDRESS
         || message_type == TREZOR_MSG_ETHEREUM_GET_ADDRESS || message_type == TREZOR_MSG_GET_PUBLIC_KEY
-        || message_type == TREZOR_MSG_ETHEREUM_GET_PUBLIC_KEY;
+        || message_type == TREZOR_MSG_ETHEREUM_GET_PUBLIC_KEY || message_type == TREZOR_MSG_ETHEREUM_SIGN_TX
+        || message_type == TREZOR_MSG_ETHEREUM_SIGN_TX_EIP1559 || message_type == TREZOR_MSG_ETHEREUM_TX_ACK;
 }
 
 bool trezor_dispatcher_message_sensitive_or_unsupported(const uint32_t message_type)
@@ -29,8 +30,6 @@ bool trezor_dispatcher_message_sensitive_or_unsupported(const uint32_t message_t
     case TREZOR_MSG_SIGN_IDENTITY:
     case TREZOR_MSG_GET_ECDH_SESSION_KEY:
     case TREZOR_MSG_UNLOCK_PATH:
-    case TREZOR_MSG_ETHEREUM_SIGN_TX:
-    case TREZOR_MSG_ETHEREUM_SIGN_TX_EIP1559:
         return true;
     default:
         return true;

@@ -44,6 +44,27 @@ static bool fee_product_fits_u64(const uint64_t fee_per_gas, const uint64_t gas_
     return fee_per_gas == 0 || gas_limit <= UINT64_MAX / fee_per_gas;
 }
 
+static bool token_definition_valid_for_result(const ethereum_tx_preflight_request_t* const request,
+    const ethereum_tx_preflight_result_t* const result)
+{
+    if (!request->has_token_definition) {
+        return true;
+    }
+    if (!result || (result->type != ETHEREUM_TX_SUMMARY_ERC20_TRANSFER
+                       && result->type != ETHEREUM_TX_SUMMARY_ERC20_APPROVE)) {
+        return false;
+    }
+    return request->token_definition.chain_id == request->chain_id
+        && request->token_definition.decimals <= ETHEREUM_TOKEN_DECIMALS_MAX
+        && request->token_definition.symbol[0] != '\0'
+        && strnlen(request->token_definition.symbol, sizeof(request->token_definition.symbol))
+            < sizeof(request->token_definition.symbol)
+        && request->token_definition.name[0] != '\0'
+        && strnlen(request->token_definition.name, sizeof(request->token_definition.name))
+            < sizeof(request->token_definition.name)
+        && memcmp(request->token_definition.address, result->token_contract, ETHEREUM_ADDRESS_LEN) == 0;
+}
+
 bool ethereum_tx_preflight(
     const ethereum_tx_preflight_request_t* const request, ethereum_tx_preflight_result_t* const result)
 {
@@ -74,7 +95,7 @@ bool ethereum_tx_preflight(
     }
 
     if (request->data_len == 0) {
-        if (!request->has_to) {
+        if (!request->has_to || request->has_token_definition) {
             return false;
         }
         result->type = ETHEREUM_TX_SUMMARY_NATIVE_TRANSFER;
@@ -97,10 +118,10 @@ bool ethereum_tx_preflight(
         memcpy(result->token_recipient, call.address, sizeof(result->token_recipient));
         memcpy(result->token_amount, call.amount, sizeof(result->token_amount));
         wally_bzero(&call, sizeof(call));
-        return true;
+        return token_definition_valid_for_result(request, result);
     }
 
-    if (!request->allow_unknown_contract_call) {
+    if (request->has_token_definition || !request->allow_unknown_contract_call) {
         return false;
     }
 
