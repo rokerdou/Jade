@@ -300,6 +300,7 @@ USB 主机必须按完全不可信处理。后续任何 Jade RPC 或 Trezor-comp
 - 派生路径校验：币种 coin type、account/index 上限、TRON owner/ETH sender 与本机派生地址不一致时拒绝。
 - 交易报文 signing payload/digest：ETH legacy/EIP-155、EIP-1559、ERC20/TRC20 transfer/approve、TRON raw transaction protobuf/sha256。
 - UI 授权绑定：同一个硬件确认摘要必须绑定同一个规范化请求和 digest，不能确认 A 后签 B。
+- UI 行数/分页门禁：任何进入硬件确认的摘要字段都必须证明不会超过 Jade/T-Display-S3 通用 dialog 行数上限；长地址、uint256、合约地址、calldata hash 必须分页或使用专用确认 UI，不能把 5 行或更多 message 直接传给 `dialogs.c`。
 - USB 签名入口：不得存在 host-supplied digest blind signing；所有输入长度和结构字段必须有边界测试。
 - USB/protobuf parser 恶意输入：长度溢出、varint 溢出、截断消息、未知/重复字段、错误 wire type、异常 enum、超长 calldata、超长 definitions、异常 derivation path 必须拒绝且不能 crash/reset。
 - Key boundary：链层和协议层不得链接或调用任何 `get_private_key` 类 API；签名只能经由 `wallet_core_sign_digest(key_handle, digest, signature)` 形态的内部接口完成，私钥派生和清理由 wallet core 独占。
@@ -323,6 +324,7 @@ USB 主机必须按完全不可信处理。后续任何 Jade RPC 或 Trezor-comp
 - TRON `owner_address` 与本机派生 signer address 不一致必须拒签；不能只提示后继续。
 - 所有 UI 字段来自链层结构化解析结果，不直接信任主机传来的显示字符串。
 - T-Display-S3 屏幕较小，长地址必须使用分段/滚动/校验码形式，不能截断到无法区分；确认按钮流程必须防误触。
+- T-Display-S3/Jade 通用 `dialogs.c` message 少于 5 行才合法；每个新增地址页、交易页、token 页、final confirm 页都必须审视行数上限、分页进度、返回/取消路径和残留渲染，签名前门禁要覆盖这些 UI 不变量。
 
 ## ETH Digest Correctness Gates
 

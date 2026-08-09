@@ -70,6 +70,18 @@ static const uint8_t EXPECTED_BTC_TESTNET_ADDRESS_BYTES[1 + HASH160_LEN]
     = { 0x6f, 0x75, 0x1e, 0x76, 0xe8, 0x19, 0x91, 0x96, 0xd4, 0x54, 0x94,
           0x1c, 0x45, 0xd1, 0xb3, 0xa3, 0x23, 0xf1, 0x43, 0x3b, 0xd6 };
 
+static const uint8_t EXPECTED_BTC_P2WPKH_SCRIPTPUBKEY[2 + HASH160_LEN]
+    = { 0x00, 0x14, 0x75, 0x1e, 0x76, 0xe8, 0x19, 0x91, 0x96, 0xd4, 0x54, 0x94,
+          0x1c, 0x45, 0xd1, 0xb3, 0xa3, 0x23, 0xf1, 0x43, 0x3b, 0xd6 };
+
+static const uint8_t EXPECTED_BTC_P2SH_P2WPKH_HASH160[HASH160_LEN]
+    = { 0xbc, 0xfe, 0xb7, 0x28, 0xb5, 0x84, 0x25, 0x3d, 0x5f, 0x3f,
+          0x70, 0xbc, 0xb7, 0x80, 0xe9, 0xef, 0x21, 0x8a, 0x68, 0xf4 };
+
+static const uint8_t EXPECTED_BTC_P2SH_P2WPKH_ADDRESS_BYTES[1 + HASH160_LEN]
+    = { 0xc4, 0xbc, 0xfe, 0xb7, 0x28, 0xb5, 0x84, 0x25, 0x3d, 0x5f, 0x3f,
+          0x70, 0xbc, 0xb7, 0x80, 0xe9, 0xef, 0x21, 0x8a, 0x68, 0xf4 };
+
 static const uint8_t EXPECTED_ETH_ADDRESS[ETHEREUM_ADDRESS_LEN] = { 0x7e, 0x5f, 0x45, 0x52, 0x09, 0x1a, 0x69, 0x12,
     0x5d, 0x5d, 0xfc, 0xb7, 0xb8, 0xc2, 0x65, 0x90, 0x29, 0x39, 0x5b, 0xdf };
 
@@ -167,6 +179,203 @@ static const chain_confirm_field_t* find_confirm_field(
     return NULL;
 }
 
+static size_t decimal_len(uint64_t value)
+{
+    size_t len = 1;
+    while (value >= 10U) {
+        value /= 10U;
+        ++len;
+    }
+    return len;
+}
+
+static size_t path_part_len(const uint32_t part)
+{
+    uint32_t index = chain_path_unharden(part);
+    size_t len = 1;
+    while (index >= 10U) {
+        index /= 10U;
+        ++len;
+    }
+    return len + (chain_path_is_hardened(part) ? 1U : 0U);
+}
+
+static bool test_text_line_fits_display(const char* const text)
+{
+    const size_t len = text ? strnlen(text, CHAIN_CONFIRM_MAX_TEXT + 1U) : 0;
+    return len > 0 && len < CHAIN_CONFIRM_UI_DISPLAY_LINE_MAX;
+}
+
+static bool test_path_line_fits_display(const chain_confirm_path_t* const path)
+{
+    if (!path || path->len == 0 || path->len > CHAIN_CONFIRM_MAX_PATH_LEN) {
+        return false;
+    }
+
+    size_t len = 1; // "m"
+    for (size_t i = 0; i < path->len; ++i) {
+        len += 1U + path_part_len(path->parts[i]); // "/" + index + optional "'"
+    }
+    return len < CHAIN_CONFIRM_UI_DISPLAY_LINE_MAX;
+}
+
+static bool test_hex_field_fits_dialog(const size_t bytes_len)
+{
+    if (bytes_len > CHAIN_CONFIRM_MAX_BYTES) {
+        return false;
+    }
+    const size_t hex_chars = 2U + (2U * bytes_len);
+    const size_t lines = (hex_chars + CHAIN_CONFIRM_UI_HEX_LINE_CHARS - 1U) / CHAIN_CONFIRM_UI_HEX_LINE_CHARS;
+    return lines > 0 && lines <= CHAIN_CONFIRM_UI_MAX_MESSAGE_LINES
+        && CHAIN_CONFIRM_UI_HEX_LINE_CHARS + 1U <= CHAIN_CONFIRM_UI_DISPLAY_LINE_MAX;
+}
+
+static bool test_confirm_field_fits_tdisplay_s3(const chain_confirm_field_t* const field)
+{
+    if (!field) {
+        return false;
+    }
+
+    switch (field->value_type) {
+    case CHAIN_CONFIRM_VALUE_U64:
+        return decimal_len(field->value.u64) < CHAIN_CONFIRM_UI_DISPLAY_LINE_MAX;
+    case CHAIN_CONFIRM_VALUE_BYTES:
+        return test_hex_field_fits_dialog(field->value.bytes.len);
+    case CHAIN_CONFIRM_VALUE_PATH:
+        return test_path_line_fits_display(&field->value.path);
+    case CHAIN_CONFIRM_VALUE_TEXT:
+        return test_text_line_fits_display(field->value.text);
+    }
+    return false;
+}
+
+static bool test_confirm_summary_fits_tdisplay_s3(const chain_confirm_summary_t* const summary)
+{
+    if (!summary || (summary->flags & CHAIN_CONFIRM_FLAG_USER_CONFIRM) == 0 || summary->num_fields == 0
+        || summary->num_fields > CHAIN_CONFIRM_MAX_FIELDS) {
+        return false;
+    }
+
+    if (CHAIN_CONFIRM_UI_MAX_MESSAGE_LINES < 3U) {
+        return false;
+    }
+    for (size_t i = 0; i < summary->num_fields; ++i) {
+        if (!test_confirm_field_fits_tdisplay_s3(&summary->fields[i])) {
+            return false;
+        }
+    }
+    return true;
+}
+
+static bool test_protobuf_rejects_malformed_inputs(void)
+{
+    static const uint8_t field_zero[] = { 0x00 };
+    static const uint8_t unsupported_wire_type[] = { 0x0d, 0x00, 0x00, 0x00, 0x00 };
+    static const uint8_t truncated_varint_value[] = { 0x08, 0x80 };
+    static const uint8_t overlong_varint_value[]
+        = { 0x08, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x02 };
+    static const uint8_t truncated_len_field[] = { 0x0a, 0x05, 0xaa, 0xbb };
+    static const uint8_t overlong_len_varint[]
+        = { 0x0a, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x02 };
+    static const uint8_t oversized_len_field[] = { 0x0a, 0x81, 0x10 };
+    static const uint8_t too_large_field_number[] = { 0x80, 0x80, 0x80, 0x80, 0x80, 0x01, 0x00 };
+    static const uint8_t valid_varint[] = { 0x08, 0x01 };
+    static const uint8_t* const malformed_cases[] = {
+        field_zero,
+        unsupported_wire_type,
+        truncated_varint_value,
+        overlong_varint_value,
+        truncated_len_field,
+        overlong_len_varint,
+        oversized_len_field,
+        too_large_field_number,
+    };
+    static const size_t malformed_lens[] = {
+        sizeof(field_zero),
+        sizeof(unsupported_wire_type),
+        sizeof(truncated_varint_value),
+        sizeof(overlong_varint_value),
+        sizeof(truncated_len_field),
+        sizeof(overlong_len_varint),
+        sizeof(oversized_len_field),
+        sizeof(too_large_field_number),
+    };
+
+    for (size_t i = 0; i < ARRAY_LEN(malformed_cases); ++i) {
+        trezor_protobuf_reader_t reader;
+        uint32_t field_number = 0;
+        uint8_t wire_type = 0;
+        const uint8_t* value = NULL;
+        size_t value_len = 0;
+        trezor_protobuf_reader_init(&reader, malformed_cases[i], malformed_lens[i]);
+        if (trezor_protobuf_reader_next(&reader, &field_number, &wire_type, &value, &value_len)) {
+            return false;
+        }
+    }
+
+    uint8_t oversized_message[TREZOR_PROTOBUF_MAX_MESSAGE_LEN + 1U];
+    trezor_protobuf_reader_t reader;
+    trezor_protobuf_reader_init(&reader, oversized_message, sizeof(oversized_message));
+    if (reader.len != 0) {
+        return false;
+    }
+
+    trezor_protobuf_reader_init(&reader, valid_varint, sizeof(valid_varint));
+    uint32_t field_number = 0;
+    uint8_t wire_type = 0;
+    const uint8_t* value = NULL;
+    size_t value_len = 0;
+    uint64_t decoded = 0;
+    if (!trezor_protobuf_reader_next(&reader, &field_number, &wire_type, &value, &value_len)
+        || field_number != 1 || wire_type != TREZOR_PROTOBUF_WIRE_VARINT
+        || !trezor_protobuf_read_varint_value(value, value_len, &decoded) || decoded != 1
+        || trezor_protobuf_reader_next(&reader, &field_number, &wire_type, &value, &value_len)) {
+        return false;
+    }
+
+    uint8_t output[16];
+    trezor_protobuf_writer_t writer;
+    trezor_protobuf_writer_init(&writer, output, sizeof(output));
+    if (trezor_protobuf_write_varint_field(&writer, 0, 1)) {
+        return false;
+    }
+    uint8_t oversized_field[TREZOR_PROTOBUF_MAX_FIELD_BYTES + 1U];
+    trezor_protobuf_writer_init(&writer, output, sizeof(output));
+    if (trezor_protobuf_write_bytes_field(&writer, 1, oversized_field, sizeof(oversized_field))) {
+        return false;
+    }
+    trezor_protobuf_writer_init(&writer, output, 1);
+    if (trezor_protobuf_write_bytes_field(&writer, 1, (const uint8_t*)"abcd", 4)) {
+        return false;
+    }
+    return true;
+}
+
+static bool test_fake_ui_rejects_unrenderable_summary(void)
+{
+    chain_confirm_summary_t summary;
+    chain_confirm_summary_init(&summary, CHAIN_CONFIRM_CHAIN_ETHEREUM, CHAIN_CONFIRM_OPERATION_NATIVE_TRANSFER,
+        CHAIN_CONFIRM_FLAG_USER_CONFIRM);
+
+    char long_text[CHAIN_CONFIRM_MAX_TEXT];
+    memset(long_text, 'A', sizeof(long_text));
+    long_text[sizeof(long_text) - 1U] = '\0';
+    if (!chain_confirm_summary_add_text(&summary, CHAIN_CONFIRM_FIELD_TOKEN_NAME, long_text)
+        || test_confirm_summary_fits_tdisplay_s3(&summary) || show_chain_confirm_summary_activity(&summary)) {
+        return false;
+    }
+
+    const uint32_t too_long_path[] = { chain_path_harden(2147483647U), chain_path_harden(2147483647U),
+        chain_path_harden(2147483647U), chain_path_harden(2147483647U) };
+    chain_confirm_summary_init(&summary, CHAIN_CONFIRM_CHAIN_ETHEREUM, CHAIN_CONFIRM_OPERATION_NATIVE_TRANSFER,
+        CHAIN_CONFIRM_FLAG_USER_CONFIRM);
+    if (!chain_confirm_summary_add_path(&summary, CHAIN_CONFIRM_FIELD_PATH, too_long_path, ARRAY_LEN(too_long_path))
+        || test_confirm_summary_fits_tdisplay_s3(&summary) || show_chain_confirm_summary_activity(&summary)) {
+        return false;
+    }
+    return true;
+}
+
 static bool trezor_test_get_eth_address(
     void* ctx, const trezor_ethereum_get_address_t* const request, char* const address, const size_t address_len)
 {
@@ -185,14 +394,27 @@ static bool trezor_test_get_bitcoin_address(
     void* ctx, const trezor_bitcoin_get_address_t* const request, char* const address, const size_t address_len)
 {
     (void)ctx;
-    const char expected[] = "mrCDrCybB6J1vRfbwM5hemdJz73FwDBC8r";
-    if (!g_trezor_bitcoin_address_ok || !request || !address || address_len < sizeof(expected)
+    if (!g_trezor_bitcoin_address_ok || !request || !address || !address_len
         || (request->has_show_display && request->show_display)) {
         return false;
     }
 
+    const uint32_t script_type = request->has_script_type ? request->script_type : BITCOIN_P2PKH_SPENDADDRESS;
+    bool ok = false;
+    if (script_type == BITCOIN_P2PKH_SPENDADDRESS) {
+        ok = bitcoin_p2pkh_testnet_address_from_compressed_pubkey(
+            PRIVATE_KEY_ONE_COMPRESSED_PUBKEY, sizeof(PRIVATE_KEY_ONE_COMPRESSED_PUBKEY), address, address_len);
+    } else if (script_type == BITCOIN_P2WPKH_SPENDWITNESS) {
+        ok = bitcoin_p2wpkh_testnet_address_from_compressed_pubkey(
+            PRIVATE_KEY_ONE_COMPRESSED_PUBKEY, sizeof(PRIVATE_KEY_ONE_COMPRESSED_PUBKEY), address, address_len);
+    } else if (script_type == BITCOIN_P2SH_P2WPKH_SPENDP2SHWITNESS) {
+        ok = bitcoin_p2sh_p2wpkh_testnet_address_from_compressed_pubkey(
+            PRIVATE_KEY_ONE_COMPRESSED_PUBKEY, sizeof(PRIVATE_KEY_ONE_COMPRESSED_PUBKEY), address, address_len);
+    }
+    if (!ok) {
+        return false;
+    }
     memcpy(&g_last_trezor_bitcoin_address_request, request, sizeof(g_last_trezor_bitcoin_address_request));
-    memcpy(address, expected, sizeof(expected));
     return true;
 }
 
@@ -323,6 +545,56 @@ static int trezor_check_rejected_message(
         return 1;
     }
     return 0;
+}
+
+static int trezor_check_rejected_wire_message(
+    const trezor_session_t* const session, const uint16_t message_type, const char* const label)
+{
+    uint8_t request_chunks[TREZOR_WIRE_CHUNK_SIZE];
+    size_t request_chunks_len = 0;
+    uint8_t response_chunks[TREZOR_WIRE_CHUNK_SIZE];
+    size_t response_chunks_len = 0;
+    uint8_t response_payload[128];
+    size_t response_payload_len = 0;
+    uint16_t response_type = 0;
+
+    if (!session || !label || !trezor_wire_encode_message(message_type, NULL, 0, request_chunks,
+                              sizeof(request_chunks), &request_chunks_len)
+        || !trezor_session_handle_wire(
+            session, request_chunks, request_chunks_len, response_chunks, sizeof(response_chunks), &response_chunks_len)
+        || !trezor_wire_decode_message(
+            response_chunks, response_chunks_len, &response_type, response_payload, sizeof(response_payload),
+            &response_payload_len)
+        || response_type != TREZOR_MSG_FAILURE
+        || !trezor_payload_has_varint(response_payload, response_payload_len, 1, TREZOR_FAILURE_UNEXPECTED_MESSAGE)) {
+        fprintf(stderr, "Trezor USB sensitive wire message was not rejected: %s (%u)\n", label, message_type);
+        return 1;
+    }
+    return 0;
+}
+
+static bool trezor_check_invalid_wire_failure(const trezor_session_t* const session)
+{
+    uint8_t bad_request[TREZOR_WIRE_CHUNK_SIZE] = { 0 };
+    uint8_t response_chunks[TREZOR_WIRE_CHUNK_SIZE];
+    size_t response_chunks_len = 0;
+    uint8_t response_payload[128];
+    size_t response_payload_len = 0;
+    uint16_t response_type = 0;
+
+    bad_request[0] = TREZOR_WIRE_MARKER;
+    bad_request[1] = 0;
+    bad_request[2] = TREZOR_WIRE_MAGIC;
+    if (!session
+        || !trezor_session_handle_wire(
+            session, bad_request, sizeof(bad_request), response_chunks, sizeof(response_chunks), &response_chunks_len)
+        || !trezor_wire_decode_message(
+            response_chunks, response_chunks_len, &response_type, response_payload, sizeof(response_payload),
+            &response_payload_len)) {
+        return false;
+    }
+    return response_type == TREZOR_MSG_FAILURE
+        && trezor_payload_has_varint(response_payload, response_payload_len, 1, TREZOR_FAILURE_INVALID_PROTOCOL);
 }
 
 static bool trezor_payload_contains_bytes(const uint8_t* const payload, const size_t payload_len,
@@ -501,7 +773,7 @@ bool show_chain_confirm_summary_activity(const chain_confirm_summary_t* summary)
 
     ++g_ui_calls;
     memcpy(&g_last_ui_summary, summary, sizeof(g_last_ui_summary));
-    return g_ui_accept;
+    return g_ui_accept && test_confirm_summary_fits_tdisplay_s3(summary);
 }
 
 int wally_ec_public_key_verify(const unsigned char* pub_key, size_t pub_key_len)
@@ -529,6 +801,12 @@ int wally_base58_from_bytes(const unsigned char* bytes, size_t bytes_len, uint32
         && memcmp(bytes, EXPECTED_BTC_TESTNET_ADDRESS_BYTES, sizeof(EXPECTED_BTC_TESTNET_ADDRESS_BYTES)) == 0) {
         expected = "mrCDrCybB6J1vRfbwM5hemdJz73FwDBC8r";
         expected_len = strlen(expected) + 1;
+    } else if (bytes_len == sizeof(EXPECTED_BTC_P2SH_P2WPKH_ADDRESS_BYTES)
+        && memcmp(bytes, EXPECTED_BTC_P2SH_P2WPKH_ADDRESS_BYTES,
+               sizeof(EXPECTED_BTC_P2SH_P2WPKH_ADDRESS_BYTES))
+            == 0) {
+        expected = "2NAUYAHhujozruyzpsFRP63mbrdaU5wnEpN";
+        expected_len = strlen(expected) + 1;
     } else {
         return WALLY_EINVAL;
     }
@@ -541,14 +819,39 @@ int wally_base58_from_bytes(const unsigned char* bytes, size_t bytes_len, uint32
     return WALLY_OK;
 }
 
-int wally_hash160(const unsigned char* bytes, size_t bytes_len, unsigned char* bytes_out, size_t len)
+int wally_addr_segwit_from_bytes(
+    const unsigned char* bytes, size_t bytes_len, const char* addr_family, uint32_t flags, char** output)
 {
-    if (!bytes || bytes_len != sizeof(PRIVATE_KEY_ONE_COMPRESSED_PUBKEY) || !bytes_out || len != HASH160_LEN
-        || memcmp(bytes, PRIVATE_KEY_ONE_COMPRESSED_PUBKEY, sizeof(PRIVATE_KEY_ONE_COMPRESSED_PUBKEY)) != 0) {
+    const char expected[] = "tb1qw508d6qejxtdg4y5r3zarvary0c5xw7kxpjzsx";
+    if (!bytes || bytes_len != sizeof(EXPECTED_BTC_P2WPKH_SCRIPTPUBKEY) || !addr_family || strcmp(addr_family, "tb")
+        || flags != 0 || !output
+        || memcmp(bytes, EXPECTED_BTC_P2WPKH_SCRIPTPUBKEY, sizeof(EXPECTED_BTC_P2WPKH_SCRIPTPUBKEY)) != 0) {
         return WALLY_EINVAL;
     }
 
-    memcpy(bytes_out, EXPECTED_BTC_TESTNET_HASH160, sizeof(EXPECTED_BTC_TESTNET_HASH160));
+    *output = malloc(sizeof(expected));
+    if (!*output) {
+        return WALLY_ENOMEM;
+    }
+    memcpy(*output, expected, sizeof(expected));
+    return WALLY_OK;
+}
+
+int wally_hash160(const unsigned char* bytes, size_t bytes_len, unsigned char* bytes_out, size_t len)
+{
+    if (!bytes || !bytes_out || len != HASH160_LEN) {
+        return WALLY_EINVAL;
+    }
+
+    if (bytes_len == sizeof(PRIVATE_KEY_ONE_COMPRESSED_PUBKEY)
+        && memcmp(bytes, PRIVATE_KEY_ONE_COMPRESSED_PUBKEY, sizeof(PRIVATE_KEY_ONE_COMPRESSED_PUBKEY)) == 0) {
+        memcpy(bytes_out, EXPECTED_BTC_TESTNET_HASH160, sizeof(EXPECTED_BTC_TESTNET_HASH160));
+    } else if (bytes_len == sizeof(EXPECTED_BTC_P2WPKH_SCRIPTPUBKEY)
+        && memcmp(bytes, EXPECTED_BTC_P2WPKH_SCRIPTPUBKEY, sizeof(EXPECTED_BTC_P2WPKH_SCRIPTPUBKEY)) == 0) {
+        memcpy(bytes_out, EXPECTED_BTC_P2SH_P2WPKH_HASH160, sizeof(EXPECTED_BTC_P2SH_P2WPKH_HASH160));
+    } else {
+        return WALLY_EINVAL;
+    }
     return WALLY_OK;
 }
 
@@ -587,8 +890,222 @@ int wally_bzero(void* bytes, size_t bytes_len)
     return WALLY_OK;
 }
 
-int main(void)
+static void print_hex_value(const char* const key, const uint8_t* const bytes, const size_t bytes_len)
 {
+    static const char hex[] = "0123456789abcdef";
+    printf("%s=", key);
+    for (size_t i = 0; i < bytes_len; ++i) {
+        putchar(hex[bytes[i] >> 4]);
+        putchar(hex[bytes[i] & 0x0f]);
+    }
+    putchar('\n');
+}
+
+static bool parse_hex_bytes(const char* const hex, uint8_t* const output, const size_t output_len, size_t* const written)
+{
+    if (!hex || !output || !written) {
+        return false;
+    }
+    const size_t hex_len = strlen(hex);
+    if ((hex_len & 1U) != 0 || hex_len / 2U > output_len) {
+        return false;
+    }
+    for (size_t i = 0; i < hex_len / 2U; ++i) {
+        uint8_t high = 0;
+        uint8_t low = 0;
+        if (!hex_char_to_nibble(hex[2U * i], &high) || !hex_char_to_nibble(hex[(2U * i) + 1U], &low)) {
+            return false;
+        }
+        output[i] = (uint8_t)((high << 4) | low);
+    }
+    *written = hex_len / 2U;
+    return true;
+}
+
+static void make_oracle_test_session(trezor_session_t* const session, trezor_session_state_t* const state)
+{
+    static const uint8_t trezor_session_id[TREZOR_FEATURES_SESSION_ID_LEN]
+        = { 0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07,
+              0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f,
+              0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17,
+              0x18, 0x19, 0x1a, 0x1b, 0x1c, 0x1d, 0x1e, 0x1f };
+
+    wally_bzero(state, sizeof(*state));
+    wally_bzero(session, sizeof(*session));
+    session->features = (trezor_features_t) { .vendor = "trezor.io",
+        .fw_vendor = "Jade T-Display-S3",
+        .device_id = "jade-test",
+        .language = "en-US",
+        .model = "Jade",
+        .internal_model = "UNKNOWN",
+        .session_id = trezor_session_id,
+        .session_id_len = sizeof(trezor_session_id),
+        .major_version = 2,
+        .minor_version = 0,
+        .patch_version = 0,
+        .initialized = true,
+        .has_unlocked = true,
+        .unlocked = false,
+        .pin_protection = true,
+        .expose_private_fields = true,
+        .passphrase_protection = false,
+        .capabilities = { TREZOR_CAPABILITY_BITCOIN, TREZOR_CAPABILITY_BITCOIN_LIKE, TREZOR_CAPABILITY_ETHEREUM },
+        .capabilities_len = 3 };
+    session->state = state;
+    session->initialize_session = trezor_test_initialize_session;
+    session->needs_local_unlock = trezor_test_needs_local_unlock;
+    session->perform_local_unlock = trezor_test_perform_local_unlock;
+    session->get_bitcoin_address = trezor_test_get_bitcoin_address;
+    session->get_eth_address = trezor_test_get_eth_address;
+    session->get_public_key = trezor_test_get_public_key;
+    session->sign_eth_tx = trezor_test_sign_eth_tx;
+}
+
+static int run_trezor_wire_oracle(const char* const request_hex)
+{
+    uint8_t request_chunks[2304];
+    size_t request_chunks_len = 0;
+    uint8_t response_chunks[2304];
+    size_t response_chunks_len = 0;
+    uint8_t response_payload[TREZOR_SESSION_MAX_RESPONSE_PAYLOAD_LEN];
+    size_t response_payload_len = 0;
+    uint16_t response_type = 0;
+    trezor_session_state_t state;
+    trezor_session_t session;
+
+    if (!parse_hex_bytes(request_hex, request_chunks, sizeof(request_chunks), &request_chunks_len)) {
+        return 1;
+    }
+
+    make_oracle_test_session(&session, &state);
+    if (!trezor_session_handle_wire(
+            &session, request_chunks, request_chunks_len, response_chunks, sizeof(response_chunks), &response_chunks_len)
+        || !trezor_wire_decode_message(response_chunks, response_chunks_len, &response_type, response_payload,
+            sizeof(response_payload), &response_payload_len)) {
+        return 1;
+    }
+
+    printf("response_type=%u\n", (unsigned int)response_type);
+    print_hex_value("response_payload", response_payload, response_payload_len);
+    return 0;
+}
+
+static int dump_oracle_vectors(void)
+{
+    uint8_t eth_address[ETHEREUM_ADDRESS_LEN];
+    char eth_checksum[ETHEREUM_CHECKSUM_ADDRESS_STRING_LEN];
+    uint8_t tron_address[TRON_ADDRESS_LEN];
+    char tron_base58[TRON_BASE58_ADDRESS_MAX_LEN];
+    char btc_address[BITCOIN_P2PKH_ADDRESS_MAX_LEN];
+
+    if (!ethereum_address_from_uncompressed_pubkey(PRIVATE_KEY_ONE_UNCOMPRESSED_PUBKEY,
+            sizeof(PRIVATE_KEY_ONE_UNCOMPRESSED_PUBKEY), eth_address, sizeof(eth_address))
+        || !ethereum_address_to_checksum_string(eth_address, sizeof(eth_address), eth_checksum, sizeof(eth_checksum))
+        || !tron_address_from_uncompressed_pubkey(PRIVATE_KEY_ONE_UNCOMPRESSED_PUBKEY,
+            sizeof(PRIVATE_KEY_ONE_UNCOMPRESSED_PUBKEY), tron_address, sizeof(tron_address))
+        || !tron_address_to_base58(tron_address, sizeof(tron_address), tron_base58, sizeof(tron_base58))
+        || !bitcoin_p2pkh_testnet_address_from_compressed_pubkey(
+            PRIVATE_KEY_ONE_COMPRESSED_PUBKEY, sizeof(PRIVATE_KEY_ONE_COMPRESSED_PUBKEY), btc_address,
+            sizeof(btc_address))) {
+        return 1;
+    }
+
+    printf("eth_checksum_address=%s\n", eth_checksum);
+    printf("tron_base58_address=%s\n", tron_base58);
+    printf("btc_testnet_p2pkh_address=%s\n", btc_address);
+    if (!bitcoin_p2wpkh_testnet_address_from_compressed_pubkey(
+            PRIVATE_KEY_ONE_COMPRESSED_PUBKEY, sizeof(PRIVATE_KEY_ONE_COMPRESSED_PUBKEY), btc_address,
+            sizeof(btc_address))) {
+        return 1;
+    }
+    printf("btc_testnet_p2wpkh_address=%s\n", btc_address);
+    if (!bitcoin_p2sh_p2wpkh_testnet_address_from_compressed_pubkey(
+            PRIVATE_KEY_ONE_COMPRESSED_PUBKEY, sizeof(PRIVATE_KEY_ONE_COMPRESSED_PUBKEY), btc_address,
+            sizeof(btc_address))) {
+        return 1;
+    }
+    printf("btc_testnet_p2sh_p2wpkh_address=%s\n", btc_address);
+
+    uint8_t signing_payload[ETHEREUM_TX_MAX_SIGNING_PAYLOAD_LEN];
+    size_t signing_payload_len = 0;
+    uint8_t signing_hash[ETHEREUM_TX_SIGNING_HASH_LEN];
+    uint8_t eip155_value[] = { 0x0d, 0xe0, 0xb6, 0xb3, 0xa7, 0x64, 0x00, 0x00 };
+    const uint32_t eth_bip44[] = { chain_path_harden(44), chain_path_harden(60), chain_path_harden(0), 0, 0 };
+    ethereum_tx_preflight_request_t eip155_req = {
+        .path = eth_bip44,
+        .path_len = ARRAY_LEN(eth_bip44),
+        .tx_type = ETHEREUM_TX_TYPE_LEGACY,
+        .chain_id = 1,
+        .nonce = 9,
+        .gas_price = 20000000000ULL,
+        .gas_limit = 21000,
+        .has_to = true,
+        .value = eip155_value,
+        .value_len = sizeof(eip155_value),
+        .sender_address = eth_address,
+        .sender_address_len = sizeof(eth_address),
+    };
+    memset(eip155_req.to, 0x35, sizeof(eip155_req.to));
+    if (!ethereum_tx_signing_payload(&eip155_req, signing_payload, sizeof(signing_payload), &signing_payload_len)
+        || !ethereum_tx_signing_hash(&eip155_req, signing_hash, sizeof(signing_hash))) {
+        return 1;
+    }
+    print_hex_value("eth_eip155_signing_payload", signing_payload, signing_payload_len);
+    print_hex_value("eth_eip155_signing_hash", signing_hash, sizeof(signing_hash));
+
+    ethereum_tx_preflight_request_t type2_req = {
+        .path = eth_bip44,
+        .path_len = ARRAY_LEN(eth_bip44),
+        .tx_type = ETHEREUM_TX_TYPE_EIP1559,
+        .chain_id = 1,
+        .max_priority_fee_per_gas = 1,
+        .max_fee_per_gas = 2,
+        .gas_limit = 21000,
+        .has_to = true,
+        .sender_address = eth_address,
+        .sender_address_len = sizeof(eth_address),
+    };
+    memset(type2_req.to, 0x35, sizeof(type2_req.to));
+    if (!ethereum_tx_signing_payload(&type2_req, signing_payload, sizeof(signing_payload), &signing_payload_len)) {
+        return 1;
+    }
+    print_hex_value("eth_eip1559_signing_payload", signing_payload, signing_payload_len);
+
+    uint8_t token_amount[EVM_ABI_WORD_LEN] = { 0 };
+    token_amount[EVM_ABI_WORD_LEN - 1] = 50;
+    uint8_t erc20_transfer_data[EVM_ABI_ADDRESS_UINT256_CALL_LEN];
+    uint8_t erc20_approve_data[EVM_ABI_ADDRESS_UINT256_CALL_LEN];
+    make_erc20_address_uint256_call(0xa9, 0x05, 0x9c, 0xbb, EXPECTED_ETH_ADDRESS, token_amount, erc20_transfer_data);
+    make_erc20_address_uint256_call(0x09, 0x5e, 0xa7, 0xb3, EXPECTED_ETH_ADDRESS, token_amount, erc20_approve_data);
+    print_hex_value("erc20_transfer_call", erc20_transfer_data, sizeof(erc20_transfer_data));
+    print_hex_value("erc20_approve_call", erc20_approve_data, sizeof(erc20_approve_data));
+
+    uint8_t token_contract[ETHEREUM_ADDRESS_LEN];
+    memset(token_contract, 0x11, sizeof(token_contract));
+    uint8_t signed_token_definition[256];
+    size_t signed_token_definition_len = 0;
+    uint8_t eth_definitions[512];
+    size_t eth_definitions_len = 0;
+    if (!make_signed_eth_token_definition(token_contract, 1, "USDT", 6, "Tether USD", true,
+            signed_token_definition, sizeof(signed_token_definition), &signed_token_definition_len)
+        || !make_eth_definitions_with_token(signed_token_definition, signed_token_definition_len, eth_definitions,
+            sizeof(eth_definitions), &eth_definitions_len)) {
+        return 1;
+    }
+    print_hex_value("trezor_usdt_signed_token_definition", signed_token_definition, signed_token_definition_len);
+    print_hex_value("trezor_usdt_token_definitions", eth_definitions, eth_definitions_len);
+    return 0;
+}
+
+int main(int argc, char** argv)
+{
+    if (argc == 2 && argv && argv[1] && strcmp(argv[1], "--dump-oracle-vectors") == 0) {
+        return dump_oracle_vectors();
+    }
+    if (argc == 3 && argv && argv[1] && strcmp(argv[1], "--trezor-wire-oracle") == 0) {
+        return run_trezor_wire_oracle(argv[2]);
+    }
+
     CHECK(PRIVATE_KEY_ONE[EC_PRIVATE_KEY_LEN - 1] == 1);
     CHECK(CHAIN_CONFIRM_UI_HEX_LINE_CHARS + 1U <= CHAIN_CONFIRM_UI_DISPLAY_LINE_MAX);
     CHECK(CHAIN_CONFIRM_UI_MAX_HEX_LINES <= CHAIN_CONFIRM_UI_MAX_MESSAGE_LINES);
@@ -596,6 +1113,8 @@ int main(void)
     CHECK(HEX_UI_LINES_FOR_BYTES(TRON_ADDRESS_LEN) <= CHAIN_CONFIRM_UI_MAX_MESSAGE_LINES);
     CHECK(HEX_UI_LINES_FOR_BYTES(EVM_ABI_WORD_LEN) <= CHAIN_CONFIRM_UI_MAX_MESSAGE_LINES);
     CHECK(HEX_UI_LINES_FOR_BYTES(CHAIN_CONFIRM_MAX_BYTES) <= CHAIN_CONFIRM_UI_MAX_MESSAGE_LINES);
+    CHECK(test_protobuf_rejects_malformed_inputs());
+    CHECK(test_fake_ui_rejects_unrenderable_summary());
 
     trezor_protobuf_reader_t eof_reader;
     uint32_t eof_field_number = 1;
@@ -653,6 +1172,12 @@ int main(void)
     CHECK(bitcoin_p2pkh_testnet_address_from_compressed_pubkey(
         PRIVATE_KEY_ONE_COMPRESSED_PUBKEY, sizeof(PRIVATE_KEY_ONE_COMPRESSED_PUBKEY), btc_address, sizeof(btc_address)));
     CHECK(strcmp(btc_address, "mrCDrCybB6J1vRfbwM5hemdJz73FwDBC8r") == 0);
+    CHECK(bitcoin_p2wpkh_testnet_address_from_compressed_pubkey(
+        PRIVATE_KEY_ONE_COMPRESSED_PUBKEY, sizeof(PRIVATE_KEY_ONE_COMPRESSED_PUBKEY), btc_address, sizeof(btc_address)));
+    CHECK(strcmp(btc_address, "tb1qw508d6qejxtdg4y5r3zarvary0c5xw7kxpjzsx") == 0);
+    CHECK(bitcoin_p2sh_p2wpkh_testnet_address_from_compressed_pubkey(
+        PRIVATE_KEY_ONE_COMPRESSED_PUBKEY, sizeof(PRIVATE_KEY_ONE_COMPRESSED_PUBKEY), btc_address, sizeof(btc_address)));
+    CHECK(strcmp(btc_address, "2NAUYAHhujozruyzpsFRP63mbrdaU5wnEpN") == 0);
 
     const uint32_t tron_external[] = { chain_path_harden(44), chain_path_harden(195), chain_path_harden(0), 0, 0 };
     const uint32_t tron_change[] = { chain_path_harden(44), chain_path_harden(195), chain_path_harden(0), 1, 0 };
@@ -713,6 +1238,7 @@ int main(void)
     CHECK(ethereum_confirm_summary_from_preflight(&eth_req, &eth_res, &confirm_summary));
     CHECK(confirm_summary.chain == CHAIN_CONFIRM_CHAIN_ETHEREUM);
     CHECK(confirm_summary.operation == CHAIN_CONFIRM_OPERATION_NATIVE_TRANSFER);
+    CHECK(test_confirm_summary_fits_tdisplay_s3(&confirm_summary));
     CHECK((confirm_summary.flags & CHAIN_CONFIRM_FLAG_USER_CONFIRM) != 0);
     CHECK((confirm_summary.flags & CHAIN_CONFIRM_FLAG_EXTRA_CONFIRM) == 0);
     CHECK(chain_confirm_summary_has_field(&confirm_summary, CHAIN_CONFIRM_FIELD_PATH));
@@ -907,6 +1433,7 @@ int main(void)
     CHECK(memcmp(eth_res.token_amount, token_amount, sizeof(token_amount)) == 0);
     CHECK(ethereum_confirm_summary_from_preflight(&eth_req, &eth_res, &confirm_summary));
     CHECK(confirm_summary.operation == CHAIN_CONFIRM_OPERATION_TOKEN_TRANSFER);
+    CHECK(test_confirm_summary_fits_tdisplay_s3(&confirm_summary));
     CHECK(chain_confirm_summary_has_field(&confirm_summary, CHAIN_CONFIRM_FIELD_TOKEN_CONTRACT));
     CHECK(chain_confirm_summary_has_field(&confirm_summary, CHAIN_CONFIRM_FIELD_TOKEN_RECIPIENT));
     CHECK(chain_confirm_summary_has_field(&confirm_summary, CHAIN_CONFIRM_FIELD_TOKEN_AMOUNT));
@@ -922,6 +1449,7 @@ int main(void)
     CHECK(ethereum_tx_preflight(&eth_req, &eth_res));
     CHECK(ethereum_confirm_summary_from_preflight(&eth_req, &eth_res, &confirm_summary));
     CHECK(confirm_summary.operation == CHAIN_CONFIRM_OPERATION_TOKEN_TRANSFER);
+    CHECK(test_confirm_summary_fits_tdisplay_s3(&confirm_summary));
     CHECK(chain_confirm_summary_has_field(&confirm_summary, CHAIN_CONFIRM_FIELD_TOKEN_SYMBOL));
     CHECK(chain_confirm_summary_has_field(&confirm_summary, CHAIN_CONFIRM_FIELD_TOKEN_DECIMALS));
     CHECK(chain_confirm_summary_has_field(&confirm_summary, CHAIN_CONFIRM_FIELD_TOKEN_NAME));
@@ -980,6 +1508,7 @@ int main(void)
     CHECK(eth_res.type == ETHEREUM_TX_SUMMARY_ERC20_APPROVE);
     CHECK(ethereum_confirm_summary_from_preflight(&eth_req, &eth_res, &confirm_summary));
     CHECK(confirm_summary.operation == CHAIN_CONFIRM_OPERATION_TOKEN_APPROVE);
+    CHECK(test_confirm_summary_fits_tdisplay_s3(&confirm_summary));
     CHECK((confirm_summary.flags & CHAIN_CONFIRM_FLAG_APPROVAL) != 0);
     CHECK((confirm_summary.flags & CHAIN_CONFIRM_FLAG_EXTRA_CONFIRM) != 0);
 
@@ -992,6 +1521,7 @@ int main(void)
     CHECK(eth_res.type == ETHEREUM_TX_SUMMARY_CONTRACT_CALL);
     CHECK(ethereum_confirm_summary_from_preflight(&eth_req, &eth_res, &confirm_summary));
     CHECK(confirm_summary.operation == CHAIN_CONFIRM_OPERATION_CONTRACT_CALL);
+    CHECK(test_confirm_summary_fits_tdisplay_s3(&confirm_summary));
     CHECK((confirm_summary.flags & CHAIN_CONFIRM_FLAG_UNKNOWN_CONTRACT) != 0);
     CHECK((confirm_summary.flags & CHAIN_CONFIRM_FLAG_EXTRA_CONFIRM) != 0);
     CHECK(chain_confirm_summary_has_field(&confirm_summary, CHAIN_CONFIRM_FIELD_CALLDATA_HASH));
@@ -1021,6 +1551,7 @@ int main(void)
     CHECK(tron_confirm_summary_from_preflight(&tron_req, &tron_res, &confirm_summary));
     CHECK(confirm_summary.chain == CHAIN_CONFIRM_CHAIN_TRON);
     CHECK(confirm_summary.operation == CHAIN_CONFIRM_OPERATION_NATIVE_TRANSFER);
+    CHECK(test_confirm_summary_fits_tdisplay_s3(&confirm_summary));
     CHECK((confirm_summary.flags & CHAIN_CONFIRM_FLAG_USER_CONFIRM) != 0);
     CHECK(chain_confirm_summary_has_field(&confirm_summary, CHAIN_CONFIRM_FIELD_PATH));
     CHECK(chain_confirm_summary_has_field(&confirm_summary, CHAIN_CONFIRM_FIELD_OWNER));
@@ -1058,6 +1589,7 @@ int main(void)
     CHECK(memcmp(tron_res.recipient, tron_token_recipient, sizeof(tron_token_recipient)) == 0);
     CHECK(tron_confirm_summary_from_preflight(&tron_req, &tron_res, &confirm_summary));
     CHECK(confirm_summary.operation == CHAIN_CONFIRM_OPERATION_TOKEN_TRANSFER);
+    CHECK(test_confirm_summary_fits_tdisplay_s3(&confirm_summary));
     CHECK(chain_confirm_summary_has_field(&confirm_summary, CHAIN_CONFIRM_FIELD_TOKEN_CONTRACT));
     CHECK(chain_confirm_summary_has_field(&confirm_summary, CHAIN_CONFIRM_FIELD_TOKEN_RECIPIENT));
     CHECK(chain_confirm_summary_has_field(&confirm_summary, CHAIN_CONFIRM_FIELD_TOKEN_AMOUNT));
@@ -1068,6 +1600,7 @@ int main(void)
     CHECK(tron_res.type == TRON_TX_SUMMARY_TRC20_APPROVE);
     CHECK(tron_confirm_summary_from_preflight(&tron_req, &tron_res, &confirm_summary));
     CHECK(confirm_summary.operation == CHAIN_CONFIRM_OPERATION_TOKEN_APPROVE);
+    CHECK(test_confirm_summary_fits_tdisplay_s3(&confirm_summary));
     CHECK((confirm_summary.flags & CHAIN_CONFIRM_FLAG_APPROVAL) != 0);
     CHECK((confirm_summary.flags & CHAIN_CONFIRM_FLAG_EXTRA_CONFIRM) != 0);
     tron_req.contract_data = erc20_transfer_data;
@@ -1084,6 +1617,7 @@ int main(void)
     CHECK(tron_res.type == TRON_TX_SUMMARY_UNKNOWN_SMART_CONTRACT);
     CHECK(tron_confirm_summary_from_preflight(&tron_req, &tron_res, &confirm_summary));
     CHECK(confirm_summary.operation == CHAIN_CONFIRM_OPERATION_CONTRACT_CALL);
+    CHECK(test_confirm_summary_fits_tdisplay_s3(&confirm_summary));
     CHECK((confirm_summary.flags & CHAIN_CONFIRM_FLAG_UNKNOWN_CONTRACT) != 0);
     CHECK((confirm_summary.flags & CHAIN_CONFIRM_FLAG_EXTRA_CONFIRM) != 0);
     CHECK(chain_confirm_summary_has_field(&confirm_summary, CHAIN_CONFIRM_FIELD_CALLDATA_HASH));
@@ -2214,6 +2748,16 @@ int main(void)
     CHECK(!trezor_check_rejected_message(&trezor_session, TREZOR_MSG_SIGN_IDENTITY, "SignIdentity"));
     CHECK(!trezor_check_rejected_message(&trezor_session, TREZOR_MSG_GET_ECDH_SESSION_KEY, "GetECDHSessionKey"));
     CHECK(!trezor_check_rejected_message(&trezor_session, TREZOR_MSG_UNLOCK_PATH, "UnlockPath"));
+
+    CHECK(!trezor_check_rejected_wire_message(&trezor_session, TREZOR_MSG_GET_ENTROPY, "GetEntropy"));
+    CHECK(!trezor_check_rejected_wire_message(&trezor_session, TREZOR_MSG_LOAD_DEVICE, "LoadDevice"));
+    CHECK(!trezor_check_rejected_wire_message(&trezor_session, TREZOR_MSG_RESET_DEVICE, "ResetDevice"));
+    CHECK(!trezor_check_rejected_wire_message(&trezor_session, TREZOR_MSG_SIGN_TX, "SignTx"));
+    CHECK(!trezor_check_rejected_wire_message(&trezor_session, TREZOR_MSG_CIPHER_KEY_VALUE, "CipherKeyValue"));
+    CHECK(!trezor_check_rejected_wire_message(&trezor_session, TREZOR_MSG_BACKUP_DEVICE, "BackupDevice"));
+    CHECK(!trezor_check_rejected_wire_message(&trezor_session, TREZOR_MSG_RECOVERY_DEVICE, "RecoveryDevice"));
+    CHECK(!trezor_check_rejected_wire_message(&trezor_session, TREZOR_MSG_UNLOCK_PATH, "UnlockPath"));
+    CHECK(trezor_check_invalid_wire_failure(&trezor_session));
 
     return 0;
 }

@@ -453,7 +453,9 @@ static bool trezor_usb_hid_get_bitcoin_address(
     if (!request || !address || !trezor_usb_hid_ensure_wallet_ready()
         || !bitcoin_path_is_trezor_connect_state_testnet_p2pkh(request->address_n, request->address_n_len)
         || (request->has_coin_name && strcmp(request->coin_name, "Testnet") != 0)
-        || (request->has_script_type && request->script_type != BITCOIN_P2PKH_SPENDADDRESS)
+        || (request->has_script_type && request->script_type != BITCOIN_P2PKH_SPENDADDRESS
+            && request->script_type != BITCOIN_P2WPKH_SPENDWITNESS
+            && request->script_type != BITCOIN_P2SH_P2WPKH_SPENDP2SHWITNESS)
         || (request->has_show_display && request->show_display)) {
         return false;
     }
@@ -463,7 +465,15 @@ static bool trezor_usb_hid_get_bitcoin_address(
     path.len = request->address_n_len;
     memcpy(path.parts, request->address_n, request->address_n_len * sizeof(request->address_n[0]));
 
-    const bool ok = bitcoin_wallet_p2pkh_testnet_address_from_path(&path, address, address_len);
+    const uint32_t script_type = request->has_script_type ? request->script_type : BITCOIN_P2PKH_SPENDADDRESS;
+    bool ok = false;
+    if (script_type == BITCOIN_P2PKH_SPENDADDRESS) {
+        ok = bitcoin_wallet_p2pkh_testnet_address_from_path(&path, address, address_len);
+    } else if (script_type == BITCOIN_P2WPKH_SPENDWITNESS) {
+        ok = bitcoin_wallet_p2wpkh_testnet_address_from_path(&path, address, address_len);
+    } else if (script_type == BITCOIN_P2SH_P2WPKH_SPENDP2SHWITNESS) {
+        ok = bitcoin_wallet_p2sh_p2wpkh_testnet_address_from_path(&path, address, address_len);
+    }
     wally_bzero(&path, sizeof(path));
     if (!ok) {
         wally_bzero(address, address_len);

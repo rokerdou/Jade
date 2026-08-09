@@ -85,9 +85,11 @@ bool trezor_bitcoin_get_address_decode(
         }
     }
 
+    const bool supported_script = !output->has_script_type || output->script_type == BITCOIN_P2PKH_SPENDADDRESS
+        || output->script_type == BITCOIN_P2WPKH_SPENDWITNESS
+        || output->script_type == BITCOIN_P2SH_P2WPKH_SPENDP2SHWITNESS;
     return output->address_n_len > 0
-        && (!output->has_coin_name || strcmp(output->coin_name, "Testnet") == 0)
-        && (!output->has_script_type || output->script_type == BITCOIN_P2PKH_SPENDADDRESS);
+        && (!output->has_coin_name || strcmp(output->coin_name, "Testnet") == 0) && supported_script;
 }
 
 bool trezor_bitcoin_address_encode(

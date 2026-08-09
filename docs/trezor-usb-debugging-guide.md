@@ -7,6 +7,73 @@ transaction payloads unless they are known public test vectors.
 
 ## Baseline Commands
 
+Fast host gates before flashing:
+
+```sh
+tools/run_host_gates.sh
+tools/run_host_gates.sh build-tdisplays3-hardened-ok --no-build
+```
+
+Run these before any firmware flash. They execute on the development host and
+cover non-sensitive protocol/session checks, ETH/TRON/BTC address-path rules,
+Trezor wire/protobuf edge cases, signing-summary binding, and T-Display-S3
+confirmation UI constraints. They do not exercise TinyUSB, FreeRTOS scheduling,
+physical buttons, or the real LCD renderer, so a final hardware smoke test is
+still required for transport and display acceptance.
+
+The host gates must not only prove that local code is internally consistent.
+They also include external-oracle checks against mainstream community libraries:
+
+- `eth-keys` derives the public key/address from the fixed public test private
+  key.
+- `eth-utils` computes Keccak/EIP-55 checksum addresses and ETH transaction
+  hashes.
+- `rlp` builds legacy/EIP-155 and EIP-1559 signing payloads.
+- `base58` and Python `hashlib` check BTC testnet P2PKH and TRON Base58Check
+  address strings.
+- `trezorlib` builds official Trezor protobuf messages for
+  `Initialize`, `GetFeatures`, `EthereumGetAddress`, `GetAddress`,
+  `GetPublicKey`, `EthereumSignTx`, `EthereumSignTxEIP1559`, ERC20 transfer
+  with `EthereumDefinitions`, and BTC `SignTx`; the test wraps those payloads in
+  local Trezor Protocol v1 wire frames, feeds them into the local session
+  handler, and decodes the response with `trezorlib`.
+
+These Python packages are development-test dependencies only. They are installed
+into `.host-oracle-venv/` and are not linked into firmware or ESP-IDF builds.
+
+Current host-gate coverage:
+
+- ETH/TRON/BTC path and public-address mapping checks. BTC currently covers
+  testnet P2PKH, native P2WPKH, and P2SH-P2WPKH address derivation from the
+  same compressed public key.
+- BTC public node/xpub safety checks, including rejecting private-key fields in
+  public-node responses.
+- ETH legacy/EIP-155 and EIP-1559 signing payload/digest vectors.
+- Trezorlib-generated `EthereumSignTxEIP1559` requests must return a valid
+  `EthereumTxRequest(signature)` response.
+- ERC20/TRC20 `transfer(address,uint256)` and `approve(address,uint256)` ABI
+  parsing and summary binding.
+- Trezorlib-generated ERC20 transfer requests with official
+  `EthereumDefinitions(encoded_token=...)` wrapping must reach the signing
+  response path; this prevents confusing local raw field-12 bytes with the
+  official nested protobuf message.
+- Trezor Protocol v1 wire chunking, malformed marker/header/length rejection,
+  and oversized payload rejection.
+- Protobuf EOF and malformed field rejection, including field zero, unsupported
+  wire type, truncated varint, overlong varint, truncated length-delimited
+  fields, oversized field lengths, and too-large field numbers.
+- Fake hardware confirmation UI rejects summaries that cannot be rendered within
+  the T-Display-S3/Jade message line limits.
+- Sensitive or unsupported Trezor messages such as `GetEntropy`, `LoadDevice`,
+  `ResetDevice`, BTC `SignTx`, `CipherKeyValue`, `BackupDevice`,
+  `RecoveryDevice`, and `UnlockPath` are rejected before reaching key material.
+- The same sensitive/unsupported messages are also checked through the full
+  Trezor wire/session path. Until BTC `SignTx` is implemented as the complete
+  Trezor interactive transaction protocol, it must remain a wire-level
+  `Failure(UnexpectedMessage)` and must not reach wallet signing code.
+- Malformed wire packets are checked to return `Failure(InvalidProtocol)` rather
+  than crashing, hanging, or leaking parser state.
+
 Build:
 
 ```sh
