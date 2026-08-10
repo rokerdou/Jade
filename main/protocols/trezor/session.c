@@ -2,6 +2,7 @@
 #include "session.h"
 
 #include "bitcoin/protocol.h"
+#include "bitcoin/requests.h"
 #include "dispatcher.h"
 #include "ethereum/normalizer.h"
 #include "failure.h"

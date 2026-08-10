@@ -158,16 +158,6 @@ bool trezor_bitcoin_prev_input_decode(
 bool trezor_bitcoin_prev_output_decode(
     const uint8_t* payload, size_t payload_len, trezor_bitcoin_prev_output_t* output);
 bool trezor_bitcoin_address_encode(const char* address, uint8_t* output, size_t output_len, size_t* written);
-bool trezor_bitcoin_tx_request_encode(trezor_bitcoin_request_type_t request_type, bool has_request_index,
-    uint32_t request_index, uint8_t* output, size_t output_len, size_t* written);
-bool trezor_bitcoin_tx_request_encode_with_tx_hash(trezor_bitcoin_request_type_t request_type,
-    bool has_request_index, uint32_t request_index, const uint8_t* tx_hash, size_t tx_hash_len,
-    uint8_t* output, size_t output_len, size_t* written);
-bool trezor_bitcoin_tx_request_encode_signed(const trezor_bitcoin_signing_state_t* state,
-    const uint8_t* signature, size_t signature_len, const uint8_t* serialized_tx, size_t serialized_tx_len,
-    uint8_t* output, size_t output_len, size_t* written);
-bool trezor_bitcoin_signed_tx_encode_next(
-    trezor_bitcoin_signed_tx_t* signed_tx, uint8_t* output, size_t output_len, size_t* written);
 bool trezor_bitcoin_signing_init(
     trezor_bitcoin_signing_state_t* state, const uint8_t* payload, size_t payload_len);
 bool trezor_bitcoin_signing_apply_tx_ack(

@@ -143,6 +143,7 @@ void __wrap_abort(void);
 #include "./protocols/trezor/dispatcher.c"
 #include "./protocols/trezor/bitcoin/protocol.c"
 #include "./protocols/trezor/bitcoin/policy.c"
+#include "./protocols/trezor/bitcoin/requests.c"
 #include "./protocols/trezor/bitcoin/prev_tx_verifier.c"
 #include "./protocols/trezor/ethereum/definitions.c"
 #include "./protocols/trezor/ethereum/protocol.c"
