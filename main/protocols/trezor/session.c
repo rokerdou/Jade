@@ -1,6 +1,7 @@
 #ifndef AMALGAMATED_BUILD
 #include "session.h"
 
+#include "bitcoin/messages.h"
 #include "bitcoin/protocol.h"
 #include "bitcoin/requests.h"
 #include "bitcoin/signing_state.h"

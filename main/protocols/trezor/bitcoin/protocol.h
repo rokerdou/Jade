@@ -149,15 +149,6 @@ typedef struct {
     size_t next_signature_index;
 } trezor_bitcoin_signed_tx_t;
 
-bool trezor_bitcoin_get_address_decode(
-    const uint8_t* payload, size_t payload_len, trezor_bitcoin_get_address_t* output);
-bool trezor_bitcoin_sign_tx_decode(const uint8_t* payload, size_t payload_len, trezor_bitcoin_sign_tx_t* output);
-bool trezor_bitcoin_tx_ack_decode(const uint8_t* payload, size_t payload_len, trezor_bitcoin_transaction_t* output);
-bool trezor_bitcoin_prev_input_decode(
-    const uint8_t* payload, size_t payload_len, trezor_bitcoin_prev_input_t* output);
-bool trezor_bitcoin_prev_output_decode(
-    const uint8_t* payload, size_t payload_len, trezor_bitcoin_prev_output_t* output);
-bool trezor_bitcoin_address_encode(const char* address, uint8_t* output, size_t output_len, size_t* written);
 bool trezor_bitcoin_signing_to_confirm_request(
     const trezor_bitcoin_signing_state_t* state, bitcoin_confirm_request_t* request);
 bool trezor_bitcoin_signing_build_p2wpkh_hash(const trezor_bitcoin_signing_state_t* state, size_t input_index,

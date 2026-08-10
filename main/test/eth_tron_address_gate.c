@@ -18,6 +18,7 @@
 #include "chains/tron/path.h"
 #include "chains/tron/tx.h"
 #include "crypto/keccak256.h"
+#include "protocols/trezor/bitcoin/messages.h"
 #include "protocols/trezor/bitcoin/prev_tx_verifier.h"
 #include "protocols/trezor/bitcoin/protocol.h"
 #include "protocols/trezor/bitcoin/requests.h"

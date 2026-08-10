@@ -177,18 +177,15 @@ main/
 - `policy.c/h` 已独立，集中 P2WPKH-only、fee-rate、change path、single external output、lock_time/serialize 等当前签名策略。
 - `requests.c/h` 已独立，集中 Trezor `TxRequest`、prev_tx `tx_hash` request、多输入 signed response 编码。
 - `signing_state.c/h` 已独立，集中当前 `SignTx -> TxAck -> ready` 状态推进。本阶段只迁移现有 current transaction flow，不接入 prev_tx。
+- `messages.c/h` 已独立，集中 BTC Trezor protobuf decode/encode，包括 `GetAddress`、`SignTx`、`TxAck`、prev input/output、Address response。
 
 下一步建议顺序：
 
-1. `bitcoin/messages.c/h`
-   - 迁移 SignTx/GetAddress/TxAck/PrevInput/PrevOutput protobuf decode。
-   - 目标是让 `protocol.c` 只保留高层入口或最终消失。
-
-2. `bitcoin/normalizer.c/h`
+1. `bitcoin/normalizer.c/h`
    - 把 Trezor signing state 转成内部 BTC review/sign request。
    - 为 legacy/P2SH 后续开放做准备。
 
-3. 扩展 `bitcoin/signing_state.c/h`
+2. 扩展 `bitcoin/signing_state.c/h`
    - 明确 current transaction TXMETA/TXINPUT/TXOUTPUT 和 prev_tx TXMETA/TXORIGINPUT/TXORIGOUTPUT 的不同状态。
    - 接入 prev_tx 前先增加 host harness，不直接开放签名。
 
@@ -355,23 +352,20 @@ tools/
 - BTC 使用 `trezorlib`、`embit` 或等价社区库。
 - TRON 使用官方/社区 Base58Check、protobuf/tx serialize 对照。
 - USB/protobuf malformed 输入必须持续覆盖。
+- 签名前后关键资金字段尽量做 host oracle 门禁：BTC raw tx 的 from witness pubkey、to script、amount、change script、fee、sighash、签名有效性都应由 `embit`/`trezorlib` 比对。硬件测试只补真实 USB transport、设备确认 UI、真实签名路径和主机占用/超时类问题。
 
 ## 短期优先队列
 
 建议接下来按这个顺序推进：
 
-1. 拆 `bitcoin/messages.c/h`
-   - 把 protobuf decode 从 `protocol.c` 中剥离。
-   - 对照 Trezor/OneKey common/protob，保持字段号和 wire type 门禁。
-
-2. 设计 BTC prev_tx host harness
+1. 设计 BTC prev_tx host harness
    - 先测试协议流，不开放签名。
 
-3. 扩展 signing_state 支持 prev_tx request/ack
+2. 扩展 signing_state 支持 prev_tx request/ack
    - 当前交易和 prev_tx 状态必须显式区分。
    - 所有 prevout amount/script 必须来自 verified prev_tx。
 
-4. P2SH-P2WPKH 签名实验性接入
+3. P2SH-P2WPKH 签名实验性接入
    - 只在 prev_tx verified 后允许。
    - 必须有 host oracle 和硬件 trezorlib 测试。
 

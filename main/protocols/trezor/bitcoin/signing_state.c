@@ -1,6 +1,7 @@
 #ifndef AMALGAMATED_BUILD
 #include "signing_state.h"
 
+#include "messages.h"
 #include "policy.h"
 #include "requests.h"
 
