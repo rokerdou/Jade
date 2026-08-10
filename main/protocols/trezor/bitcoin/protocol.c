@@ -1,6 +1,7 @@
 #ifndef AMALGAMATED_BUILD
 #include "protocol.h"
 
+#include "policy.h"
 #include "../protobuf.h"
 #include "../../../chains/bitcoin/path.h"
 
@@ -12,41 +13,6 @@
 #include <wally_crypto.h>
 
 #define TREZOR_BITCOIN_SIGHASH_ALL 1U
-#define TREZOR_BITCOIN_P2WPKH_TX_OVERHEAD_VBYTES 11U
-#define TREZOR_BITCOIN_P2WPKH_INPUT_VBYTES 68U
-#define TREZOR_BITCOIN_P2WPKH_OUTPUT_VBYTES 31U
-#define TREZOR_BITCOIN_MAX_FEE_RATE_SATS_PER_VBYTE 1000U
-
-typedef enum {
-    TREZOR_BITCOIN_COIN_MAINNET = 0,
-    TREZOR_BITCOIN_COIN_TESTNET = 1,
-} trezor_bitcoin_coin_t;
-
-static bool trezor_bitcoin_coin_from_name(const char* const name, trezor_bitcoin_coin_t* const coin)
-{
-    if (!name || !coin) {
-        return false;
-    }
-    if (strcmp(name, "Bitcoin") == 0) {
-        *coin = TREZOR_BITCOIN_COIN_MAINNET;
-        return true;
-    }
-    if (strcmp(name, "Testnet") == 0) {
-        *coin = TREZOR_BITCOIN_COIN_TESTNET;
-        return true;
-    }
-    return false;
-}
-
-static bool trezor_bitcoin_coin_is_testnet(const trezor_bitcoin_coin_t coin)
-{
-    return coin == TREZOR_BITCOIN_COIN_TESTNET;
-}
-
-static const char* trezor_bitcoin_coin_segwit_hrp(const trezor_bitcoin_coin_t coin)
-{
-    return trezor_bitcoin_coin_is_testnet(coin) ? "tb" : "bc";
-}
 
 static bool trezor_bitcoin_bool_value(const uint8_t* const value, const size_t value_len, bool* const output)
 {
@@ -758,50 +724,6 @@ static bool trezor_bitcoin_add_u64(uint64_t* const total, const uint64_t value)
     return true;
 }
 
-static bool trezor_bitcoin_signing_validate_totals(trezor_bitcoin_signing_state_t* const state)
-{
-    if (!state || state->inputs_len != state->request.inputs_count || state->outputs_len != state->request.outputs_count) {
-        return false;
-    }
-
-    state->total_input = 0;
-    state->total_output = 0;
-    for (size_t i = 0; i < state->inputs_len; ++i) {
-        if (!state->inputs[i].has_amount || !trezor_bitcoin_add_u64(&state->total_input, state->inputs[i].amount)) {
-            return false;
-        }
-    }
-    for (size_t i = 0; i < state->outputs_len; ++i) {
-        if (!state->outputs[i].has_amount || !trezor_bitcoin_add_u64(&state->total_output, state->outputs[i].amount)) {
-            return false;
-        }
-    }
-    if (state->total_output > state->total_input) {
-        return false;
-    }
-    state->fee = state->total_input - state->total_output;
-    state->fee_rate_sats_per_vbyte = 0;
-    return true;
-}
-
-static bool trezor_bitcoin_estimate_p2wpkh_fee_rate(trezor_bitcoin_signing_state_t* const state)
-{
-    if (!state || state->inputs_len == 0 || state->outputs_len == 0
-        || state->inputs_len > TREZOR_BITCOIN_TX_INPUTS_MAX || state->outputs_len > TREZOR_BITCOIN_TX_OUTPUTS_MAX) {
-        return false;
-    }
-
-    const uint64_t vbytes = TREZOR_BITCOIN_P2WPKH_TX_OVERHEAD_VBYTES
-        + (state->inputs_len * TREZOR_BITCOIN_P2WPKH_INPUT_VBYTES)
-        + (state->outputs_len * TREZOR_BITCOIN_P2WPKH_OUTPUT_VBYTES);
-    if (vbytes == 0 || state->fee > UINT64_MAX - (vbytes - 1U)) {
-        return false;
-    }
-
-    state->fee_rate_sats_per_vbyte = (state->fee + vbytes - 1U) / vbytes;
-    return state->fee_rate_sats_per_vbyte <= TREZOR_BITCOIN_MAX_FEE_RATE_SATS_PER_VBYTE;
-}
-
 bool trezor_bitcoin_signing_apply_tx_ack(
     trezor_bitcoin_signing_state_t* const state, const uint8_t* const payload, const size_t payload_len)
 {
@@ -846,7 +768,8 @@ bool trezor_bitcoin_signing_apply_tx_ack(
         if (state->outputs_len < state->request.outputs_count) {
             return true;
         }
-        if (!trezor_bitcoin_signing_validate_totals(state) || !trezor_bitcoin_estimate_p2wpkh_fee_rate(state)) {
+        if (!trezor_bitcoin_policy_calculate_totals(state)
+            || !trezor_bitcoin_policy_estimate_p2wpkh_fee_rate(state)) {
             return false;
         }
         state->phase = TREZOR_BITCOIN_SIGNING_PHASE_READY;
@@ -889,66 +812,10 @@ bool trezor_bitcoin_signing_ready(const trezor_bitcoin_signing_state_t* const st
     return state && state->phase == TREZOR_BITCOIN_SIGNING_PHASE_READY;
 }
 
-static bool trezor_bitcoin_signing_coin(
-    const trezor_bitcoin_signing_state_t* const state, trezor_bitcoin_coin_t* const coin)
-{
-    return state && state->request.has_coin_name && trezor_bitcoin_coin_from_name(state->request.coin_name, coin);
-}
-
-static bool trezor_bitcoin_input_is_supported_without_prev_tx_verification(
-    const trezor_bitcoin_tx_input_t* const input, const bool testnet)
-{
-    return input && input->script_type == BITCOIN_P2WPKH_SPENDWITNESS && input->has_prev_hash
-        && input->has_prev_index && input->has_amount
-        && bitcoin_path_is_p2wpkh_signing(input->address_n, input->address_n_len, testnet);
-}
-
-static bool trezor_bitcoin_signing_is_p2wpkh_basic(const trezor_bitcoin_signing_state_t* const state)
-{
-    trezor_bitcoin_coin_t coin = TREZOR_BITCOIN_COIN_MAINNET;
-    if (!state || !trezor_bitcoin_signing_ready(state) || state->inputs_len == 0 || state->outputs_len == 0
-        || state->inputs_len != state->request.inputs_count || state->outputs_len != state->request.outputs_count
-        || !state->request.serialize || state->request.lock_time != 0 || !trezor_bitcoin_signing_coin(state, &coin)
-        || state->fee_rate_sats_per_vbyte > TREZOR_BITCOIN_MAX_FEE_RATE_SATS_PER_VBYTE) {
-        return false;
-    }
-
-    const bool testnet = trezor_bitcoin_coin_is_testnet(coin);
-    uint32_t account = 0;
-    for (size_t i = 0; i < state->inputs_len; ++i) {
-        const trezor_bitcoin_tx_input_t* const input = &state->inputs[i];
-        if (!trezor_bitcoin_input_is_supported_without_prev_tx_verification(input, testnet)) {
-            return false;
-        }
-        if (i == 0) {
-            account = input->address_n[2];
-        } else if (input->address_n[2] != account) {
-            return false;
-        }
-    }
-
-    size_t external_outputs = 0;
-    for (size_t i = 0; i < state->outputs_len; ++i) {
-        const trezor_bitcoin_tx_output_t* const output = &state->outputs[i];
-        if (!output->has_amount || output->script_type != 0) {
-            return false;
-        }
-        if (output->has_address) {
-            ++external_outputs;
-            if (output->address_n_len != 0) {
-                return false;
-            }
-        } else if (!bitcoin_path_is_p2wpkh_change(output->address_n, output->address_n_len, testnet, account)) {
-            return false;
-        }
-    }
-    return external_outputs == 1 && state->total_input >= state->total_output;
-}
-
 bool trezor_bitcoin_signing_to_confirm_request(
     const trezor_bitcoin_signing_state_t* const state, bitcoin_confirm_request_t* const request)
 {
-    if (!state || !request || !trezor_bitcoin_signing_is_p2wpkh_basic(state)
+    if (!state || !request || !trezor_bitcoin_policy_is_p2wpkh_basic(state)
         || state->inputs[0].address_n_len > CHAIN_CONFIRM_MAX_PATH_LEN) {
         return false;
     }
@@ -1067,7 +934,7 @@ static bool trezor_bitcoin_add_outputs(
 bool trezor_bitcoin_signing_build_p2wpkh_hash(const trezor_bitcoin_signing_state_t* const state,
     const size_t input_index, wallet_core_path_t* const path, uint8_t* const digest, const size_t digest_len)
 {
-    if (!trezor_bitcoin_signing_is_p2wpkh_basic(state) || input_index >= state->inputs_len || !path || !digest
+    if (!trezor_bitcoin_policy_is_p2wpkh_basic(state) || input_index >= state->inputs_len || !path || !digest
         || digest_len != SHA256_LEN) {
         return false;
     }
@@ -1087,7 +954,7 @@ bool trezor_bitcoin_signing_build_p2wpkh_hash(const trezor_bitcoin_signing_state
     wally_bzero(digest, digest_len);
 
     wallet_core_path_t local_path;
-    if (!trezor_bitcoin_signing_coin(state, &coin) || !trezor_bitcoin_path_from_input(input, &local_path)) {
+    if (!trezor_bitcoin_policy_signing_coin(state, &coin) || !trezor_bitcoin_path_from_input(input, &local_path)) {
         goto cleanup;
     }
 
@@ -1137,7 +1004,7 @@ bool trezor_bitcoin_signing_build_p2wpkh_signed_tx(const trezor_bitcoin_signing_
     const trezor_bitcoin_signature_t* const signatures, const size_t signatures_len, uint8_t* const serialized_tx,
     const size_t serialized_tx_len, size_t* const serialized_tx_written)
 {
-    if (!trezor_bitcoin_signing_is_p2wpkh_basic(state) || !signatures || signatures_len != state->inputs_len
+    if (!trezor_bitcoin_policy_is_p2wpkh_basic(state) || !signatures || signatures_len != state->inputs_len
         || !serialized_tx || !serialized_tx_written) {
         return false;
     }
@@ -1154,7 +1021,7 @@ bool trezor_bitcoin_signing_build_p2wpkh_signed_tx(const trezor_bitcoin_signing_
     wally_bzero(pubkey, sizeof(pubkey));
     *serialized_tx_written = 0;
 
-    ok = trezor_bitcoin_signing_coin(state, &coin)
+    ok = trezor_bitcoin_policy_signing_coin(state, &coin)
         && wally_tx_init_alloc(
                state->request.version, state->request.lock_time, state->inputs_len, state->outputs_len, &tx)
             == WALLY_OK
