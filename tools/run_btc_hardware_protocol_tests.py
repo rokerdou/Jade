@@ -27,7 +27,7 @@ HOST_ORACLE_SITE_PACKAGES = (
 if HOST_ORACLE_SITE_PACKAGES.exists():
     sys.path.append(str(HOST_ORACLE_SITE_PACKAGES))
 
-from embit import ec, script
+from embit import bip32, ec, networks, script
 from embit.transaction import Transaction
 
 
@@ -45,11 +45,17 @@ def p2wpkh_path(*, testnet: bool, index: int = 0, account: int = 0, change: int 
     return [h(84), h(coin_type), h(account), change, index]
 
 
+def p2wpkh_account_path(*, testnet: bool, account: int = 0) -> list[int]:
+    coin_type = 1 if testnet else 0
+    return [h(84), h(coin_type), h(account)]
+
+
 @dataclass(frozen=True)
 class ExpectedInput:
     prev_hash: bytes
     prev_index: int
     amount: int
+    address: str | None = None
 
 
 @dataclass(frozen=True)
@@ -80,6 +86,34 @@ def assert_address(session: Any, *, coin_name: str, path: list[int], expected_pr
     if not response.startswith(expected_prefix):
         raise AssertionError(f"{coin_name} P2WPKH address prefix mismatch: {response}")
     return response
+
+
+def account_xpub(session: Any, *, coin_name: str, testnet: bool, account: int = 0) -> str:
+    response = btc.get_public_node(
+        session,
+        p2wpkh_account_path(testnet=testnet, account=account),
+        show_display=False,
+        coin_name=coin_name,
+        script_type=P2WPKH_SCRIPT_TYPE,
+    )
+    xpub = getattr(response, "xpub", None)
+    if not xpub:
+        raise AssertionError("GetPublicKey did not return xpub")
+    return xpub
+
+
+def p2wpkh_address_from_xpub(xpub: str, *, testnet: bool, change: int, index: int) -> str:
+    key = bip32.HDKey.parse(xpub.encode()).child(change).child(index)
+    network = networks.NETWORKS["test" if testnet else "main"]
+    return script.p2wpkh(key.get_public_key()).address(network)
+
+
+def optional_account_xpub(session: Any, *, coin_name: str, testnet: bool, account: int = 0) -> str | None:
+    try:
+        return account_xpub(session, coin_name=coin_name, testnet=testnet, account=account)
+    except (exceptions.TrezorFailure, exceptions.Cancelled) as exc:
+        print(f"  WARN account xpub unavailable for change oracle: {exc}", flush=True)
+        return None
 
 
 def assert_signed_tx(
@@ -116,6 +150,11 @@ def assert_signed_tx(
 
         pubkey = ec.PublicKey.parse(pubkey_bytes)
         signature = ec.Signature.parse(signature_with_sighash[:-1])
+        if expected.address is not None:
+            expected_script = script.address_to_scriptpubkey(expected.address).data
+            actual_script = script.p2wpkh(pubkey).data
+            if actual_script != expected_script:
+                raise AssertionError(f"input {index} witness pubkey does not match requested path address")
         digest = tx.sighash_segwit(index, script.p2wpkh(pubkey), expected.amount, sighash)
         if not pubkey.verify(signature, digest):
             raise AssertionError(f"input {index} witness signature verification failed")
@@ -228,9 +267,16 @@ def test_testnet_single(session: Any) -> None:
     print("RUN testnet single-input P2WPKH", flush=True)
     prev_hash = bytes.fromhex("11" * 32)
     output_address = "tb1qw508d6qejxtdg4y5r3zarvary0c5xw7kxpjzsx"
+    xpub = optional_account_xpub(session, coin_name="Testnet", testnet=True)
+    input_path = p2wpkh_path(testnet=True)
+    input_address = (
+        p2wpkh_address_from_xpub(xpub, testnet=True, change=0, index=0)
+        if xpub
+        else assert_address(session, coin_name="Testnet", path=input_path, expected_prefix="tb1")
+    )
     inputs = [
         messages.TxInputType(
-            address_n=p2wpkh_path(testnet=True),
+            address_n=input_path,
             prev_hash=prev_hash,
             prev_index=0,
             script_type=P2WPKH_SCRIPT_TYPE,
@@ -244,10 +290,14 @@ def test_testnet_single(session: Any) -> None:
     signatures, raw_tx = sign_p2wpkh(session, coin_name="Testnet", inputs=inputs, outputs=outputs)
     assert_signed_tx(
         raw_tx,
-        expected_inputs=[ExpectedInput(prev_hash, 0, 100_000)],
+        expected_inputs=[ExpectedInput(prev_hash, 0, 100_000, input_address)],
         expected_outputs=[ExpectedOutput(output_address, 90_000)],
     )
-    print(f"PASS testnet single-input P2WPKH: sigs={list(map(len, signatures))} raw_len={len(raw_tx)}", flush=True)
+    print(
+        f"PASS testnet single-input P2WPKH: from={input_address} to={output_address} amount=90000 "
+        f"sigs={list(map(len, signatures))} raw_len={len(raw_tx)}",
+        flush=True,
+    )
 
 
 def test_testnet_multi_change(session: Any) -> None:
@@ -255,9 +305,24 @@ def test_testnet_multi_change(session: Any) -> None:
     prev_hash0 = bytes.fromhex("11" * 32)
     prev_hash1 = bytes.fromhex("22" * 32)
     output_address = "tb1qw508d6qejxtdg4y5r3zarvary0c5xw7kxpjzsx"
+    xpub = optional_account_xpub(session, coin_name="Testnet", testnet=True)
+    input_path0 = p2wpkh_path(testnet=True, index=0)
+    input_path1 = p2wpkh_path(testnet=True, index=1)
+    change_path = p2wpkh_path(testnet=True, change=1)
+    input_address0 = (
+        p2wpkh_address_from_xpub(xpub, testnet=True, change=0, index=0)
+        if xpub
+        else assert_address(session, coin_name="Testnet", path=input_path0, expected_prefix="tb1")
+    )
+    input_address1 = (
+        p2wpkh_address_from_xpub(xpub, testnet=True, change=0, index=1)
+        if xpub
+        else assert_address(session, coin_name="Testnet", path=input_path1, expected_prefix="tb1")
+    )
+    change_address = p2wpkh_address_from_xpub(xpub, testnet=True, change=1, index=0) if xpub else None
     inputs = [
         messages.TxInputType(
-            address_n=p2wpkh_path(testnet=True, index=0),
+            address_n=input_path0,
             prev_hash=prev_hash0,
             prev_index=0,
             script_type=P2WPKH_SCRIPT_TYPE,
@@ -265,7 +330,7 @@ def test_testnet_multi_change(session: Any) -> None:
             sequence=0xFFFFFFFF,
         ),
         messages.TxInputType(
-            address_n=p2wpkh_path(testnet=True, index=1),
+            address_n=input_path1,
             prev_hash=prev_hash1,
             prev_index=1,
             script_type=P2WPKH_SCRIPT_TYPE,
@@ -276,7 +341,7 @@ def test_testnet_multi_change(session: Any) -> None:
     outputs = [
         messages.TxOutputType(address=output_address, amount=90_000, script_type=PAYTOADDRESS),
         messages.TxOutputType(
-            address_n=p2wpkh_path(testnet=True, change=1),
+            address_n=change_path,
             amount=45_000,
             script_type=PAYTOADDRESS,
         ),
@@ -284,19 +349,34 @@ def test_testnet_multi_change(session: Any) -> None:
     signatures, raw_tx = sign_p2wpkh(session, coin_name="Testnet", inputs=inputs, outputs=outputs)
     assert_signed_tx(
         raw_tx,
-        expected_inputs=[ExpectedInput(prev_hash0, 0, 100_000), ExpectedInput(prev_hash1, 1, 40_000)],
-        expected_outputs=[ExpectedOutput(output_address, 90_000), ExpectedOutput(None, 45_000)],
+        expected_inputs=[
+            ExpectedInput(prev_hash0, 0, 100_000, input_address0),
+            ExpectedInput(prev_hash1, 1, 40_000, input_address1),
+        ],
+        expected_outputs=[ExpectedOutput(output_address, 90_000), ExpectedOutput(change_address, 45_000)],
     )
-    print(f"PASS testnet multi-input change P2WPKH: sigs={list(map(len, signatures))} raw_len={len(raw_tx)}", flush=True)
+    print(
+        f"PASS testnet multi-input change P2WPKH: from=[{input_address0},{input_address1}] "
+        f"to={output_address} amount=90000 change={change_address or '<script-not-verified>'}:45000 "
+        f"sigs={list(map(len, signatures))} raw_len={len(raw_tx)}",
+        flush=True,
+    )
 
 
 def test_mainnet_single(session: Any) -> None:
     print("RUN mainnet single-input P2WPKH", flush=True)
     prev_hash = bytes.fromhex("33" * 32)
     output_address = "bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4"
+    xpub = optional_account_xpub(session, coin_name="Bitcoin", testnet=False)
+    input_path = p2wpkh_path(testnet=False)
+    input_address = (
+        p2wpkh_address_from_xpub(xpub, testnet=False, change=0, index=0)
+        if xpub
+        else assert_address(session, coin_name="Bitcoin", path=input_path, expected_prefix="bc1")
+    )
     inputs = [
         messages.TxInputType(
-            address_n=p2wpkh_path(testnet=False),
+            address_n=input_path,
             prev_hash=prev_hash,
             prev_index=0,
             script_type=P2WPKH_SCRIPT_TYPE,
@@ -310,10 +390,14 @@ def test_mainnet_single(session: Any) -> None:
     signatures, raw_tx = sign_p2wpkh(session, coin_name="Bitcoin", inputs=inputs, outputs=outputs)
     assert_signed_tx(
         raw_tx,
-        expected_inputs=[ExpectedInput(prev_hash, 0, 100_000)],
+        expected_inputs=[ExpectedInput(prev_hash, 0, 100_000, input_address)],
         expected_outputs=[ExpectedOutput(output_address, 90_000)],
     )
-    print(f"PASS mainnet single-input P2WPKH: sigs={list(map(len, signatures))} raw_len={len(raw_tx)}", flush=True)
+    print(
+        f"PASS mainnet single-input P2WPKH: from={input_address} to={output_address} amount=90000 "
+        f"sigs={list(map(len, signatures))} raw_len={len(raw_tx)}",
+        flush=True,
+    )
 
 
 def test_rejections() -> None:
