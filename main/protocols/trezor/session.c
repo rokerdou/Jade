@@ -3,6 +3,7 @@
 
 #include "bitcoin/protocol.h"
 #include "bitcoin/requests.h"
+#include "bitcoin/signing_state.h"
 #include "dispatcher.h"
 #include "ethereum/normalizer.h"
 #include "failure.h"

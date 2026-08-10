@@ -1,6 +1,7 @@
 #ifndef AMALGAMATED_BUILD
 #include "policy.h"
 
+#include "signing_state.h"
 #include "../../../chains/bitcoin/path.h"
 
 #include <string.h>

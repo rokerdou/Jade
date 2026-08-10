@@ -21,6 +21,7 @@
 #include "protocols/trezor/bitcoin/prev_tx_verifier.h"
 #include "protocols/trezor/bitcoin/protocol.h"
 #include "protocols/trezor/bitcoin/requests.h"
+#include "protocols/trezor/bitcoin/signing_state.h"
 #include "protocols/trezor/dispatcher.h"
 #include "protocols/trezor/ethereum/protocol.h"
 #include "protocols/trezor/ethereum/definitions.h"

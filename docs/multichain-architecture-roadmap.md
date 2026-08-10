@@ -174,29 +174,23 @@ main/
 已完成：
 
 - `prev_tx_verifier.c/h` 已独立。
+- `policy.c/h` 已独立，集中 P2WPKH-only、fee-rate、change path、single external output、lock_time/serialize 等当前签名策略。
+- `requests.c/h` 已独立，集中 Trezor `TxRequest`、prev_tx `tx_hash` request、多输入 signed response 编码。
+- `signing_state.c/h` 已独立，集中当前 `SignTx -> TxAck -> ready` 状态推进。本阶段只迁移现有 current transaction flow，不接入 prev_tx。
 
 下一步建议顺序：
 
-1. `bitcoin/policy.c/h`
-   - 迁移 P2WPKH-only 支持判断。
-   - 迁移 fee-rate、单外部输出、change path、mixed account、lock_time/serialize 策略。
-   - host gates 保持现有拒绝路径。
-
-2. `bitcoin/requests.c/h`
-   - 迁移 `trezor_bitcoin_tx_request_encode*()` 和 signed response encode。
-   - 对照 Trezor/OneKey common/protob 的 `TxRequestDetailsType`。
-
-3. `bitcoin/messages.c/h`
+1. `bitcoin/messages.c/h`
    - 迁移 SignTx/GetAddress/TxAck/PrevInput/PrevOutput protobuf decode。
    - 目标是让 `protocol.c` 只保留高层入口或最终消失。
 
-4. `bitcoin/signing_state.c/h`
-   - 迁移 `trezor_bitcoin_signing_state_t` 状态推进。
-   - 明确当前交易 TXINPUT/TXOUTPUT 和 prev_tx TXMETA/TXORIGINPUT/TXORIGOUTPUT 的不同状态。
-
-5. `bitcoin/normalizer.c/h`
+2. `bitcoin/normalizer.c/h`
    - 把 Trezor signing state 转成内部 BTC review/sign request。
    - 为 legacy/P2SH 后续开放做准备。
+
+3. 扩展 `bitcoin/signing_state.c/h`
+   - 明确 current transaction TXMETA/TXINPUT/TXOUTPUT 和 prev_tx TXMETA/TXORIGINPUT/TXORIGOUTPUT 的不同状态。
+   - 接入 prev_tx 前先增加 host harness，不直接开放签名。
 
 门禁：
 
@@ -366,21 +360,18 @@ tools/
 
 建议接下来按这个顺序推进：
 
-1. 拆 `bitcoin/policy.c/h`
-   - 风险低，收益高。
-   - 直接减少 `protocol.c` 复杂度。
-   - 不改变签名功能。
+1. 拆 `bitcoin/messages.c/h`
+   - 把 protobuf decode 从 `protocol.c` 中剥离。
+   - 对照 Trezor/OneKey common/protob，保持字段号和 wire type 门禁。
 
-2. 拆 `bitcoin/requests.c/h`
-   - 把 Trezor TxRequest 编码集中，方便后续 prev_tx flow。
-
-3. 拆 `bitcoin/signing_state.c/h`
-   - 为 legacy/P2SH prev_tx 状态机接入做准备。
-
-4. 设计 BTC prev_tx host harness
+2. 设计 BTC prev_tx host harness
    - 先测试协议流，不开放签名。
 
-5. P2SH-P2WPKH 签名实验性接入
+3. 扩展 signing_state 支持 prev_tx request/ack
+   - 当前交易和 prev_tx 状态必须显式区分。
+   - 所有 prevout amount/script 必须来自 verified prev_tx。
+
+4. P2SH-P2WPKH 签名实验性接入
    - 只在 prev_tx verified 后允许。
    - 必须有 host oracle 和硬件 trezorlib 测试。
 
@@ -402,4 +393,3 @@ tools/
 - 不开放 legacy/P2SH/multisig/PSBT，直到 prev_tx verification、script policy、UI 摘要和 raw tx oracle 都完成。
 - 不让 Ledger APDU 影响 chain core。Ledger 只能作为 adapter。
 - 不让 USB 层直接调用 wallet_core signer；最终必须经 app service / chain policy / UI review。
-
