@@ -2662,6 +2662,19 @@ static void display_screen(jade_process_t* process, gui_activity_t* act)
     enable_connection_interfaces(keychain_get_userdata());
 }
 
+static bool should_clear_serial_keychain_on_usb_disconnect(void)
+{
+#if defined(CONFIG_TREZOR_USB_HID) && defined(CONFIG_BOARD_TYPE_TTGO_TDISPLAYS3)
+    // T-Display-S3 has no reliable VBUS sense path. On hosts such as Windows,
+    // TinyUSB mount/suspend state can change while the board remains physically
+    // connected, so it must not be treated as an authority to clear a locally
+    // PIN-unlocked keychain.
+    return false;
+#else
+    return true;
+#endif
+}
+
 // Display the dashboard ready or welcome screen.  Await messages or user GUI input.
 static void do_dashboard(jade_process_t* process, const keychain_t* const initial_keychain, const bool initial_has_pin,
     gui_activity_t* act_dashboard, wait_event_data_t* event_data)
@@ -2762,8 +2775,10 @@ static void do_dashboard(jade_process_t* process, const keychain_t* const initia
         // NOTE: only applies to a *peristed* keychain - ie if we have a pin set, and *NOT*
         // if this is a temporary/emergency-restore wallet.
         if (initial_has_pin && initial_keychain && !keychain_has_temporary()) {
-            if ((initial_userdata == SOURCE_SERIAL && !tolerate_usb_disconnection && !usb_is_powered())
-                || (initial_userdata == SOURCE_BLE && !ble_connected())) {
+            const bool serial_lost = initial_userdata == SOURCE_SERIAL
+                && should_clear_serial_keychain_on_usb_disconnect() && !tolerate_usb_disconnection && !usb_is_powered();
+            const bool ble_lost = initial_userdata == SOURCE_BLE && !ble_connected();
+            if (serial_lost || ble_lost) {
                 JADE_LOGI("Connection lost - clearing keychain");
                 keychain_clear();
             }

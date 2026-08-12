@@ -209,6 +209,26 @@ Known compatibility requirements:
 Do not use misleading official model/version values unless the implemented
 protocol behavior actually matches that model.
 
+### Local PIN Unlock Works On macOS But Appears To Fail On Windows
+
+Symptom: the same wallet can be unlocked with the local PIN while connected to
+macOS, but when connected to Windows the PIN entry returns to locked/unlocked UI
+or never stays usable for host signing.
+
+Cause found on T-Display-S3: local PIN unlock marks the keychain as
+`SOURCE_SERIAL`. The Jade dashboard then clears a persisted serial keychain when
+`usb_is_powered()` reports false. On T-Display-S3 there is no reliable VBUS sense
+path, so `usb_is_powered()` used TinyUSB `tud_mounted()` plus a battery-voltage
+fallback. Windows driver/mount/suspend behavior can make `tud_mounted()` false
+while the board is still physically connected, immediately clearing the
+successfully decrypted keychain.
+
+Security rule: USB host mount state is untrusted and must not control the
+lifetime of locally PIN-unlocked key material on T-Display-S3 Trezor HID builds.
+Use explicit lock, idle timeout, reboot, or real hardware power state instead.
+BLE disconnect clearing remains valid because BLE connection state is the chosen
+authenticated channel state.
+
 ### EthereumGetAddress Causes Locked Screen Then Reboot
 
 Symptom:
