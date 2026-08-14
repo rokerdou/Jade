@@ -7,6 +7,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
+void trezor_bitcoin_signing_reset(trezor_bitcoin_signing_state_t* state);
 bool trezor_bitcoin_signing_init(
     trezor_bitcoin_signing_state_t* state, const uint8_t* payload, size_t payload_len);
 bool trezor_bitcoin_signing_apply_tx_ack(

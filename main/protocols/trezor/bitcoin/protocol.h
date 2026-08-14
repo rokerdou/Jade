@@ -17,6 +17,8 @@
 #define TREZOR_BITCOIN_SIGNED_TX_MAX_LEN 1800
 #define TREZOR_BITCOIN_PREV_SCRIPT_MAX_LEN 520
 
+struct wally_tx;
+
 typedef enum {
     TREZOR_BITCOIN_REQUEST_TXINPUT = 0,
     TREZOR_BITCOIN_REQUEST_TXOUTPUT = 1,
@@ -120,8 +122,26 @@ typedef enum {
     TREZOR_BITCOIN_SIGNING_PHASE_EXPECT_META,
     TREZOR_BITCOIN_SIGNING_PHASE_EXPECT_INPUT,
     TREZOR_BITCOIN_SIGNING_PHASE_EXPECT_OUTPUT,
+    TREZOR_BITCOIN_SIGNING_PHASE_EXPECT_PREV_META,
+    TREZOR_BITCOIN_SIGNING_PHASE_EXPECT_PREV_INPUT,
+    TREZOR_BITCOIN_SIGNING_PHASE_EXPECT_PREV_OUTPUT,
     TREZOR_BITCOIN_SIGNING_PHASE_READY,
 } trezor_bitcoin_signing_phase_t;
+
+typedef struct {
+    struct wally_tx* tx;
+    bool initialized;
+    uint8_t expected_txid[SHA256_LEN];
+    uint32_t inputs_count;
+    uint32_t outputs_count;
+    uint32_t prev_index;
+    size_t inputs_seen;
+    size_t outputs_seen;
+    bool has_prevout;
+    uint64_t prevout_amount;
+    uint8_t prevout_script[TREZOR_BITCOIN_PREV_SCRIPT_MAX_LEN];
+    size_t prevout_script_len;
+} trezor_bitcoin_prev_tx_verifier_t;
 
 typedef struct {
     trezor_bitcoin_sign_tx_t request;
@@ -129,11 +149,13 @@ typedef struct {
     trezor_bitcoin_tx_output_t outputs[TREZOR_BITCOIN_TX_OUTPUTS_MAX];
     size_t inputs_len;
     size_t outputs_len;
+    size_t prev_tx_input_index;
     uint64_t total_input;
     uint64_t total_output;
     uint64_t fee;
     uint64_t fee_rate_sats_per_vbyte;
     trezor_bitcoin_signing_phase_t phase;
+    trezor_bitcoin_prev_tx_verifier_t prev_tx_verifier;
 } trezor_bitcoin_signing_state_t;
 
 typedef struct {

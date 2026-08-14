@@ -292,7 +292,9 @@ static bool trezor_bitcoin_tx_input_decode(
     const bool supported_script = output->script_type == BITCOIN_P2PKH_SPENDADDRESS
         || output->script_type == BITCOIN_P2WPKH_SPENDWITNESS
         || output->script_type == BITCOIN_P2SH_P2WPKH_SPENDP2SHWITNESS;
-    return output->address_n_len > 0 && output->has_prev_hash && output->has_prev_index && output->has_amount
+    return output->address_n_len > 0 && output->has_prev_hash && output->has_prev_index
+        && (output->has_amount || output->script_type == BITCOIN_P2PKH_SPENDADDRESS
+            || output->script_type == BITCOIN_P2SH_P2WPKH_SPENDP2SHWITNESS)
         && supported_script;
 }
 
@@ -354,6 +356,11 @@ static bool trezor_bitcoin_tx_output_decode(
     return output->has_amount && output->script_type == 0
         && ((output->has_address && output->address_n_len == 0) || (!output->has_address && output->address_n_len > 0));
 }
+
+bool trezor_bitcoin_prev_input_decode(
+    const uint8_t* payload, size_t payload_len, trezor_bitcoin_prev_input_t* output);
+bool trezor_bitcoin_prev_output_decode(
+    const uint8_t* payload, size_t payload_len, trezor_bitcoin_prev_output_t* output);
 
 static bool trezor_bitcoin_transaction_decode(
     const uint8_t* const payload, const size_t payload_len, trezor_bitcoin_transaction_t* const output)
@@ -463,6 +470,138 @@ bool trezor_bitcoin_tx_ack_decode(
     return has_tx;
 }
 
+static bool trezor_bitcoin_transaction_prev_input_decode(
+    const uint8_t* const payload, const size_t payload_len, trezor_bitcoin_prev_input_t* const output)
+{
+    if (!payload || !output) {
+        return false;
+    }
+
+    wally_bzero(output, sizeof(*output));
+    trezor_protobuf_reader_t reader;
+    trezor_protobuf_reader_init(&reader, payload, payload_len);
+    if (payload_len && reader.len == 0) {
+        return false;
+    }
+
+    bool has_input = false;
+    while (reader.pos < reader.len) {
+        uint32_t field_number = 0;
+        uint8_t wire_type = 0;
+        const uint8_t* value = NULL;
+        size_t value_len = 0;
+        if (!trezor_protobuf_reader_next(&reader, &field_number, &wire_type, &value, &value_len)) {
+            return false;
+        }
+
+        if (field_number != 2 || wire_type != TREZOR_PROTOBUF_WIRE_LEN || has_input
+            || !trezor_bitcoin_prev_input_decode(value, value_len, output)) {
+            return false;
+        }
+        has_input = true;
+    }
+    return has_input;
+}
+
+static bool trezor_bitcoin_transaction_prev_output_decode(
+    const uint8_t* const payload, const size_t payload_len, trezor_bitcoin_prev_output_t* const output)
+{
+    if (!payload || !output) {
+        return false;
+    }
+
+    wally_bzero(output, sizeof(*output));
+    trezor_protobuf_reader_t reader;
+    trezor_protobuf_reader_init(&reader, payload, payload_len);
+    if (payload_len && reader.len == 0) {
+        return false;
+    }
+
+    bool has_output = false;
+    while (reader.pos < reader.len) {
+        uint32_t field_number = 0;
+        uint8_t wire_type = 0;
+        const uint8_t* value = NULL;
+        size_t value_len = 0;
+        if (!trezor_protobuf_reader_next(&reader, &field_number, &wire_type, &value, &value_len)) {
+            return false;
+        }
+
+        if (field_number != 3 || wire_type != TREZOR_PROTOBUF_WIRE_LEN || has_output
+            || !trezor_bitcoin_prev_output_decode(value, value_len, output)) {
+            return false;
+        }
+        has_output = true;
+    }
+    return has_output;
+}
+
+bool trezor_bitcoin_tx_ack_prev_input_decode(
+    const uint8_t* const payload, const size_t payload_len, trezor_bitcoin_prev_input_t* const output)
+{
+    if (!payload || !output) {
+        return false;
+    }
+
+    wally_bzero(output, sizeof(*output));
+    trezor_protobuf_reader_t reader;
+    trezor_protobuf_reader_init(&reader, payload, payload_len);
+    if (payload_len && reader.len == 0) {
+        return false;
+    }
+
+    bool has_tx = false;
+    while (reader.pos < reader.len) {
+        uint32_t field_number = 0;
+        uint8_t wire_type = 0;
+        const uint8_t* value = NULL;
+        size_t value_len = 0;
+        if (!trezor_protobuf_reader_next(&reader, &field_number, &wire_type, &value, &value_len)) {
+            return false;
+        }
+
+        if (field_number != 1 || wire_type != TREZOR_PROTOBUF_WIRE_LEN || has_tx
+            || !trezor_bitcoin_transaction_prev_input_decode(value, value_len, output)) {
+            return false;
+        }
+        has_tx = true;
+    }
+    return has_tx;
+}
+
+bool trezor_bitcoin_tx_ack_prev_output_decode(
+    const uint8_t* const payload, const size_t payload_len, trezor_bitcoin_prev_output_t* const output)
+{
+    if (!payload || !output) {
+        return false;
+    }
+
+    wally_bzero(output, sizeof(*output));
+    trezor_protobuf_reader_t reader;
+    trezor_protobuf_reader_init(&reader, payload, payload_len);
+    if (payload_len && reader.len == 0) {
+        return false;
+    }
+
+    bool has_tx = false;
+    while (reader.pos < reader.len) {
+        uint32_t field_number = 0;
+        uint8_t wire_type = 0;
+        const uint8_t* value = NULL;
+        size_t value_len = 0;
+        if (!trezor_protobuf_reader_next(&reader, &field_number, &wire_type, &value, &value_len)) {
+            return false;
+        }
+
+        if (field_number != 1 || wire_type != TREZOR_PROTOBUF_WIRE_LEN || has_tx
+            || !trezor_bitcoin_transaction_prev_output_decode(value, value_len, output)) {
+            return false;
+        }
+        has_tx = true;
+    }
+    return has_tx;
+}
+
 bool trezor_bitcoin_prev_input_decode(
     const uint8_t* const payload, const size_t payload_len, trezor_bitcoin_prev_input_t* const output)
 {
@@ -511,6 +650,19 @@ bool trezor_bitcoin_prev_input_decode(
                 return false;
             }
             output->has_sequence = true;
+        } else if (field_number == 6) {
+            uint32_t script_type = 0;
+            if (wire_type != TREZOR_PROTOBUF_WIRE_VARINT
+                || !trezor_bitcoin_uint32_value(value, value_len, &script_type)
+                || script_type != BITCOIN_P2PKH_SPENDADDRESS) {
+                return false;
+            }
+        } else if (field_number == 20) {
+            uint32_t coinjoin_flags = 0;
+            if (wire_type != TREZOR_PROTOBUF_WIRE_VARINT
+                || !trezor_bitcoin_uint32_value(value, value_len, &coinjoin_flags) || coinjoin_flags != 0) {
+                return false;
+            }
         } else {
             return false;
         }

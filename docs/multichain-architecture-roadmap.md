@@ -29,7 +29,8 @@
 
 - `main/protocols/trezor/`
   - 已有 WebUSB/HID transport、wire、protobuf、session、features、public key、ETH、BTC 基础协议。
-  - BTC `prev_tx_verifier` 已从 `bitcoin/protocol.c` 拆到独立模块。
+  - BTC `prev_tx_verifier` 已从 `bitcoin/protocol.c` 拆到独立模块，并已接入
+    `signing_state` 的 prev_tx collect/verify 子流程。
   - ETH 有 `ethereum/normalizer.c`，BTC 还没有正式 normalizer。
 
 主要问题：
@@ -176,7 +177,9 @@ main/
 - `prev_tx_verifier.c/h` 已独立。
 - `policy.c/h` 已独立，集中 P2WPKH-only、fee-rate、change path、single external output、lock_time/serialize 等当前签名策略。
 - `requests.c/h` 已独立，集中 Trezor `TxRequest`、prev_tx `tx_hash` request、多输入 signed response 编码。
-- `signing_state.c/h` 已独立，集中当前 `SignTx -> TxAck -> ready` 状态推进。本阶段只迁移现有 current transaction flow，不接入 prev_tx。
+- `signing_state.c/h` 已独立，集中 `SignTx -> TxAck -> ready` 状态推进，并显式区分
+  current transaction `TXMETA/TXINPUT/TXOUTPUT` 与 prev_tx
+  `TXMETA/TXORIGINPUT/TXORIGOUTPUT` 状态。
 - `messages.c/h` 已独立，集中 BTC Trezor protobuf decode/encode，包括 `GetAddress`、`SignTx`、`TxAck`、prev input/output、Address response。
 
 下一步建议顺序：
@@ -185,9 +188,9 @@ main/
    - 把 Trezor signing state 转成内部 BTC review/sign request。
    - 为 legacy/P2SH 后续开放做准备。
 
-2. 扩展 `bitcoin/signing_state.c/h`
-   - 明确 current transaction TXMETA/TXINPUT/TXOUTPUT 和 prev_tx TXMETA/TXORIGINPUT/TXORIGOUTPUT 的不同状态。
-   - 接入 prev_tx 前先增加 host harness，不直接开放签名。
+2. `bitcoin/signing_state.c/h` 后续完善
+   - 已有 prev_tx request/ack collect/verify host harness。
+   - 下一步补 scriptPubKey 与派生路径/脚本类型绑定，再考虑开放 P2SH-P2WPKH 签名。
 
 门禁：
 
@@ -202,15 +205,23 @@ main/
 
 步骤：
 
-1. 只设计 host harness，不碰硬件签名。
+1. 只设计 host harness，不碰硬件签名。已完成基础版本：
    - 构造 `SignTx -> current TXINPUT -> current TXOUTPUT -> prev TXMETA -> prev inputs -> prev outputs` 的官方 Trezor flow。
    - 使用 `trezorlib` 驱动协议行为。
-   - 使用 `embit` 或 Bitcoin Core style parser 独立验证最终 raw tx。
+   - 验证 legacy/P2SH-P2WPKH 会请求 prev_tx、校验 txid/prevout amount 后仍按当前策略拒绝签名。
+   - 已签名的 P2WPKH raw tx 继续使用 `embit` 独立验证。
 
-2. 接入 `prev_tx_verifier` 到 BTC signing state。
+2. 接入 `prev_tx_verifier` 到 BTC signing state。基础版本已完成：
    - 当前 input.prev_hash 必须等于 verifier 重算 TXID。
    - 当前 input.prev_index 必须从 verified prevout 取 amount/script_pubkey。
    - 对 legacy/P2SH，禁止继续信任主机在 current input 里给的 amount。
+
+仍未完成：
+
+- scriptPubKey 与 address_n/script_type 的绑定校验。
+- P2SH-P2WPKH redeem script 与 prevout scriptPubKey 绑定。
+- legacy P2PKH non-segwit sighash / scriptSig 序列化。
+- legacy/P2SH signed raw tx 独立 oracle 和硬件 trezorlib 测试。
 
 3. P2SH-P2WPKH 优先于 legacy P2PKH。
    - P2SH-P2WPKH 可以继续使用 segwit v0 sighash，但 prevout script/redeem script 绑定更严格。
@@ -358,16 +369,17 @@ tools/
 
 建议接下来按这个顺序推进：
 
-1. 设计 BTC prev_tx host harness
-   - 先测试协议流，不开放签名。
+1. BTC prev_tx script policy 绑定
+   - 把 verified prevout scriptPubKey 与 input path/script_type 绑定。
+   - 继续拒绝不匹配、不认识、过长或非标准脚本。
 
-2. 扩展 signing_state 支持 prev_tx request/ack
-   - 当前交易和 prev_tx 状态必须显式区分。
-   - 所有 prevout amount/script 必须来自 verified prev_tx。
-
-3. P2SH-P2WPKH 签名实验性接入
+2. P2SH-P2WPKH 签名实验性接入
    - 只在 prev_tx verified 后允许。
    - 必须有 host oracle 和硬件 trezorlib 测试。
+
+3. legacy P2PKH 签名设计
+   - 先做 non-segwit sighash/raw tx oracle。
+   - 再考虑硬件签名入口。
 
 ## 每次改动必须检查
 

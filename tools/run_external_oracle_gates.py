@@ -685,6 +685,78 @@ def btc_tx_ack_output(tx_output: messages.TxOutputType) -> messages.TxAck:
     return messages.TxAck(tx=messages.TransactionType(outputs=[tx_output]))
 
 
+def btc_tx_ack_prev_input(
+    *, prev_hash: bytes = bytes.fromhex("aa" * 32), prev_index: int = 7, script_sig: bytes = b"\x51"
+) -> messages.TxAck:
+    return messages.TxAck(
+        tx=messages.TransactionType(
+            inputs=[
+                messages.TxInputType(
+                    prev_hash=prev_hash,
+                    prev_index=prev_index,
+                    script_sig=script_sig,
+                    sequence=0xFFFFFFFE,
+                )
+            ]
+        )
+    )
+
+
+def btc_tx_ack_prev_output(amount: int = 100_000, script_pubkey: bytes | None = None) -> messages.TxAck:
+    return messages.TxAck(
+        tx=messages.TransactionType(
+            bin_outputs=[
+                messages.TxOutputBinType(
+                    amount=amount,
+                    script_pubkey=script_pubkey or bytes.fromhex("0014" + "11" * 20),
+                )
+            ]
+        )
+    )
+
+
+def btc_prev_txid_for_single_input_two_outputs(
+    *, prev_hash: bytes = bytes.fromhex("aa" * 32), prev_index: int = 7, script_sig: bytes = b"\x51"
+) -> bytes:
+    p2wpkh_script = bytes.fromhex("0014" + "11" * 20)
+    raw = (
+        bytes.fromhex("02000000")
+        + b"\x01"
+        + prev_hash
+        + prev_index.to_bytes(4, "little")
+        + bytes([len(script_sig)])
+        + script_sig
+        + (0xFFFFFFFE).to_bytes(4, "little")
+        + b"\x02"
+        + (100_000).to_bytes(8, "little")
+        + bytes([len(p2wpkh_script)])
+        + p2wpkh_script
+        + (1_000).to_bytes(8, "little")
+        + bytes([len(p2wpkh_script)])
+        + p2wpkh_script
+        + bytes.fromhex("00000000")
+    )
+    return local_gate_double_sha256(raw)
+
+
+def local_gate_sha256(data: bytes) -> bytes:
+    """Mirror the lightweight wally_sha256 shim used by eth_tron_address_gate."""
+    out = bytearray(32)
+    for index, value in enumerate(data):
+        out[index % len(out)] ^= value
+        out[(index * 7 + 3) % len(out)] = (out[(index * 7 + 3) % len(out)] + value + index) & 0xFF
+    data_len = len(data)
+    out[0] ^= data_len & 0xFF
+    out[1] ^= (data_len >> 8) & 0xFF
+    out[2] ^= (data_len >> 16) & 0xFF
+    out[3] ^= (data_len >> 24) & 0xFF
+    return bytes(out)
+
+
+def local_gate_double_sha256(data: bytes) -> bytes:
+    return local_gate_sha256(local_gate_sha256(data))
+
+
 def check_trezorlib_btc_signtx_host_flow_oracle() -> None:
     from trezorlib import btc
 
@@ -825,6 +897,7 @@ def assert_btc_tx_request(
     request_type: messages.RequestType,
     *,
     request_index: int | None = None,
+    tx_hash: bytes | None = None,
     signature_index: int | None = None,
     expect_serialized_tx: bool = False,
 ) -> messages.TxRequest:
@@ -837,6 +910,9 @@ def assert_btc_tx_request(
     if request_index is not None:
         if tx_request.details is None or tx_request.details.request_index != request_index:
             raise AssertionError(f"BTC request index mismatch: {tx_request}")
+    if tx_hash is not None:
+        if tx_request.details is None or tx_request.details.tx_hash != tx_hash:
+            raise AssertionError(f"BTC request tx_hash mismatch: {tx_request}")
     if signature_index is not None:
         if tx_request.serialized is None or tx_request.serialized.signature_index != signature_index:
             raise AssertionError(f"BTC signature index mismatch: {tx_request}")
@@ -848,13 +924,20 @@ def assert_btc_tx_request(
     return tx_request
 
 
-def assert_btc_failure(response: tuple[int, bytes], expected_code: messages.FailureType, case_name: str) -> None:
+def assert_btc_failure(
+    response: tuple[int, bytes],
+    expected_code: messages.FailureType,
+    case_name: str,
+    expected_message_contains: str | None = None,
+) -> None:
     response_type, payload = response
     if response_type != messages.MessageType.Failure:
         raise AssertionError(f"{case_name} must fail, got response type {response_type}")
     failure = protobuf.load_message(io.BytesIO(payload), messages.Failure)
     if failure.code != expected_code:
         raise AssertionError(f"{case_name} failure code mismatch: actual={failure.code} expected={expected_code}")
+    if expected_message_contains is not None and expected_message_contains not in failure.message:
+        raise AssertionError(f"{case_name} failure message mismatch: {failure.message}")
 
 
 def check_embit_btc_signed_tx_oracle(
@@ -1110,7 +1193,15 @@ def check_local_btc_signtx_wire_script_oracle(gate: Path) -> None:
     )
     assert_btc_failure(unsupported_script_responses[-1], messages.FailureType.DataError, "BTC unsupported input script")
 
-    legacy_without_prev_tx_responses = run_local_wire_script(
+    legacy_prev_txid = btc_prev_txid_for_single_input_two_outputs()
+    legacy_input = btc_tx_input(
+        path=[0x8000002C, 0x80000001, 0x80000000, 0, 0],
+        prev_hash=legacy_prev_txid,
+        prev_index=0,
+        amount=1,
+        script_type=messages.InputScriptType.SPENDADDRESS,
+    )
+    legacy_prev_tx_responses = run_local_wire_script(
         gate,
         [
             (
@@ -1118,23 +1209,46 @@ def check_local_btc_signtx_wire_script_oracle(gate: Path) -> None:
                 messages.SignTx(coin_name="Testnet", inputs_count=1, outputs_count=1, version=2, lock_time=0),
             ),
             (messages.MessageType.TxAck, btc_tx_ack_meta(1, 1)),
-            (
-                messages.MessageType.TxAck,
-                btc_tx_ack_input(
-                    btc_tx_input(
-                        path=[0x8000002C, 0x80000001, 0x80000000, 0, 0],
-                        script_type=messages.InputScriptType.SPENDADDRESS,
-                    )
-                ),
-            ),
+            (messages.MessageType.TxAck, btc_tx_ack_input(legacy_input)),
             (messages.MessageType.TxAck, btc_tx_ack_output(external_output)),
+            (messages.MessageType.TxAck, btc_tx_ack_meta(1, 2)),
+            (messages.MessageType.TxAck, btc_tx_ack_prev_input()),
+            (messages.MessageType.TxAck, btc_tx_ack_prev_output(100_000)),
+            (messages.MessageType.TxAck, btc_tx_ack_prev_output(1_000)),
         ],
     )
+    expected_legacy_prev = [
+        (messages.RequestType.TXMETA, None),
+        (messages.RequestType.TXINPUT, None),
+        (messages.RequestType.TXOUTPUT, None),
+        (messages.RequestType.TXMETA, legacy_prev_txid),
+        (messages.RequestType.TXORIGINPUT, legacy_prev_txid),
+        (messages.RequestType.TXORIGOUTPUT, legacy_prev_txid),
+        (messages.RequestType.TXORIGOUTPUT, legacy_prev_txid),
+    ]
+    for index, (request_type, tx_hash) in enumerate(expected_legacy_prev):
+        assert_btc_tx_request(
+            legacy_prev_tx_responses[index],
+            request_type,
+            request_index=0 if request_type in (messages.RequestType.TXINPUT, messages.RequestType.TXOUTPUT, messages.RequestType.TXORIGINPUT) else None,
+            tx_hash=tx_hash,
+        )
     assert_btc_failure(
-        legacy_without_prev_tx_responses[-1], messages.FailureType.DataError, "BTC signing unsupported"
+        legacy_prev_tx_responses[-1],
+        messages.FailureType.DataError,
+        "BTC legacy signing unsupported after prev_tx verification",
+        "Bitcoin signing unsupported",
     )
 
-    p2sh_witness_without_prev_tx_responses = run_local_wire_script(
+    p2sh_prev_txid = btc_prev_txid_for_single_input_two_outputs(script_sig=b"\x52")
+    p2sh_input = btc_tx_input(
+        path=[0x80000031, 0x80000001, 0x80000000, 0, 0],
+        prev_hash=p2sh_prev_txid,
+        prev_index=0,
+        amount=1,
+        script_type=messages.InputScriptType.SPENDP2SHWITNESS,
+    )
+    p2sh_witness_prev_tx_responses = run_local_wire_script(
         gate,
         [
             (
@@ -1142,20 +1256,38 @@ def check_local_btc_signtx_wire_script_oracle(gate: Path) -> None:
                 messages.SignTx(coin_name="Testnet", inputs_count=1, outputs_count=1, version=2, lock_time=0),
             ),
             (messages.MessageType.TxAck, btc_tx_ack_meta(1, 1)),
-            (
-                messages.MessageType.TxAck,
-                btc_tx_ack_input(
-                    btc_tx_input(
-                        path=[0x80000031, 0x80000001, 0x80000000, 0, 0],
-                        script_type=messages.InputScriptType.SPENDP2SHWITNESS,
-                    )
-                ),
-            ),
+            (messages.MessageType.TxAck, btc_tx_ack_input(p2sh_input)),
             (messages.MessageType.TxAck, btc_tx_ack_output(external_output)),
+            (messages.MessageType.TxAck, btc_tx_ack_meta(1, 2)),
+            (messages.MessageType.TxAck, btc_tx_ack_prev_input(script_sig=b"\x52")),
+            (messages.MessageType.TxAck, btc_tx_ack_prev_output(100_000)),
+            (messages.MessageType.TxAck, btc_tx_ack_prev_output(1_000)),
         ],
     )
+    assert_btc_tx_request(p2sh_witness_prev_tx_responses[3], messages.RequestType.TXMETA, tx_hash=p2sh_prev_txid)
+    assert_btc_tx_request(
+        p2sh_witness_prev_tx_responses[4],
+        messages.RequestType.TXORIGINPUT,
+        request_index=0,
+        tx_hash=p2sh_prev_txid,
+    )
+    assert_btc_tx_request(
+        p2sh_witness_prev_tx_responses[5],
+        messages.RequestType.TXORIGOUTPUT,
+        request_index=0,
+        tx_hash=p2sh_prev_txid,
+    )
+    assert_btc_tx_request(
+        p2sh_witness_prev_tx_responses[6],
+        messages.RequestType.TXORIGOUTPUT,
+        request_index=1,
+        tx_hash=p2sh_prev_txid,
+    )
     assert_btc_failure(
-        p2sh_witness_without_prev_tx_responses[-1], messages.FailureType.DataError, "BTC signing unsupported"
+        p2sh_witness_prev_tx_responses[-1],
+        messages.FailureType.DataError,
+        "BTC P2SH-P2WPKH signing unsupported after prev_tx verification",
+        "Bitcoin signing unsupported",
     )
 
 

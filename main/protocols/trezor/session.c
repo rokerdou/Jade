@@ -42,6 +42,7 @@ static void trezor_session_clear_pending(trezor_session_state_t* const state)
     if (!state) {
         return;
     }
+    trezor_bitcoin_signing_reset(&state->pending_btc_signing);
     wally_bzero(state, sizeof(*state));
 }
 
@@ -331,6 +332,8 @@ static bool trezor_session_btc_signing_continue(const trezor_session_t* const se
         trezor_trace_set_stage(confirm_request_ok ? "btcsign:confirm" : "btcsign:confirm_req_fail");
         if (!confirm_request_ok) {
             wally_bzero(&confirm_request, sizeof(confirm_request));
+            trezor_bitcoin_signing_reset(&session->state->pending_btc_signing);
+            session->state->has_pending_btc_signing = false;
             return trezor_session_failure_payload(TREZOR_FAILURE_DATA_ERROR, "Bitcoin signing unsupported",
                 response_type, response_payload, response_payload_len, response_payload_written);
         }
@@ -339,7 +342,7 @@ static bool trezor_session_btc_signing_continue(const trezor_session_t* const se
         wally_bzero(&confirm_request, sizeof(confirm_request));
         if (!confirmed) {
             trezor_trace_set_stage("btcsign:confirm_cancel");
-            wally_bzero(&session->state->pending_btc_signing, sizeof(session->state->pending_btc_signing));
+            trezor_bitcoin_signing_reset(&session->state->pending_btc_signing);
             session->state->has_pending_btc_signing = false;
             return trezor_session_failure_payload(TREZOR_FAILURE_ACTION_CANCELLED, "Bitcoin transaction rejected",
                 response_type, response_payload, response_payload_len, response_payload_written);
@@ -389,7 +392,7 @@ static bool trezor_session_btc_signing_continue(const trezor_session_t* const se
         const bool final_signed_response = ok && signed_tx.next_signature_index >= signed_tx.signatures_len;
         trezor_trace_set_stage(ok ? "btcsign:encoded" : "btcsign:encode_fail");
 
-        wally_bzero(&session->state->pending_btc_signing, sizeof(session->state->pending_btc_signing));
+        trezor_bitcoin_signing_reset(&session->state->pending_btc_signing);
         session->state->has_pending_btc_signing = false;
         if (!ok) {
             wally_bzero(&signed_tx, sizeof(signed_tx));
@@ -654,7 +657,7 @@ static bool trezor_session_handle_payload_ex(const trezor_session_t* const sessi
         }
 
         session->state->has_pending_btc_signing = false;
-        wally_bzero(&session->state->pending_btc_signing, sizeof(session->state->pending_btc_signing));
+        trezor_bitcoin_signing_reset(&session->state->pending_btc_signing);
         if (!trezor_bitcoin_signing_init(&session->state->pending_btc_signing, request_payload, request_payload_len)) {
             trezor_trace_set_stage("btcsign:init_fail");
             return trezor_session_failure_payload(TREZOR_FAILURE_DATA_ERROR, "Invalid Bitcoin signing request",
@@ -665,11 +668,11 @@ static bool trezor_session_handle_payload_ex(const trezor_session_t* const sessi
         bool deferred = false;
         if (!trezor_session_maybe_defer_for_local_unlock(session, request_type, request_payload, request_payload_len,
                 response_type, response_payload, response_payload_len, response_payload_written, &deferred)) {
-            wally_bzero(&session->state->pending_btc_signing, sizeof(session->state->pending_btc_signing));
+            trezor_bitcoin_signing_reset(&session->state->pending_btc_signing);
             return false;
         }
         if (deferred) {
-            wally_bzero(&session->state->pending_btc_signing, sizeof(session->state->pending_btc_signing));
+            trezor_bitcoin_signing_reset(&session->state->pending_btc_signing);
             return true;
         }
 
