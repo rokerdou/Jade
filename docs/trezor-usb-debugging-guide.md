@@ -201,9 +201,10 @@ Symptom: trace repeats `GetFeatures > Features`, but wallet UI does not progress
 Known compatibility requirements:
 
 - `Features.vendor` must be `trezor.io` for trezorlib/connect compatibility.
-- Custom identity belongs in fields such as `fw_vendor`, `label`, `model`, and
-  `internal_model`.
-- `internal_model=UNKNOWN` should use a conservative firmware version range.
+- Sparrow/Lark rejects unknown Trezor-compatible models before it reaches BTC
+  protocol calls. For Sparrow compatibility this firmware reports
+  `model=Safe 5`, `internal_model=T3T1`, and version `2.1.0`; keep the actual
+  custom identity in `fw_vendor` and `label`.
 - `capabilities` must include the chains advertised by the firmware.
 
 Do not use misleading official model/version values unless the implemented

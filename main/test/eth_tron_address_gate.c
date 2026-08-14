@@ -1522,12 +1522,12 @@ static void make_oracle_test_session(trezor_session_t* const session, trezor_ses
         .fw_vendor = "Jade T-Display-S3",
         .device_id = "jade-test",
         .language = "en-US",
-        .model = "Jade",
-        .internal_model = "UNKNOWN",
+        .model = "Safe 5",
+        .internal_model = "T3T1",
         .session_id = trezor_session_id,
         .session_id_len = sizeof(trezor_session_id),
         .major_version = 2,
-        .minor_version = 0,
+        .minor_version = 1,
         .patch_version = 0,
         .initialized = true,
         .has_unlocked = true,
@@ -2964,12 +2964,12 @@ int main(int argc, char** argv)
         .fw_vendor = "Jade T-Display-S3",
         .device_id = "jade-test",
         .language = "en-US",
-        .model = "Jade",
-        .internal_model = "UNKNOWN",
+        .model = "Safe 5",
+        .internal_model = "T3T1",
         .session_id = trezor_session_id,
         .session_id_len = sizeof(trezor_session_id),
         .major_version = 2,
-        .minor_version = 0,
+        .minor_version = 1,
         .patch_version = 0,
         .initialized = true,
         .has_unlocked = true,
@@ -3030,7 +3030,7 @@ int main(int argc, char** argv)
         } else if (field_number == 3) {
             uint64_t version = 1;
             CHECK(trezor_protobuf_read_varint_value(value, value_len, &version));
-            saw_minor_version = version == 0;
+            saw_minor_version = version == 1;
         } else if (field_number == 4) {
             uint64_t version = 1;
             CHECK(trezor_protobuf_read_varint_value(value, value_len, &version));
@@ -3072,8 +3072,8 @@ int main(int argc, char** argv)
             CHECK(trezor_protobuf_read_varint_value(value, value_len, &flags));
             saw_flags = flags == 0;
         } else if (field_number == 21) {
-            saw_model = wire_type_field == TREZOR_PROTOBUF_WIRE_LEN && value_len == strlen("Jade")
-                && memcmp(value, "Jade", value_len) == 0;
+            saw_model = wire_type_field == TREZOR_PROTOBUF_WIRE_LEN && value_len == strlen("Safe 5")
+                && memcmp(value, "Safe 5", value_len) == 0;
         } else if (field_number == 25) {
             saw_fw_vendor = wire_type_field == TREZOR_PROTOBUF_WIRE_LEN && value_len == strlen("Jade T-Display-S3")
                 && memcmp(value, "Jade T-Display-S3", value_len) == 0;
@@ -3108,8 +3108,8 @@ int main(int argc, char** argv)
             CHECK(trezor_protobuf_read_varint_value(value, value_len, &bool_value));
             saw_busy = bool_value == 0;
         } else if (field_number == 44) {
-            saw_internal_model = wire_type_field == TREZOR_PROTOBUF_WIRE_LEN && value_len == strlen("UNKNOWN")
-                && memcmp(value, "UNKNOWN", value_len) == 0;
+            saw_internal_model = wire_type_field == TREZOR_PROTOBUF_WIRE_LEN && value_len == strlen("T3T1")
+                && memcmp(value, "T3T1", value_len) == 0;
         } else if (field_number == 50) {
             uint64_t bool_value = 0;
             CHECK(trezor_protobuf_read_varint_value(value, value_len, &bool_value));

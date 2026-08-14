@@ -223,22 +223,21 @@ trezor_session_t trezor_wallet_adapter_session(const trezor_wallet_adapter_confi
 
     trezor_session_t session = {
         .features = {
-            // trezorlib accepts unknown/custom models only when the protocol vendor is one of
-            // the official Trezor vendor strings. Keep the custom device identity in fw_vendor,
-            // label, model, and internal_model instead of leaking it through the protocol vendor.
+            // Sparrow/Lark rejects custom Trezor-compatible models during discovery. Report a
+            // Safe 5/T3T1-compatible identity on this transport while keeping the custom firmware
+            // identity in fw_vendor/label.
             .vendor = "trezor.io",
             .fw_vendor = "Jade T-Display-S3",
             .device_id = config ? config->device_id : NULL,
             .language = "en-US",
             .label = "Jade T-Display-S3",
-            .model = "Jade",
-            .internal_model = "UNKNOWN",
+            .model = "Safe 5",
+            .internal_model = "T3T1",
             .session_id = has_session_id ? session_id : NULL,
             .session_id_len = has_session_id ? session_id_len : 0,
-            // Custom firmware compatibility version. Keep major 2 for the Core/WebUSB-style
-            // host path, but do not claim conformance with any official Trezor 2.8.x release.
+            // T3T1 hosts such as Sparrow/Lark require at least 2.1.0 for discovery.
             .major_version = 2,
-            .minor_version = 0,
+            .minor_version = 1,
             .patch_version = 0,
             .initialized = initialized,
             .has_unlocked = ready,
