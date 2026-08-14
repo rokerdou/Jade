@@ -209,7 +209,7 @@ main/
 1. 只设计 host harness，不碰硬件签名。已完成基础版本：
    - 构造 `SignTx -> current TXINPUT -> current TXOUTPUT -> prev TXMETA -> prev inputs -> prev outputs` 的官方 Trezor flow。
    - 使用 `trezorlib` 驱动协议行为。
-   - 验证 legacy/P2SH-P2WPKH 会请求 prev_tx、校验 txid/prevout amount 后仍按当前策略拒绝签名。
+   - 验证 legacy/P2SH-P2WPKH 会请求 prev_tx、校验 txid/prevout amount。
    - 已签名的 P2WPKH raw tx 继续使用 `embit` 独立验证。
 
 2. 接入 `prev_tx_verifier` 到 BTC signing state。基础版本已完成：
@@ -229,13 +229,15 @@ main/
 仍未完成：
 
 - legacy P2PKH non-segwit sighash / scriptSig 序列化。
-- P2SH-P2WPKH signed raw tx 独立 oracle 和硬件 trezorlib 测试。
+- P2SH-P2WPKH 硬件 trezorlib 测试。
 - legacy/P2PKH signed raw tx 独立 oracle 和硬件 trezorlib 测试。
-- Host gate 目前 BTC 签名仍使用 fake signature，只能验证 raw tx 结构；开放
-  legacy/P2SH 签名前必须增加真实签名/digest oracle。
+- legacy/P2PKH 签名前必须增加 non-segwit digest oracle。
 
-4. P2SH-P2WPKH 优先于 legacy P2PKH。
-   - P2SH-P2WPKH 可以继续使用 segwit v0 sighash，但 prevout script/redeem script 绑定更严格。
+4. P2SH-P2WPKH 已实验性开放。
+   - P2SH-P2WPKH 继续使用 segwit v0/BIP143 sighash。
+   - Host gate 增加测试签名注入：Python 用 `embit` 计算 sighash、`ecdsa`
+     真实签名，C gate 组 raw tx，再由 Python 解析 scriptSig/witness 并验签。
+   - 注入通道只存在于 host gate，不进入固件构建和 USB 协议。
    - legacy P2PKH 需要 non-segwit sighash 和 scriptSig 序列化，风险更高，排在后面。
 
 5. legacy P2PKH 后续再开放。
@@ -380,15 +382,10 @@ tools/
 
 建议接下来按这个顺序推进：
 
-1. BTC 真实签名/digest oracle
-   - 当前 host gate 的 BTC wallet 签名是 fake signature，不能证明 ECDSA 有效。
-   - 需要建立不泄漏固件私钥的本机 oracle：用第三方库对同一 digest/交易语义签名或验签。
+1. P2SH-P2WPKH 硬件 trezorlib 测试
+   - 覆盖真实 USB transport、本机确认 UI、真实 wallet_core 签名路径。
 
-2. P2SH-P2WPKH 签名实验性接入
-   - 只在 prev_tx verified 后允许。
-   - 必须有 host oracle 和硬件 trezorlib 测试。
-
-3. legacy P2PKH 签名设计
+2. legacy P2PKH 签名设计
    - 先做 non-segwit sighash/raw tx oracle。
    - 再考虑硬件签名入口。
 

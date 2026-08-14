@@ -361,7 +361,7 @@ static bool trezor_session_btc_signing_continue(const trezor_session_t* const se
         for (size_t i = 0; ok && i < signed_tx.signatures_len; ++i) {
             wallet_core_path_t signing_path;
             wally_bzero(&signing_path, sizeof(signing_path));
-            ok = trezor_bitcoin_signing_build_p2wpkh_hash(
+            ok = trezor_bitcoin_signing_build_hash(
                 &session->state->pending_btc_signing, i, &signing_path, digest, sizeof(digest));
             trezor_trace_set_stage(ok ? "btcsign:digest_ok" : "btcsign:digest_fail");
             ok = ok
@@ -382,7 +382,7 @@ static bool trezor_session_btc_signing_continue(const trezor_session_t* const se
             wally_bzero(compact_signature, sizeof(compact_signature));
         }
         ok = ok
-            && trezor_bitcoin_signing_build_p2wpkh_signed_tx(&session->state->pending_btc_signing,
+            && trezor_bitcoin_signing_build_signed_tx(&session->state->pending_btc_signing,
                 signed_tx.signatures, signed_tx.signatures_len, signed_tx.serialized_tx,
                 sizeof(signed_tx.serialized_tx), &signed_tx.serialized_tx_len);
         trezor_trace_set_stage(ok ? "btcsign:tx_ok" : "btcsign:tx_fail");

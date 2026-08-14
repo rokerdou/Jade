@@ -9,7 +9,9 @@
 
 #define TREZOR_BITCOIN_P2WPKH_TX_OVERHEAD_VBYTES 11U
 #define TREZOR_BITCOIN_P2WPKH_INPUT_VBYTES 68U
+#define TREZOR_BITCOIN_P2SH_P2WPKH_INPUT_VBYTES 91U
 #define TREZOR_BITCOIN_P2WPKH_OUTPUT_VBYTES 31U
+#define TREZOR_BITCOIN_P2SH_P2WPKH_OUTPUT_VBYTES 32U
 #define TREZOR_BITCOIN_MAX_FEE_RATE_SATS_PER_VBYTE 1000U
 
 bool trezor_bitcoin_coin_from_name(const char* const name, trezor_bitcoin_coin_t* const coin)
@@ -93,6 +95,52 @@ bool trezor_bitcoin_policy_estimate_p2wpkh_fee_rate(trezor_bitcoin_signing_state
     return state->fee_rate_sats_per_vbyte <= TREZOR_BITCOIN_MAX_FEE_RATE_SATS_PER_VBYTE;
 }
 
+bool trezor_bitcoin_policy_estimate_basic_fee_rate(trezor_bitcoin_signing_state_t* const state)
+{
+    if (!state || state->inputs_len == 0 || state->outputs_len == 0
+        || state->inputs_len > TREZOR_BITCOIN_TX_INPUTS_MAX || state->outputs_len > TREZOR_BITCOIN_TX_OUTPUTS_MAX) {
+        return false;
+    }
+
+    uint64_t vbytes = TREZOR_BITCOIN_P2WPKH_TX_OVERHEAD_VBYTES;
+    for (size_t i = 0; i < state->inputs_len; ++i) {
+        const uint64_t input_vbytes = state->inputs[i].script_type == BITCOIN_P2WPKH_SPENDWITNESS
+            ? TREZOR_BITCOIN_P2WPKH_INPUT_VBYTES
+            : state->inputs[i].script_type == BITCOIN_P2SH_P2WPKH_SPENDP2SHWITNESS
+            ? TREZOR_BITCOIN_P2SH_P2WPKH_INPUT_VBYTES
+            : 0;
+        if (input_vbytes == 0 || input_vbytes > UINT64_MAX - vbytes) {
+            return false;
+        }
+        vbytes += input_vbytes;
+    }
+    const uint32_t input_script_type = state->inputs[0].script_type;
+    const uint32_t account = state->inputs[0].address_n_len > 2 ? state->inputs[0].address_n[2] : 0;
+    trezor_bitcoin_coin_t coin = TREZOR_BITCOIN_COIN_MAINNET;
+    if (!trezor_bitcoin_policy_signing_coin(state, &coin)) {
+        return false;
+    }
+    const bool testnet = trezor_bitcoin_coin_is_testnet(coin);
+    for (size_t i = 0; i < state->outputs_len; ++i) {
+        uint64_t output_vbytes = TREZOR_BITCOIN_P2WPKH_OUTPUT_VBYTES;
+        if (!state->outputs[i].has_address && input_script_type == BITCOIN_P2SH_P2WPKH_SPENDP2SHWITNESS
+            && bitcoin_path_is_p2sh_p2wpkh_change(
+                state->outputs[i].address_n, state->outputs[i].address_n_len, testnet, account)) {
+            output_vbytes = TREZOR_BITCOIN_P2SH_P2WPKH_OUTPUT_VBYTES;
+        }
+        if (output_vbytes > UINT64_MAX - vbytes) {
+            return false;
+        }
+        vbytes += output_vbytes;
+    }
+    if (vbytes == 0 || state->fee > UINT64_MAX - (vbytes - 1U)) {
+        return false;
+    }
+
+    state->fee_rate_sats_per_vbyte = (state->fee + vbytes - 1U) / vbytes;
+    return state->fee_rate_sats_per_vbyte <= TREZOR_BITCOIN_MAX_FEE_RATE_SATS_PER_VBYTE;
+}
+
 bool trezor_bitcoin_policy_signing_coin(
     const trezor_bitcoin_signing_state_t* const state, trezor_bitcoin_coin_t* const coin)
 {
@@ -105,6 +153,15 @@ static bool trezor_bitcoin_policy_input_is_supported_without_prev_tx_verificatio
     return input && input->script_type == BITCOIN_P2WPKH_SPENDWITNESS && input->has_prev_hash
         && input->has_prev_index && input->has_amount
         && bitcoin_path_is_p2wpkh_signing(input->address_n, input->address_n_len, testnet);
+}
+
+static bool trezor_bitcoin_policy_input_is_p2sh_p2wpkh_verified(
+    const trezor_bitcoin_tx_input_t* const input, const bool testnet)
+{
+    return input && input->script_type == BITCOIN_P2SH_P2WPKH_SPENDP2SHWITNESS && input->has_prev_hash
+        && input->has_prev_index && input->has_amount && input->has_verified_prevout_script
+        && input->verified_prevout_script_len == 23
+        && bitcoin_path_is_p2sh_p2wpkh_signing(input->address_n, input->address_n_len, testnet);
 }
 
 bool trezor_bitcoin_policy_is_p2wpkh_basic(const trezor_bitcoin_signing_state_t* const state)
@@ -145,6 +202,62 @@ bool trezor_bitcoin_policy_is_p2wpkh_basic(const trezor_bitcoin_signing_state_t*
             }
         } else if (!bitcoin_path_is_p2wpkh_change(output->address_n, output->address_n_len, testnet, account)) {
             return false;
+        }
+    }
+    return external_outputs == 1 && state->total_input >= state->total_output;
+}
+
+bool trezor_bitcoin_policy_is_basic(const trezor_bitcoin_signing_state_t* const state)
+{
+    trezor_bitcoin_coin_t coin = TREZOR_BITCOIN_COIN_MAINNET;
+    if (!state || !trezor_bitcoin_signing_ready(state) || state->inputs_len == 0 || state->outputs_len == 0
+        || state->inputs_len != state->request.inputs_count || state->outputs_len != state->request.outputs_count
+        || !state->request.serialize || state->request.lock_time != 0
+        || !trezor_bitcoin_policy_signing_coin(state, &coin)
+        || state->fee_rate_sats_per_vbyte > TREZOR_BITCOIN_MAX_FEE_RATE_SATS_PER_VBYTE) {
+        return false;
+    }
+
+    const bool testnet = trezor_bitcoin_coin_is_testnet(coin);
+    const uint32_t input_script_type = state->inputs[0].script_type;
+    uint32_t account = 0;
+    for (size_t i = 0; i < state->inputs_len; ++i) {
+        const trezor_bitcoin_tx_input_t* const input = &state->inputs[i];
+        const bool supported = input_script_type == BITCOIN_P2WPKH_SPENDWITNESS
+                ? trezor_bitcoin_policy_input_is_supported_without_prev_tx_verification(input, testnet)
+            : input_script_type == BITCOIN_P2SH_P2WPKH_SPENDP2SHWITNESS
+                ? trezor_bitcoin_policy_input_is_p2sh_p2wpkh_verified(input, testnet)
+                : false;
+        if (!supported || input->script_type != input_script_type) {
+            return false;
+        }
+        if (i == 0) {
+            account = input->address_n[2];
+        } else if (input->address_n[2] != account) {
+            return false;
+        }
+    }
+
+    size_t external_outputs = 0;
+    for (size_t i = 0; i < state->outputs_len; ++i) {
+        const trezor_bitcoin_tx_output_t* const output = &state->outputs[i];
+        if (!output->has_amount || output->script_type != 0) {
+            return false;
+        }
+        if (output->has_address) {
+            ++external_outputs;
+            if (output->address_n_len != 0) {
+                return false;
+            }
+        } else {
+            const bool change_ok = input_script_type == BITCOIN_P2WPKH_SPENDWITNESS
+                    ? bitcoin_path_is_p2wpkh_change(output->address_n, output->address_n_len, testnet, account)
+                : input_script_type == BITCOIN_P2SH_P2WPKH_SPENDP2SHWITNESS
+                    ? bitcoin_path_is_p2sh_p2wpkh_change(output->address_n, output->address_n_len, testnet, account)
+                    : false;
+            if (!change_ok) {
+                return false;
+            }
         }
     }
     return external_outputs == 1 && state->total_input >= state->total_output;

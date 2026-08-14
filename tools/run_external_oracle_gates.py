@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import io
+import os
 import subprocess
 import sys
 from dataclasses import dataclass
@@ -19,6 +20,7 @@ from eth_account.typed_transactions import TypedTransaction
 from eth_abi import decode as abi_decode
 from eth_keys import keys
 from eth_utils import keccak, to_checksum_address
+from ecdsa import SECP256k1, SigningKey, VerifyingKey, util as ecdsa_util
 from trezorlib import messages, protobuf
 
 
@@ -440,9 +442,18 @@ def run_local_wire_oracle(gate: Path, message_type: int, message: messages.Messa
     return int(parsed["response_type"]), bytes.fromhex(parsed["response_payload"])
 
 
-def run_local_wire_script(gate: Path, script: list[tuple[int, messages.MessageType]]) -> list[tuple[int, bytes]]:
+def run_local_wire_script(
+    gate: Path,
+    script: list[tuple[int, messages.MessageType]],
+    *,
+    btc_compact_signatures: list[bytes] | None = None,
+) -> list[tuple[int, bytes]]:
     wires = [wire_encode(message_type, message_payload(message)).hex() for message_type, message in script]
-    output = subprocess.check_output([str(gate), "--trezor-wire-script", *wires], text=True)
+    env = None
+    if btc_compact_signatures is not None:
+        env = os.environ.copy()
+        env["TREZOR_TEST_BTC_COMPACT_SIGNATURES"] = ",".join(sig.hex() for sig in btc_compact_signatures)
+    output = subprocess.check_output([str(gate), "--trezor-wire-script", *wires], text=True, env=env)
     parsed = parse_vectors(output)
     responses: list[tuple[int, bytes]] = []
     for index in range(len(script)):
@@ -651,9 +662,39 @@ def btc_p2sh_p2wpkh_script_pubkey() -> bytes:
     return script.p2sh(script.p2wpkh(btc_embit_public_key())).data
 
 
+def btc_p2pkh_script_code() -> bytes:
+    return btc_p2pkh_script_pubkey()
+
+
+def btc_p2sh_p2wpkh_scriptsig() -> bytes:
+    return bytes([len(btc_p2wpkh_script_pubkey())]) + btc_p2wpkh_script_pubkey()
+
+
+def btc_sign_digest_compact(digest: bytes) -> bytes:
+    signature = SigningKey.from_string(PRIVATE_KEY_ONE, curve=SECP256k1).sign_digest_deterministic(
+        digest, hashfunc=hashlib.sha256, sigencode=ecdsa_util.sigencode_string_canonize
+    )
+    if len(signature) != 64:
+        raise AssertionError(f"unexpected compact BTC signature length: {len(signature)}")
+    return b"\x1f" + signature
+
+
+def btc_verify_der_signature(digest: bytes, der_signature: bytes) -> None:
+    verifying_key = VerifyingKey.from_string(
+        keys.PrivateKey(PRIVATE_KEY_ONE).public_key.to_bytes(), curve=SECP256k1
+    )
+    if not verifying_key.verify_digest(der_signature, digest, sigdecode=ecdsa_util.sigdecode_der):
+        raise AssertionError("BTC ECDSA signature verification failed")
+
+
 def btc_input_path(index: int = 0, *, account: int = 0, change: int = 0, mainnet: bool = False) -> list[int]:
     coin = 0 if mainnet else 1
     return [0x80000054, 0x80000000 + coin, 0x80000000 + account, change, index]
+
+
+def btc_p2sh_input_path(index: int = 0, *, account: int = 0, change: int = 0, mainnet: bool = False) -> list[int]:
+    coin = 0 if mainnet else 1
+    return [0x80000031, 0x80000000 + coin, 0x80000000 + account, change, index]
 
 
 def btc_tx_input(
@@ -1013,6 +1054,43 @@ def check_embit_btc_signed_tx_oracle(
             raise AssertionError(f"BTC output {index} scriptPubKey mismatch: {txout.script_pubkey.data.hex()}")
 
 
+def check_embit_btc_p2sh_p2wpkh_signed_tx_oracle(raw_tx: bytes, *, prev_txid: bytes, amount: int) -> None:
+    from embit import script
+    from embit.transaction import Transaction
+
+    tx = Transaction.parse(raw_tx)
+    if tx.serialize() != raw_tx:
+        raise AssertionError("P2SH-P2WPKH signed tx oracle failed round-trip serialization")
+    if tx.version != 2 or tx.locktime != 0:
+        raise AssertionError(f"P2SH-P2WPKH signed tx version/locktime mismatch: {tx.version}/{tx.locktime}")
+    if len(tx.vin) != 1 or len(tx.vout) != 1:
+        raise AssertionError(f"P2SH-P2WPKH signed tx input/output count mismatch: {len(tx.vin)}/{len(tx.vout)}")
+
+    txin = tx.vin[0]
+    if txin.txid != prev_txid or txin.vout != 0:
+        raise AssertionError(f"P2SH-P2WPKH outpoint mismatch: {txin.txid.hex()}:{txin.vout}")
+    if txin.script_sig.data != btc_p2sh_p2wpkh_scriptsig():
+        raise AssertionError(f"P2SH-P2WPKH scriptSig mismatch: {txin.script_sig.data.hex()}")
+    if txin.sequence != 0xFFFFFFFF:
+        raise AssertionError(f"P2SH-P2WPKH sequence mismatch: {txin.sequence}")
+    if len(txin.witness.items) != 2:
+        raise AssertionError(f"P2SH-P2WPKH witness item count mismatch: {len(txin.witness.items)}")
+    signature_with_hash, pubkey = txin.witness.items
+    if pubkey != BTC_TEST_COMPRESSED_PUBKEY:
+        raise AssertionError(f"P2SH-P2WPKH witness pubkey mismatch: {pubkey.hex()}")
+    if not signature_with_hash or signature_with_hash[-1] != 1:
+        raise AssertionError("P2SH-P2WPKH signature is missing SIGHASH_ALL")
+
+    digest = tx.sighash_segwit(0, script.Script(btc_p2pkh_script_code()), amount, sighash=1)
+    btc_verify_der_signature(digest, signature_with_hash[:-1])
+
+    txout = tx.vout[0]
+    if txout.value != 90_000:
+        raise AssertionError(f"P2SH-P2WPKH output amount mismatch: {txout.value}")
+    if txout.script_pubkey.data != btc_p2wpkh_script_pubkey():
+        raise AssertionError(f"P2SH-P2WPKH output script mismatch: {txout.script_pubkey.data.hex()}")
+
+
 def check_local_btc_signtx_wire_script_oracle(gate: Path) -> None:
     btc_pubkey_hash = hash160(BTC_TEST_COMPRESSED_PUBKEY)
     btc_p2wpkh_script = b"\x00\x14" + btc_pubkey_hash
@@ -1267,7 +1345,7 @@ def check_local_btc_signtx_wire_script_oracle(gate: Path) -> None:
         legacy_prev_tx_responses[-1],
         messages.FailureType.DataError,
         "BTC legacy signing unsupported after prev_tx verification",
-        "Bitcoin signing unsupported",
+        "Invalid Bitcoin transaction data",
     )
 
     legacy_mismatch_prev_txid = btc_prev_txid_for_single_input_two_outputs(
@@ -1354,11 +1432,11 @@ def check_local_btc_signtx_wire_script_oracle(gate: Path) -> None:
         request_index=1,
         tx_hash=p2sh_prev_txid,
     )
-    assert_btc_failure(
+    assert_btc_tx_request(
         p2sh_witness_prev_tx_responses[-1],
-        messages.FailureType.DataError,
-        "BTC P2SH-P2WPKH signing unsupported after prev_tx verification",
-        "Bitcoin signing unsupported",
+        messages.RequestType.TXFINISHED,
+        signature_index=0,
+        expect_serialized_tx=True,
     )
 
     p2sh_mismatch_prev_txid = btc_prev_txid_for_single_input_two_outputs(
@@ -1397,6 +1475,56 @@ def check_local_btc_signtx_wire_script_oracle(gate: Path) -> None:
         messages.FailureType.DataError,
         "BTC P2SH-P2WPKH prevout script/path mismatch",
         "Invalid Bitcoin transaction data",
+    )
+
+    p2sh_true_sig_prev_txid = btc_prev_txid_for_single_input_two_outputs(
+        script_sig=b"\x53",
+        prevout0_script_pubkey=btc_p2sh_p2wpkh_script_pubkey(),
+    )
+    p2sh_true_sig_input = btc_tx_input(
+        path=btc_p2sh_input_path(),
+        prev_hash=p2sh_true_sig_prev_txid,
+        prev_index=0,
+        amount=1,
+        script_type=messages.InputScriptType.SPENDP2SHWITNESS,
+    )
+    from embit import script
+    from embit.transaction import Transaction, TransactionInput, TransactionOutput
+
+    unsigned_tx = Transaction(
+        version=2,
+        vin=[TransactionInput(p2sh_true_sig_prev_txid[::-1], 0)],
+        vout=[TransactionOutput(90_000, script.Script(btc_p2wpkh_script_pubkey()))],
+        locktime=0,
+    )
+    p2sh_digest = unsigned_tx.sighash_segwit(0, script.Script(btc_p2pkh_script_code()), 100_000, sighash=1)
+    p2sh_true_sig_responses = run_local_wire_script(
+        gate,
+        [
+            (
+                messages.MessageType.SignTx,
+                messages.SignTx(coin_name="Testnet", inputs_count=1, outputs_count=1, version=2, lock_time=0),
+            ),
+            (messages.MessageType.TxAck, btc_tx_ack_meta(1, 1)),
+            (messages.MessageType.TxAck, btc_tx_ack_input(p2sh_true_sig_input)),
+            (messages.MessageType.TxAck, btc_tx_ack_output(external_output)),
+            (messages.MessageType.TxAck, btc_tx_ack_meta(1, 2)),
+            (messages.MessageType.TxAck, btc_tx_ack_prev_input(script_sig=b"\x53")),
+            (messages.MessageType.TxAck, btc_tx_ack_prev_output(100_000, btc_p2sh_p2wpkh_script_pubkey())),
+            (messages.MessageType.TxAck, btc_tx_ack_prev_output(1_000)),
+        ],
+        btc_compact_signatures=[btc_sign_digest_compact(p2sh_digest)],
+    )
+    p2sh_final = assert_btc_tx_request(
+        p2sh_true_sig_responses[-1],
+        messages.RequestType.TXFINISHED,
+        signature_index=0,
+        expect_serialized_tx=True,
+    )
+    check_embit_btc_p2sh_p2wpkh_signed_tx_oracle(
+        p2sh_final.serialized.serialized_tx,
+        prev_txid=p2sh_true_sig_prev_txid[::-1],
+        amount=100_000,
     )
 
 

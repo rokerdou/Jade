@@ -27,26 +27,12 @@ static bool trezor_bitcoin_signing_input_needs_prev_tx(const trezor_bitcoin_tx_i
                         || input->script_type == BITCOIN_P2SH_P2WPKH_SPENDP2SHWITNESS);
 }
 
-static bool trezor_bitcoin_signing_inputs_are_all_p2wpkh(const trezor_bitcoin_signing_state_t* const state)
-{
-    if (!state || state->inputs_len != state->request.inputs_count) {
-        return false;
-    }
-    for (size_t i = 0; i < state->inputs_len; ++i) {
-        if (state->inputs[i].script_type != BITCOIN_P2WPKH_SPENDWITNESS) {
-            return false;
-        }
-    }
-    return true;
-}
-
 static bool trezor_bitcoin_signing_finish_current_tx(trezor_bitcoin_signing_state_t* const state)
 {
     if (!trezor_bitcoin_policy_calculate_totals(state)) {
         return false;
     }
-    if (trezor_bitcoin_signing_inputs_are_all_p2wpkh(state)
-        && !trezor_bitcoin_policy_estimate_p2wpkh_fee_rate(state)) {
+    if (!trezor_bitcoin_policy_estimate_basic_fee_rate(state)) {
         return false;
     }
     state->phase = TREZOR_BITCOIN_SIGNING_PHASE_READY;

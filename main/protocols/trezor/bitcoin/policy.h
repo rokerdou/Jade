@@ -17,7 +17,9 @@ const char* trezor_bitcoin_coin_segwit_hrp(trezor_bitcoin_coin_t coin);
 
 bool trezor_bitcoin_policy_calculate_totals(trezor_bitcoin_signing_state_t* state);
 bool trezor_bitcoin_policy_estimate_p2wpkh_fee_rate(trezor_bitcoin_signing_state_t* state);
+bool trezor_bitcoin_policy_estimate_basic_fee_rate(trezor_bitcoin_signing_state_t* state);
 bool trezor_bitcoin_policy_signing_coin(const trezor_bitcoin_signing_state_t* state, trezor_bitcoin_coin_t* coin);
 bool trezor_bitcoin_policy_is_p2wpkh_basic(const trezor_bitcoin_signing_state_t* state);
+bool trezor_bitcoin_policy_is_basic(const trezor_bitcoin_signing_state_t* state);
 
 #endif /* TREZOR_BITCOIN_POLICY_H_ */

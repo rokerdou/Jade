@@ -119,6 +119,9 @@ static size_t g_ui_calls = 0;
 static chain_confirm_summary_t g_last_ui_summary;
 static bool g_wallet_sign_ok = true;
 static uint8_t g_wallet_signature_header = 31;
+static uint8_t g_test_btc_compact_signatures[TREZOR_BITCOIN_TX_INPUTS_MAX][EC_SIGNATURE_RECOVERABLE_LEN];
+static size_t g_test_btc_compact_signatures_len = 0;
+static size_t g_test_btc_compact_signature_index = 0;
 static bool g_trezor_eth_address_ok = true;
 static bool g_trezor_bitcoin_address_ok = true;
 static trezor_bitcoin_get_address_t g_last_trezor_bitcoin_address_request;
@@ -906,6 +909,14 @@ bool wallet_core_sign_digest_ecdsa_recoverable(
         return false;
     }
 
+    if (g_test_btc_compact_signatures_len > 0) {
+        if (g_test_btc_compact_signature_index >= g_test_btc_compact_signatures_len) {
+            return false;
+        }
+        memcpy(signature, g_test_btc_compact_signatures[g_test_btc_compact_signature_index++], signature_len);
+        return true;
+    }
+
     signature[0] = g_wallet_signature_header;
     memset(signature + 1, 0xaa, ETHEREUM_SIGNATURE_R_LEN);
     memset(signature + 1 + ETHEREUM_SIGNATURE_R_LEN, 0xbb, ETHEREUM_SIGNATURE_S_LEN);
@@ -1078,18 +1089,45 @@ int wally_bzero(void* bytes, size_t bytes_len)
 int wally_ec_sig_to_der(
     const unsigned char* sig, size_t sig_len, unsigned char* bytes_out, size_t len, size_t* written)
 {
-    if (!sig || sig_len != EC_SIGNATURE_LEN || !bytes_out || len < 70 || !written) {
+    if (!sig || sig_len != EC_SIGNATURE_LEN || !bytes_out || len < EC_SIGNATURE_DER_MAX_LEN || !written) {
         return WALLY_EINVAL;
     }
-    bytes_out[0] = 0x30;
-    bytes_out[1] = 0x44;
-    bytes_out[2] = 0x02;
-    bytes_out[3] = 0x20;
-    memcpy(bytes_out + 4, sig, ETHEREUM_SIGNATURE_R_LEN);
-    bytes_out[36] = 0x02;
-    bytes_out[37] = 0x20;
-    memcpy(bytes_out + 38, sig + ETHEREUM_SIGNATURE_R_LEN, ETHEREUM_SIGNATURE_S_LEN);
-    *written = 70;
+
+    const uint8_t* values[2] = { sig, sig + ETHEREUM_SIGNATURE_R_LEN };
+    uint8_t encoded[2][ETHEREUM_SIGNATURE_R_LEN + 1U];
+    size_t encoded_len[2] = { 0, 0 };
+    memset(encoded, 0, sizeof(encoded));
+    for (size_t i = 0; i < 2; ++i) {
+        size_t first = 0;
+        while (first < ETHEREUM_SIGNATURE_R_LEN - 1U && values[i][first] == 0) {
+            ++first;
+        }
+        const size_t value_len = ETHEREUM_SIGNATURE_R_LEN - first;
+        if ((values[i][first] & 0x80U) != 0) {
+            encoded[i][0] = 0;
+            memcpy(encoded[i] + 1, values[i] + first, value_len);
+            encoded_len[i] = value_len + 1U;
+        } else {
+            memcpy(encoded[i], values[i] + first, value_len);
+            encoded_len[i] = value_len;
+        }
+    }
+
+    const size_t total_len = 2U + encoded_len[0] + 2U + encoded_len[1];
+    if (total_len + 2U > len || total_len > UINT8_MAX) {
+        return WALLY_EINVAL;
+    }
+    size_t pos = 0;
+    bytes_out[pos++] = 0x30;
+    bytes_out[pos++] = (uint8_t)total_len;
+    for (size_t i = 0; i < 2; ++i) {
+        bytes_out[pos++] = 0x02;
+        bytes_out[pos++] = (uint8_t)encoded_len[i];
+        memcpy(bytes_out + pos, encoded[i], encoded_len[i]);
+        pos += encoded_len[i];
+    }
+    *written = pos;
+    memset(encoded, 0, sizeof(encoded));
     return WALLY_OK;
 }
 
@@ -1253,7 +1291,8 @@ int wally_tx_get_input_signature_hash(const struct wally_tx* tx, size_t index, c
     (void)genesis_blockhash;
     (void)genesis_blockhash_len;
     (void)cache;
-    if (!tx || index >= tx->num_inputs || !script || script_len != sizeof(EXPECTED_BTC_P2WPKH_SCRIPTPUBKEY)
+    if (!tx || index >= tx->num_inputs || !script
+        || (script_len != sizeof(EXPECTED_BTC_P2WPKH_SCRIPTPUBKEY) && script_len != WALLY_SCRIPTPUBKEY_P2PKH_LEN)
         || sighash != 1 || flags != WALLY_SIGTYPE_SW_V0 || !bytes_out || len != sizeof(EXPECTED_BTC_TEST_DIGEST)) {
         return WALLY_EINVAL;
     }
@@ -1509,6 +1548,44 @@ static bool parse_hex_bytes(const char* const hex, uint8_t* const output, const 
     return true;
 }
 
+static bool load_test_btc_compact_signatures_from_env(void)
+{
+    const char* const env = getenv("TREZOR_TEST_BTC_COMPACT_SIGNATURES");
+    g_test_btc_compact_signatures_len = 0;
+    g_test_btc_compact_signature_index = 0;
+    memset(g_test_btc_compact_signatures, 0, sizeof(g_test_btc_compact_signatures));
+    if (!env || env[0] == '\0') {
+        return true;
+    }
+
+    char buffer[(TREZOR_BITCOIN_TX_INPUTS_MAX * ((2U * EC_SIGNATURE_RECOVERABLE_LEN) + 1U)) + 1U];
+    const size_t env_len = strlen(env);
+    if (env_len >= sizeof(buffer)) {
+        return false;
+    }
+    memcpy(buffer, env, env_len + 1U);
+
+    char* cursor = buffer;
+    while (cursor && *cursor) {
+        char* const comma = strchr(cursor, ',');
+        if (comma) {
+            *comma = '\0';
+        }
+        if (g_test_btc_compact_signatures_len >= TREZOR_BITCOIN_TX_INPUTS_MAX) {
+            return false;
+        }
+        size_t written = 0;
+        if (!parse_hex_bytes(cursor, g_test_btc_compact_signatures[g_test_btc_compact_signatures_len],
+                sizeof(g_test_btc_compact_signatures[g_test_btc_compact_signatures_len]), &written)
+            || written != EC_SIGNATURE_RECOVERABLE_LEN) {
+            return false;
+        }
+        ++g_test_btc_compact_signatures_len;
+        cursor = comma ? comma + 1 : NULL;
+    }
+    return true;
+}
+
 static void make_oracle_test_session(trezor_session_t* const session, trezor_session_state_t* const state)
 {
     static const uint8_t trezor_session_id[TREZOR_FEATURES_SESSION_ID_LEN]
@@ -1566,6 +1643,9 @@ static int run_trezor_wire_oracle(const char* const request_hex)
         return 1;
     }
 
+    if (!load_test_btc_compact_signatures_from_env()) {
+        return 1;
+    }
     make_oracle_test_session(&session, &state);
     if (!trezor_session_handle_wire(
             &session, request_chunks, request_chunks_len, response_chunks, sizeof(response_chunks), &response_chunks_len)
@@ -1595,6 +1675,9 @@ static int run_trezor_wire_script(const int request_count, char** const request_
         return 1;
     }
 
+    if (!load_test_btc_compact_signatures_from_env()) {
+        return 1;
+    }
     make_oracle_test_session(&session, &state);
     printf("response_count=%d\n", request_count);
     for (int i = 0; i < request_count; ++i) {

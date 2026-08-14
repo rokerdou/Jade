@@ -177,8 +177,13 @@ typedef struct {
 
 bool trezor_bitcoin_signing_to_confirm_request(
     const trezor_bitcoin_signing_state_t* state, bitcoin_confirm_request_t* request);
+bool trezor_bitcoin_signing_build_hash(const trezor_bitcoin_signing_state_t* state, size_t input_index,
+    wallet_core_path_t* path, uint8_t* digest, size_t digest_len);
 bool trezor_bitcoin_signing_build_p2wpkh_hash(const trezor_bitcoin_signing_state_t* state, size_t input_index,
     wallet_core_path_t* path, uint8_t* digest, size_t digest_len);
+bool trezor_bitcoin_signing_build_signed_tx(const trezor_bitcoin_signing_state_t* state,
+    const trezor_bitcoin_signature_t* signatures, size_t signatures_len, uint8_t* serialized_tx,
+    size_t serialized_tx_len, size_t* serialized_tx_written);
 bool trezor_bitcoin_signing_build_p2wpkh_signed_tx(const trezor_bitcoin_signing_state_t* state,
     const trezor_bitcoin_signature_t* signatures, size_t signatures_len, uint8_t* serialized_tx,
     size_t serialized_tx_len, size_t* serialized_tx_written);

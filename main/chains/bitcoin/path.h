@@ -19,5 +19,6 @@ bool bitcoin_path_is_p2pkh_signing(const uint32_t* path, size_t path_len, bool t
 bool bitcoin_path_is_p2wpkh_signing(const uint32_t* path, size_t path_len, bool testnet);
 bool bitcoin_path_is_p2sh_p2wpkh_signing(const uint32_t* path, size_t path_len, bool testnet);
 bool bitcoin_path_is_p2wpkh_change(const uint32_t* path, size_t path_len, bool testnet, uint32_t account);
+bool bitcoin_path_is_p2sh_p2wpkh_change(const uint32_t* path, size_t path_len, bool testnet, uint32_t account);
 
 #endif /* BITCOIN_PATH_H_ */
