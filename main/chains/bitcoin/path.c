@@ -12,8 +12,33 @@ bool bitcoin_path_is_trezor_connect_state_testnet_p2pkh(const uint32_t* const pa
 
 bool bitcoin_path_is_testnet_p2pkh_account_public_node(const uint32_t* const path, const size_t path_len)
 {
-    return path && path_len == 3 && path[0] == chain_path_harden(44)
-        && path[1] == chain_path_harden(BITCOIN_TESTNET_SLIP44) && (path[2] & 0x80000000U) != 0;
+    return bitcoin_path_is_p2pkh_account_public_node(path, path_len, true);
+}
+
+static bool bitcoin_path_is_account_public_node(
+    const uint32_t* const path, const size_t path_len, const uint32_t purpose, const bool testnet)
+{
+    const uint32_t slip44 = testnet ? BITCOIN_TESTNET_SLIP44 : BITCOIN_MAINNET_SLIP44;
+    return path && path_len == 3 && path[0] == chain_path_harden(purpose) && path[1] == chain_path_harden(slip44)
+        && (path[2] & 0x80000000U) != 0;
+}
+
+bool bitcoin_path_is_p2pkh_account_public_node(
+    const uint32_t* const path, const size_t path_len, const bool testnet)
+{
+    return bitcoin_path_is_account_public_node(path, path_len, 44, testnet);
+}
+
+bool bitcoin_path_is_p2wpkh_account_public_node(
+    const uint32_t* const path, const size_t path_len, const bool testnet)
+{
+    return bitcoin_path_is_account_public_node(path, path_len, 84, testnet);
+}
+
+bool bitcoin_path_is_p2sh_p2wpkh_account_public_node(
+    const uint32_t* const path, const size_t path_len, const bool testnet)
+{
+    return bitcoin_path_is_account_public_node(path, path_len, 49, testnet);
 }
 
 bool bitcoin_path_is_testnet_p2wpkh_signing(const uint32_t* const path, const size_t path_len)

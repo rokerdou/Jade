@@ -13,6 +13,9 @@
 
 bool bitcoin_path_is_trezor_connect_state_testnet_p2pkh(const uint32_t* path, size_t path_len);
 bool bitcoin_path_is_testnet_p2pkh_account_public_node(const uint32_t* path, size_t path_len);
+bool bitcoin_path_is_p2pkh_account_public_node(const uint32_t* path, size_t path_len, bool testnet);
+bool bitcoin_path_is_p2wpkh_account_public_node(const uint32_t* path, size_t path_len, bool testnet);
+bool bitcoin_path_is_p2sh_p2wpkh_account_public_node(const uint32_t* path, size_t path_len, bool testnet);
 bool bitcoin_path_is_testnet_p2wpkh_signing(const uint32_t* path, size_t path_len);
 bool bitcoin_path_is_testnet_p2sh_p2wpkh_signing(const uint32_t* path, size_t path_len);
 bool bitcoin_path_is_p2pkh_signing(const uint32_t* path, size_t path_len, bool testnet);

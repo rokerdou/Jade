@@ -1,6 +1,7 @@
 #ifndef AMALGAMATED_BUILD
 #include "public_key.h"
 
+#include "../../chains/bitcoin/path.h"
 #include "../../chains/path.h"
 #include "protobuf.h"
 
@@ -93,17 +94,19 @@ static bool trezor_public_key_decode_common(const uint8_t* const payload, const 
         } else if (field_number == 5 && kind == TREZOR_PUBLIC_KEY_REQUEST_GENERIC) {
             uint64_t script_type = 0;
             if (wire_type != TREZOR_PROTOBUF_WIRE_VARINT
-                || !trezor_protobuf_read_varint_value(value, value_len, &script_type) || script_type != 0) {
+                || !trezor_protobuf_read_varint_value(value, value_len, &script_type)
+                || (script_type != BITCOIN_P2PKH_SPENDADDRESS && script_type != BITCOIN_P2WPKH_SPENDWITNESS
+                    && script_type != BITCOIN_P2SH_P2WPKH_SPENDP2SHWITNESS)) {
                 return false;
             }
             output->script_type = (uint32_t)script_type;
             output->has_script_type = true;
         } else if (field_number == 6 && kind == TREZOR_PUBLIC_KEY_REQUEST_GENERIC) {
-            bool ignored = false;
             if (wire_type != TREZOR_PROTOBUF_WIRE_VARINT
-                || !trezor_public_key_bool_value(value, value_len, &ignored)) {
+                || !trezor_public_key_bool_value(value, value_len, &output->ignore_xpub_magic)) {
                 return false;
             }
+            output->has_ignore_xpub_magic = true;
         }
     }
 

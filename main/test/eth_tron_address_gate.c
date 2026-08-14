@@ -80,6 +80,10 @@ static const uint8_t EXPECTED_BTC_TESTNET_ADDRESS_BYTES[1 + HASH160_LEN]
     = { 0x6f, 0x75, 0x1e, 0x76, 0xe8, 0x19, 0x91, 0x96, 0xd4, 0x54, 0x94,
           0x1c, 0x45, 0xd1, 0xb3, 0xa3, 0x23, 0xf1, 0x43, 0x3b, 0xd6 };
 
+static const uint8_t EXPECTED_BTC_MAINNET_ADDRESS_BYTES[1 + HASH160_LEN]
+    = { 0x00, 0x75, 0x1e, 0x76, 0xe8, 0x19, 0x91, 0x96, 0xd4, 0x54, 0x94,
+          0x1c, 0x45, 0xd1, 0xb3, 0xa3, 0x23, 0xf1, 0x43, 0x3b, 0xd6 };
+
 static const uint8_t EXPECTED_BTC_P2WPKH_SCRIPTPUBKEY[2 + HASH160_LEN]
     = { 0x00, 0x14, 0x75, 0x1e, 0x76, 0xe8, 0x19, 0x91, 0x96, 0xd4, 0x54, 0x94,
           0x1c, 0x45, 0xd1, 0xb3, 0xa3, 0x23, 0xf1, 0x43, 0x3b, 0xd6 };
@@ -97,6 +101,10 @@ static const uint8_t EXPECTED_BTC_P2SH_P2WPKH_HASH160[HASH160_LEN]
 
 static const uint8_t EXPECTED_BTC_P2SH_P2WPKH_ADDRESS_BYTES[1 + HASH160_LEN]
     = { 0xc4, 0xbc, 0xfe, 0xb7, 0x28, 0xb5, 0x84, 0x25, 0x3d, 0x5f, 0x3f,
+          0x70, 0xbc, 0xb7, 0x80, 0xe9, 0xef, 0x21, 0x8a, 0x68, 0xf4 };
+
+static const uint8_t EXPECTED_BTC_P2SH_P2WPKH_MAINNET_ADDRESS_BYTES[1 + HASH160_LEN]
+    = { 0x05, 0xbc, 0xfe, 0xb7, 0x28, 0xb5, 0x84, 0x25, 0x3d, 0x5f, 0x3f,
           0x70, 0xbc, 0xb7, 0x80, 0xe9, 0xef, 0x21, 0x8a, 0x68, 0xf4 };
 
 static const uint8_t EXPECTED_ETH_ADDRESS[ETHEREUM_ADDRESS_LEN] = { 0x7e, 0x5f, 0x45, 0x52, 0x09, 0x1a, 0x69, 0x12,
@@ -430,6 +438,9 @@ static bool trezor_test_get_bitcoin_address(
     if (script_type == BITCOIN_P2PKH_SPENDADDRESS && !mainnet) {
         ok = bitcoin_p2pkh_testnet_address_from_compressed_pubkey(
             PRIVATE_KEY_ONE_COMPRESSED_PUBKEY, sizeof(PRIVATE_KEY_ONE_COMPRESSED_PUBKEY), address, address_len);
+    } else if (script_type == BITCOIN_P2PKH_SPENDADDRESS && mainnet) {
+        ok = bitcoin_p2pkh_mainnet_address_from_compressed_pubkey(
+            PRIVATE_KEY_ONE_COMPRESSED_PUBKEY, sizeof(PRIVATE_KEY_ONE_COMPRESSED_PUBKEY), address, address_len);
     } else if (script_type == BITCOIN_P2WPKH_SPENDWITNESS) {
         ok = mainnet
             ? bitcoin_p2wpkh_mainnet_address_from_compressed_pubkey(
@@ -438,6 +449,9 @@ static bool trezor_test_get_bitcoin_address(
                   PRIVATE_KEY_ONE_COMPRESSED_PUBKEY, sizeof(PRIVATE_KEY_ONE_COMPRESSED_PUBKEY), address, address_len);
     } else if (script_type == BITCOIN_P2SH_P2WPKH_SPENDP2SHWITNESS && !mainnet) {
         ok = bitcoin_p2sh_p2wpkh_testnet_address_from_compressed_pubkey(
+            PRIVATE_KEY_ONE_COMPRESSED_PUBKEY, sizeof(PRIVATE_KEY_ONE_COMPRESSED_PUBKEY), address, address_len);
+    } else if (script_type == BITCOIN_P2SH_P2WPKH_SPENDP2SHWITNESS && mainnet) {
+        ok = bitcoin_p2sh_p2wpkh_mainnet_address_from_compressed_pubkey(
             PRIVATE_KEY_ONE_COMPRESSED_PUBKEY, sizeof(PRIVATE_KEY_ONE_COMPRESSED_PUBKEY), address, address_len);
     }
     if (!ok) {
@@ -959,11 +973,21 @@ int wally_base58_from_bytes(const unsigned char* bytes, size_t bytes_len, uint32
         && memcmp(bytes, EXPECTED_BTC_TESTNET_ADDRESS_BYTES, sizeof(EXPECTED_BTC_TESTNET_ADDRESS_BYTES)) == 0) {
         expected = "mrCDrCybB6J1vRfbwM5hemdJz73FwDBC8r";
         expected_len = strlen(expected) + 1;
+    } else if (bytes_len == sizeof(EXPECTED_BTC_MAINNET_ADDRESS_BYTES)
+        && memcmp(bytes, EXPECTED_BTC_MAINNET_ADDRESS_BYTES, sizeof(EXPECTED_BTC_MAINNET_ADDRESS_BYTES)) == 0) {
+        expected = "1BgGZ9tcN4rm9KBzDn7KprQz87SZ26SAMH";
+        expected_len = strlen(expected) + 1;
     } else if (bytes_len == sizeof(EXPECTED_BTC_P2SH_P2WPKH_ADDRESS_BYTES)
         && memcmp(bytes, EXPECTED_BTC_P2SH_P2WPKH_ADDRESS_BYTES,
                sizeof(EXPECTED_BTC_P2SH_P2WPKH_ADDRESS_BYTES))
             == 0) {
         expected = "2NAUYAHhujozruyzpsFRP63mbrdaU5wnEpN";
+        expected_len = strlen(expected) + 1;
+    } else if (bytes_len == sizeof(EXPECTED_BTC_P2SH_P2WPKH_MAINNET_ADDRESS_BYTES)
+        && memcmp(bytes, EXPECTED_BTC_P2SH_P2WPKH_MAINNET_ADDRESS_BYTES,
+               sizeof(EXPECTED_BTC_P2SH_P2WPKH_MAINNET_ADDRESS_BYTES))
+            == 0) {
+        expected = "3JvL6Ymt8MVWiCNHC7oWU6nLeHNJKLZGLN";
         expected_len = strlen(expected) + 1;
     } else {
         return WALLY_EINVAL;
@@ -1773,6 +1797,12 @@ static int dump_oracle_vectors(void)
     printf("eth_checksum_address=%s\n", eth_checksum);
     printf("tron_base58_address=%s\n", tron_base58);
     printf("btc_testnet_p2pkh_address=%s\n", btc_address);
+    if (!bitcoin_p2pkh_mainnet_address_from_compressed_pubkey(
+            PRIVATE_KEY_ONE_COMPRESSED_PUBKEY, sizeof(PRIVATE_KEY_ONE_COMPRESSED_PUBKEY), btc_address,
+            sizeof(btc_address))) {
+        return 1;
+    }
+    printf("btc_mainnet_p2pkh_address=%s\n", btc_address);
     if (!bitcoin_p2wpkh_testnet_address_from_compressed_pubkey(
             PRIVATE_KEY_ONE_COMPRESSED_PUBKEY, sizeof(PRIVATE_KEY_ONE_COMPRESSED_PUBKEY), btc_address,
             sizeof(btc_address))) {
@@ -1791,6 +1821,12 @@ static int dump_oracle_vectors(void)
         return 1;
     }
     printf("btc_testnet_p2sh_p2wpkh_address=%s\n", btc_address);
+    if (!bitcoin_p2sh_p2wpkh_mainnet_address_from_compressed_pubkey(
+            PRIVATE_KEY_ONE_COMPRESSED_PUBKEY, sizeof(PRIVATE_KEY_ONE_COMPRESSED_PUBKEY), btc_address,
+            sizeof(btc_address))) {
+        return 1;
+    }
+    printf("btc_mainnet_p2sh_p2wpkh_address=%s\n", btc_address);
 
     uint8_t signing_payload[ETHEREUM_TX_MAX_SIGNING_PAYLOAD_LEN];
     size_t signing_payload_len = 0;
@@ -1932,6 +1968,10 @@ int main(int argc, char** argv)
         = { chain_path_harden(84), chain_path_harden(1), chain_path_harden(0), 0, 0 };
     const uint32_t btc_mainnet_signing_path[]
         = { chain_path_harden(84), chain_path_harden(0), chain_path_harden(0), 0, 0 };
+    const uint32_t btc_mainnet_p2pkh_path[]
+        = { chain_path_harden(44), chain_path_harden(0), chain_path_harden(0), 0, 0 };
+    const uint32_t btc_mainnet_p2sh_p2wpkh_path[]
+        = { chain_path_harden(49), chain_path_harden(0), chain_path_harden(0), 0, 0 };
     const uint32_t btc_signing_path_1[]
         = { chain_path_harden(84), chain_path_harden(1), chain_path_harden(0), 0, 1 };
     const uint32_t btc_p2sh_p2wpkh_path[]
@@ -1939,6 +1979,11 @@ int main(int argc, char** argv)
     const uint32_t btc_change_path[]
         = { chain_path_harden(84), chain_path_harden(1), chain_path_harden(0), 1, 0 };
     const uint32_t btc_account_path[] = { chain_path_harden(44), chain_path_harden(1), chain_path_harden(0) };
+    const uint32_t btc_p2wpkh_account_path[] = { chain_path_harden(84), chain_path_harden(1), chain_path_harden(0) };
+    const uint32_t btc_mainnet_p2wpkh_account_path[]
+        = { chain_path_harden(84), chain_path_harden(0), chain_path_harden(0) };
+    const uint32_t btc_mainnet_p2sh_p2wpkh_account_path[]
+        = { chain_path_harden(49), chain_path_harden(0), chain_path_harden(0) };
     const uint32_t btc_wrong_coin[]
         = { chain_path_harden(44), chain_path_harden(0), chain_path_harden(0), 0, 0 };
     CHECK(bitcoin_path_is_trezor_connect_state_testnet_p2pkh(btc_state_path, ARRAY_LEN(btc_state_path)));
@@ -1946,6 +1991,13 @@ int main(int argc, char** argv)
     CHECK(bitcoin_path_is_testnet_p2pkh_account_public_node(btc_account_path, ARRAY_LEN(btc_account_path)));
     CHECK(!bitcoin_path_is_testnet_p2pkh_account_public_node(btc_state_path, ARRAY_LEN(btc_state_path)));
     CHECK(!bitcoin_path_is_testnet_p2pkh_account_public_node(btc_wrong_coin, 3));
+    CHECK(bitcoin_path_is_p2wpkh_account_public_node(
+        btc_p2wpkh_account_path, ARRAY_LEN(btc_p2wpkh_account_path), true));
+    CHECK(bitcoin_path_is_p2wpkh_account_public_node(
+        btc_mainnet_p2wpkh_account_path, ARRAY_LEN(btc_mainnet_p2wpkh_account_path), false));
+    CHECK(bitcoin_path_is_p2sh_p2wpkh_account_public_node(
+        btc_mainnet_p2sh_p2wpkh_account_path, ARRAY_LEN(btc_mainnet_p2sh_p2wpkh_account_path), false));
+    CHECK(!bitcoin_path_is_p2wpkh_account_public_node(btc_account_path, ARRAY_LEN(btc_account_path), true));
     CHECK(bitcoin_path_is_p2pkh_signing(btc_state_path, ARRAY_LEN(btc_state_path), true));
     CHECK(bitcoin_path_is_testnet_p2wpkh_signing(btc_signing_path, ARRAY_LEN(btc_signing_path)));
     CHECK(bitcoin_path_is_p2wpkh_signing(
@@ -1962,6 +2014,9 @@ int main(int argc, char** argv)
     CHECK(bitcoin_p2pkh_testnet_address_from_compressed_pubkey(
         PRIVATE_KEY_ONE_COMPRESSED_PUBKEY, sizeof(PRIVATE_KEY_ONE_COMPRESSED_PUBKEY), btc_address, sizeof(btc_address)));
     CHECK(strcmp(btc_address, "mrCDrCybB6J1vRfbwM5hemdJz73FwDBC8r") == 0);
+    CHECK(bitcoin_p2pkh_mainnet_address_from_compressed_pubkey(
+        PRIVATE_KEY_ONE_COMPRESSED_PUBKEY, sizeof(PRIVATE_KEY_ONE_COMPRESSED_PUBKEY), btc_address, sizeof(btc_address)));
+    CHECK(strcmp(btc_address, "1BgGZ9tcN4rm9KBzDn7KprQz87SZ26SAMH") == 0);
     CHECK(bitcoin_p2wpkh_testnet_address_from_compressed_pubkey(
         PRIVATE_KEY_ONE_COMPRESSED_PUBKEY, sizeof(PRIVATE_KEY_ONE_COMPRESSED_PUBKEY), btc_address, sizeof(btc_address)));
     CHECK(strcmp(btc_address, "tb1qw508d6qejxtdg4y5r3zarvary0c5xw7kxpjzsx") == 0);
@@ -1971,7 +2026,21 @@ int main(int argc, char** argv)
     CHECK(bitcoin_p2sh_p2wpkh_testnet_address_from_compressed_pubkey(
         PRIVATE_KEY_ONE_COMPRESSED_PUBKEY, sizeof(PRIVATE_KEY_ONE_COMPRESSED_PUBKEY), btc_address, sizeof(btc_address)));
     CHECK(strcmp(btc_address, "2NAUYAHhujozruyzpsFRP63mbrdaU5wnEpN") == 0);
+    CHECK(bitcoin_p2sh_p2wpkh_mainnet_address_from_compressed_pubkey(
+        PRIVATE_KEY_ONE_COMPRESSED_PUBKEY, sizeof(PRIVATE_KEY_ONE_COMPRESSED_PUBKEY), btc_address, sizeof(btc_address)));
+    CHECK(strcmp(btc_address, "3JvL6Ymt8MVWiCNHC7oWU6nLeHNJKLZGLN") == 0);
     wallet_core_path_t btc_wallet_path;
+    memset(&btc_wallet_path, 0, sizeof(btc_wallet_path));
+    btc_wallet_path.len = ARRAY_LEN(btc_state_path);
+    memcpy(btc_wallet_path.parts, btc_state_path, sizeof(btc_state_path));
+    CHECK(bitcoin_wallet_p2pkh_testnet_address_from_path(&btc_wallet_path, btc_address, sizeof(btc_address)));
+    CHECK(strcmp(btc_address, "mrCDrCybB6J1vRfbwM5hemdJz73FwDBC8r") == 0);
+    memset(&btc_wallet_path, 0, sizeof(btc_wallet_path));
+    btc_wallet_path.len = ARRAY_LEN(btc_mainnet_p2pkh_path);
+    memcpy(btc_wallet_path.parts, btc_mainnet_p2pkh_path, sizeof(btc_mainnet_p2pkh_path));
+    CHECK(bitcoin_wallet_p2pkh_mainnet_address_from_path(&btc_wallet_path, btc_address, sizeof(btc_address)));
+    CHECK(strcmp(btc_address, "1BgGZ9tcN4rm9KBzDn7KprQz87SZ26SAMH") == 0);
+    CHECK(!bitcoin_wallet_p2pkh_testnet_address_from_path(&btc_wallet_path, btc_address, sizeof(btc_address)));
     memset(&btc_wallet_path, 0, sizeof(btc_wallet_path));
     btc_wallet_path.len = ARRAY_LEN(btc_signing_path);
     memcpy(btc_wallet_path.parts, btc_signing_path, sizeof(btc_signing_path));
@@ -1988,6 +2057,12 @@ int main(int argc, char** argv)
     memcpy(btc_wallet_path.parts, btc_p2sh_p2wpkh_path, sizeof(btc_p2sh_p2wpkh_path));
     CHECK(bitcoin_wallet_p2sh_p2wpkh_testnet_address_from_path(&btc_wallet_path, btc_address, sizeof(btc_address)));
     CHECK(strcmp(btc_address, "2NAUYAHhujozruyzpsFRP63mbrdaU5wnEpN") == 0);
+    memset(&btc_wallet_path, 0, sizeof(btc_wallet_path));
+    btc_wallet_path.len = ARRAY_LEN(btc_mainnet_p2sh_p2wpkh_path);
+    memcpy(btc_wallet_path.parts, btc_mainnet_p2sh_p2wpkh_path, sizeof(btc_mainnet_p2sh_p2wpkh_path));
+    CHECK(bitcoin_wallet_p2sh_p2wpkh_mainnet_address_from_path(&btc_wallet_path, btc_address, sizeof(btc_address)));
+    CHECK(strcmp(btc_address, "3JvL6Ymt8MVWiCNHC7oWU6nLeHNJKLZGLN") == 0);
+    CHECK(!bitcoin_wallet_p2sh_p2wpkh_testnet_address_from_path(&btc_wallet_path, btc_address, sizeof(btc_address)));
     memset(&btc_wallet_path, 0, sizeof(btc_wallet_path));
 
     trezor_bitcoin_tx_input_t script_policy_input;
@@ -2953,6 +3028,31 @@ int main(int argc, char** argv)
     CHECK(trezor_public_key_request.address_n_len == ARRAY_LEN(btc_account_path));
     CHECK(memcmp(trezor_public_key_request.address_n, btc_account_path, sizeof(btc_account_path)) == 0);
     const size_t trezor_btc_public_key_payload_len = trezor_btc_public_key_writer.len;
+
+    uint8_t trezor_btc_mainnet_public_key_payload[256];
+    trezor_protobuf_writer_t trezor_btc_mainnet_public_key_writer;
+    trezor_protobuf_writer_init(&trezor_btc_mainnet_public_key_writer, trezor_btc_mainnet_public_key_payload,
+        sizeof(trezor_btc_mainnet_public_key_payload));
+    for (size_t i = 0; i < ARRAY_LEN(btc_mainnet_p2wpkh_account_path); ++i) {
+        CHECK(trezor_protobuf_write_varint_field(
+            &trezor_btc_mainnet_public_key_writer, 1, btc_mainnet_p2wpkh_account_path[i]));
+    }
+    CHECK(trezor_protobuf_write_string_field(&trezor_btc_mainnet_public_key_writer, 4, "Bitcoin"));
+    CHECK(trezor_protobuf_write_varint_field(
+        &trezor_btc_mainnet_public_key_writer, 5, BITCOIN_P2WPKH_SPENDWITNESS));
+    CHECK(trezor_protobuf_write_bool_field(&trezor_btc_mainnet_public_key_writer, 6, false));
+    CHECK(trezor_public_key_decode_generic(trezor_btc_mainnet_public_key_payload,
+        trezor_btc_mainnet_public_key_writer.len, &trezor_public_key_request));
+    CHECK(trezor_public_key_request.kind == TREZOR_PUBLIC_KEY_REQUEST_GENERIC);
+    CHECK(trezor_public_key_request.has_coin_name && strcmp(trezor_public_key_request.coin_name, "Bitcoin") == 0);
+    CHECK(trezor_public_key_request.has_script_type
+        && trezor_public_key_request.script_type == BITCOIN_P2WPKH_SPENDWITNESS);
+    CHECK(trezor_public_key_request.has_ignore_xpub_magic && !trezor_public_key_request.ignore_xpub_magic);
+    CHECK(trezor_public_key_request.address_n_len == ARRAY_LEN(btc_mainnet_p2wpkh_account_path));
+    CHECK(memcmp(trezor_public_key_request.address_n, btc_mainnet_p2wpkh_account_path,
+              sizeof(btc_mainnet_p2wpkh_account_path))
+        == 0);
+    const size_t trezor_btc_mainnet_public_key_payload_len = trezor_btc_mainnet_public_key_writer.len;
 
     uint8_t trezor_root_fingerprint_payload[64];
     trezor_protobuf_writer_t trezor_root_fingerprint_writer;
@@ -4010,6 +4110,25 @@ int main(int argc, char** argv)
         && strcmp(g_last_trezor_public_key_request.coin_name, "Testnet") == 0);
     CHECK(g_last_trezor_public_key_request.address_n_len == ARRAY_LEN(btc_account_path));
     CHECK(memcmp(g_last_trezor_public_key_request.address_n, btc_account_path, sizeof(btc_account_path)) == 0);
+
+    CHECK(trezor_wire_encode_message(TREZOR_MSG_GET_PUBLIC_KEY, trezor_btc_mainnet_public_key_payload,
+        trezor_btc_mainnet_public_key_payload_len, session_request_chunks, sizeof(session_request_chunks),
+        &session_request_len));
+    CHECK(trezor_session_handle_wire(&trezor_session, session_request_chunks, session_request_len,
+        session_response_chunks, sizeof(session_response_chunks), &session_response_len));
+    CHECK(trezor_wire_decode_message(session_response_chunks, session_response_len, &session_response_type,
+        session_response_payload, sizeof(session_response_payload), &session_response_payload_len));
+    CHECK(session_response_type == TREZOR_MSG_PUBLIC_KEY);
+    CHECK(!trezor_public_key_payload_has_private_key_field(session_response_payload, session_response_payload_len));
+    CHECK(g_last_trezor_public_key_request.kind == TREZOR_PUBLIC_KEY_REQUEST_GENERIC);
+    CHECK(g_last_trezor_public_key_request.has_coin_name
+        && strcmp(g_last_trezor_public_key_request.coin_name, "Bitcoin") == 0);
+    CHECK(g_last_trezor_public_key_request.has_script_type
+        && g_last_trezor_public_key_request.script_type == BITCOIN_P2WPKH_SPENDWITNESS);
+    CHECK(g_last_trezor_public_key_request.address_n_len == ARRAY_LEN(btc_mainnet_p2wpkh_account_path));
+    CHECK(memcmp(g_last_trezor_public_key_request.address_n, btc_mainnet_p2wpkh_account_path,
+              sizeof(btc_mainnet_p2wpkh_account_path))
+        == 0);
 
     CHECK(trezor_wire_encode_message(TREZOR_MSG_ETHEREUM_GET_PUBLIC_KEY, trezor_eth_public_key_payload,
         trezor_eth_public_key_payload_len, session_request_chunks, sizeof(session_request_chunks), &session_request_len));

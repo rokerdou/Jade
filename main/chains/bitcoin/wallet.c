@@ -30,6 +30,19 @@ bool bitcoin_wallet_p2pkh_testnet_address_from_path(
         bitcoin_p2pkh_testnet_address_from_compressed_pubkey);
 }
 
+static bool bitcoin_path_is_mainnet_p2pkh_signing(const uint32_t* const path, const size_t path_len)
+{
+    return bitcoin_path_is_p2pkh_signing(path, path_len, false);
+}
+
+bool bitcoin_wallet_p2pkh_mainnet_address_from_path(
+    const wallet_core_path_t* const path, char* const output, const size_t output_len)
+{
+    return bitcoin_wallet_address_from_path(path, output, output_len,
+        bitcoin_path_is_mainnet_p2pkh_signing,
+        bitcoin_p2pkh_mainnet_address_from_compressed_pubkey);
+}
+
 bool bitcoin_wallet_p2wpkh_testnet_address_from_path(
     const wallet_core_path_t* const path, char* const output, const size_t output_len)
 {
@@ -44,6 +57,19 @@ bool bitcoin_wallet_p2sh_p2wpkh_testnet_address_from_path(
     return bitcoin_wallet_address_from_path(path, output, output_len,
         bitcoin_path_is_testnet_p2sh_p2wpkh_signing,
         bitcoin_p2sh_p2wpkh_testnet_address_from_compressed_pubkey);
+}
+
+static bool bitcoin_path_is_mainnet_p2sh_p2wpkh_signing(const uint32_t* const path, const size_t path_len)
+{
+    return bitcoin_path_is_p2sh_p2wpkh_signing(path, path_len, false);
+}
+
+bool bitcoin_wallet_p2sh_p2wpkh_mainnet_address_from_path(
+    const wallet_core_path_t* const path, char* const output, const size_t output_len)
+{
+    return bitcoin_wallet_address_from_path(path, output, output_len,
+        bitcoin_path_is_mainnet_p2sh_p2wpkh_signing,
+        bitcoin_p2sh_p2wpkh_mainnet_address_from_compressed_pubkey);
 }
 
 static bool bitcoin_path_is_mainnet_p2wpkh_signing(const uint32_t* const path, const size_t path_len)

@@ -23,8 +23,53 @@
 #include <wally_crypto.h>
 
 #define TREZOR_WALLET_ADAPTER_INTERACTIVE_TIMEOUT_SECS 600
+#define TREZOR_XPUB_MAINNET_P2SH_P2WPKH 0x049D7CB2U
+#define TREZOR_XPUB_MAINNET_P2WPKH 0x04B24746U
+#define TREZOR_XPUB_TESTNET_P2SH_P2WPKH 0x044A5262U
+#define TREZOR_XPUB_TESTNET_P2WPKH 0x045F1CF6U
 
 bool show_confirm_address_activity(const char* address, bool default_selection);
+
+static bool trezor_wallet_bitcoin_public_node_version(
+    const trezor_public_key_request_t* const request, uint32_t* const version)
+{
+    if (!request || !version || request->kind != TREZOR_PUBLIC_KEY_REQUEST_GENERIC) {
+        return false;
+    }
+
+    const char* const coin_name = request->has_coin_name ? request->coin_name : "Bitcoin";
+    if (strcmp(coin_name, "Testnet") != 0 && strcmp(coin_name, "Bitcoin") != 0) {
+        return false;
+    }
+
+    const bool testnet = strcmp(coin_name, "Testnet") == 0;
+    const uint32_t script_type = request->has_script_type ? request->script_type : BITCOIN_P2PKH_SPENDADDRESS;
+    const bool ignore_magic = request->has_ignore_xpub_magic && request->ignore_xpub_magic;
+    if (script_type == BITCOIN_P2PKH_SPENDADDRESS) {
+        if (!bitcoin_path_is_p2pkh_account_public_node(request->address_n, request->address_n_len, testnet)) {
+            return false;
+        }
+        *version = testnet ? BIP32_VER_TEST_PUBLIC : BIP32_VER_MAIN_PUBLIC;
+        return true;
+    }
+    if (script_type == BITCOIN_P2WPKH_SPENDWITNESS) {
+        if (!bitcoin_path_is_p2wpkh_account_public_node(request->address_n, request->address_n_len, testnet)) {
+            return false;
+        }
+        *version = ignore_magic ? (testnet ? BIP32_VER_TEST_PUBLIC : BIP32_VER_MAIN_PUBLIC)
+                                : (testnet ? TREZOR_XPUB_TESTNET_P2WPKH : TREZOR_XPUB_MAINNET_P2WPKH);
+        return true;
+    }
+    if (script_type == BITCOIN_P2SH_P2WPKH_SPENDP2SHWITNESS) {
+        if (!bitcoin_path_is_p2sh_p2wpkh_account_public_node(request->address_n, request->address_n_len, testnet)) {
+            return false;
+        }
+        *version = ignore_magic ? (testnet ? BIP32_VER_TEST_PUBLIC : BIP32_VER_MAIN_PUBLIC)
+                                : (testnet ? TREZOR_XPUB_TESTNET_P2SH_P2WPKH : TREZOR_XPUB_MAINNET_P2SH_P2WPKH);
+        return true;
+    }
+    return false;
+}
 
 static bool trezor_wallet_get_eth_address(
     void* ctx, const trezor_ethereum_get_address_t* const request, char* const address, const size_t address_len)
@@ -91,13 +136,15 @@ static bool trezor_wallet_get_bitcoin_address(
     const uint32_t script_type = request->has_script_type ? request->script_type : BITCOIN_P2PKH_SPENDADDRESS;
     const bool mainnet = strcmp(request->coin_name, "Bitcoin") == 0;
     bool ok = false;
-    if (script_type == BITCOIN_P2PKH_SPENDADDRESS && !mainnet) {
-        ok = bitcoin_wallet_p2pkh_testnet_address_from_path(&path, address, address_len);
+    if (script_type == BITCOIN_P2PKH_SPENDADDRESS) {
+        ok = mainnet ? bitcoin_wallet_p2pkh_mainnet_address_from_path(&path, address, address_len)
+                     : bitcoin_wallet_p2pkh_testnet_address_from_path(&path, address, address_len);
     } else if (script_type == BITCOIN_P2WPKH_SPENDWITNESS) {
         ok = mainnet ? bitcoin_wallet_p2wpkh_mainnet_address_from_path(&path, address, address_len)
                      : bitcoin_wallet_p2wpkh_testnet_address_from_path(&path, address, address_len);
-    } else if (script_type == BITCOIN_P2SH_P2WPKH_SPENDP2SHWITNESS && !mainnet) {
-        ok = bitcoin_wallet_p2sh_p2wpkh_testnet_address_from_path(&path, address, address_len);
+    } else if (script_type == BITCOIN_P2SH_P2WPKH_SPENDP2SHWITNESS) {
+        ok = mainnet ? bitcoin_wallet_p2sh_p2wpkh_mainnet_address_from_path(&path, address, address_len)
+                     : bitcoin_wallet_p2sh_p2wpkh_testnet_address_from_path(&path, address, address_len);
     }
     wally_bzero(&path, sizeof(path));
     if (!ok) {
@@ -123,12 +170,10 @@ static bool trezor_wallet_get_public_key(
     const bool root_fingerprint_probe = trezor_public_key_is_root_fingerprint_probe(request);
     const bool supported_eth_public_node
         = request && ethereum_path_is_public_key_export_supported(request->address_n, request->address_n_len);
-    const bool supported_btc_testnet_public_node = request && request->kind == TREZOR_PUBLIC_KEY_REQUEST_GENERIC
-        && request->has_coin_name && strcmp(request->coin_name, "Testnet") == 0
-        && (!request->has_script_type || request->script_type == BITCOIN_P2PKH_SPENDADDRESS)
-        && bitcoin_path_is_testnet_p2pkh_account_public_node(request->address_n, request->address_n_len);
+    uint32_t bip32_public_version = 0;
+    const bool supported_btc_public_node = trezor_wallet_bitcoin_public_node_version(request, &bip32_public_version);
     if (!request || !response || !trezor_auth_bridge_wallet_ready()
-        || (!root_fingerprint_probe && !supported_eth_public_node && !supported_btc_testnet_public_node)
+        || (!root_fingerprint_probe && !supported_eth_public_node && !supported_btc_public_node)
         || (request->has_show_display && request->show_display)) {
         return false;
     }
@@ -139,7 +184,6 @@ static bool trezor_wallet_get_public_key(
     memcpy(path.parts, request->address_n, request->address_n_len * sizeof(request->address_n[0]));
 
     wallet_core_public_node_t node;
-    const uint32_t bip32_public_version = supported_btc_testnet_public_node ? BIP32_VER_TEST_PUBLIC : 0;
     bool ok = wallet_core_get_public_node_with_version(&path, bip32_public_version, &node);
     if (ok) {
         response->depth = node.depth;

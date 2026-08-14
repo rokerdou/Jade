@@ -105,12 +105,17 @@ static uint32_t wallet_core_fingerprint_to_u32(const uint8_t fingerprint[BIP32_K
         | (uint32_t)fingerprint[3];
 }
 
+static bool wallet_core_bip32_public_version_allowed(const uint32_t version)
+{
+    return version == 0 || version == BIP32_VER_MAIN_PUBLIC || version == BIP32_VER_TEST_PUBLIC
+        || version == 0x049D7CB2U || version == 0x04B24746U || version == 0x044A5262U || version == 0x045F1CF6U;
+}
+
 bool wallet_core_get_public_node_with_version(
     const wallet_core_path_t* const path, const uint32_t bip32_public_version, wallet_core_public_node_t* const output)
 {
     if (!wallet_core_is_unlocked() || !wallet_core_path_valid(path) || !output
-        || (bip32_public_version != 0 && bip32_public_version != BIP32_VER_MAIN_PUBLIC
-            && bip32_public_version != BIP32_VER_TEST_PUBLIC)) {
+        || !wallet_core_bip32_public_version_allowed(bip32_public_version)) {
         return false;
     }
 

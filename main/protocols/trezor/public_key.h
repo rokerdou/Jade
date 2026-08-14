@@ -23,6 +23,8 @@ typedef struct {
     char coin_name[TREZOR_PUBLIC_KEY_COIN_NAME_MAX_LEN];
     bool has_script_type;
     uint32_t script_type;
+    bool has_ignore_xpub_magic;
+    bool ignore_xpub_magic;
     trezor_public_key_request_kind_t kind;
 } trezor_public_key_request_t;
 

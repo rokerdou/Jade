@@ -186,9 +186,11 @@ def expected_vectors() -> dict[str, str]:
         "btc_testnet_p2pkh_address": base58.b58encode_check(
             TESTNET_P2PKH_VERSION + pubkey_hash
         ).decode(),
+        "btc_mainnet_p2pkh_address": base58.b58encode_check(b"\x00" + pubkey_hash).decode(),
         "btc_testnet_p2wpkh_address": p2wpkh_address_testnet(pubkey_hash),
         "btc_mainnet_p2wpkh_address": p2wpkh_address_mainnet(pubkey_hash),
         "btc_testnet_p2sh_p2wpkh_address": base58.b58encode_check(b"\xc4" + p2sh_p2wpkh_redeem_hash).decode(),
+        "btc_mainnet_p2sh_p2wpkh_address": base58.b58encode_check(b"\x05" + p2sh_p2wpkh_redeem_hash).decode(),
         "eth_eip155_signing_payload": eip155_payload.hex(),
         "eth_eip155_signing_hash": eip155_hash.hex(),
         "eth_eip1559_signing_payload": eip1559_payload.hex(),
@@ -1806,68 +1808,110 @@ def check_trezorlib_protocol_oracle(gate: Path, local_vectors: dict[str, str]) -
         (
             messages.InputScriptType.SPENDADDRESS,
             [0x8000002C, 0x80000001, 0x80000000, 0, 0],
+            "Testnet",
             "btc_testnet_p2pkh_address",
         ),
         (
             messages.InputScriptType.SPENDWITNESS,
             [0x80000054, 0x80000001, 0x80000000, 0, 0],
+            "Testnet",
             "btc_testnet_p2wpkh_address",
         ),
         (
             messages.InputScriptType.SPENDP2SHWITNESS,
             [0x80000031, 0x80000001, 0x80000000, 0, 0],
+            "Testnet",
             "btc_testnet_p2sh_p2wpkh_address",
         ),
+        (
+            messages.InputScriptType.SPENDADDRESS,
+            [0x8000002C, 0x80000000, 0x80000000, 0, 0],
+            "Bitcoin",
+            "btc_mainnet_p2pkh_address",
+        ),
+        (
+            messages.InputScriptType.SPENDWITNESS,
+            [0x80000054, 0x80000000, 0x80000000, 0, 0],
+            "Bitcoin",
+            "btc_mainnet_p2wpkh_address",
+        ),
+        (
+            messages.InputScriptType.SPENDP2SHWITNESS,
+            [0x80000031, 0x80000000, 0x80000000, 0, 0],
+            "Bitcoin",
+            "btc_mainnet_p2sh_p2wpkh_address",
+        ),
     ]
-    for script_type, address_n, vector_key in btc_address_cases:
+    for script_type, address_n, coin_name, vector_key in btc_address_cases:
         response_type, payload = run_local_wire_oracle(
             gate,
             messages.MessageType.GetAddress,
             messages.GetAddress(
                 address_n=address_n,
-                coin_name="Testnet",
+                coin_name=coin_name,
                 show_display=False,
                 script_type=script_type,
             ),
         )
         if response_type != messages.MessageType.Address:
-            raise AssertionError(f"GetAddress response type mismatch for {script_type}: {response_type}")
+            raise AssertionError(f"GetAddress response type mismatch for {coin_name}/{script_type}: {response_type}")
         btc_addr = protobuf.load_message(io.BytesIO(payload), messages.Address)
         if btc_addr.address != local_vectors[vector_key]:
-            raise AssertionError(f"unexpected Bitcoin address response for {script_type}: {btc_addr.address}")
+            raise AssertionError(
+                f"unexpected Bitcoin address response for {coin_name}/{script_type}: {btc_addr.address}"
+            )
 
-    response_type, payload = run_local_wire_oracle(
-        gate,
-        messages.MessageType.GetAddress,
-        messages.GetAddress(
-            address_n=[0x80000054, 0x80000000, 0x80000000, 0, 0],
-            coin_name="Bitcoin",
-            show_display=False,
-            script_type=messages.InputScriptType.SPENDWITNESS,
+    btc_public_key_cases = [
+        (
+            messages.InputScriptType.SPENDADDRESS,
+            [0x8000002C, 0x80000001, 0x80000000],
+            "Testnet",
         ),
-    )
-    if response_type != messages.MessageType.Address:
-        raise AssertionError(f"mainnet GetAddress response type mismatch: {response_type}")
-    btc_addr = protobuf.load_message(io.BytesIO(payload), messages.Address)
-    if btc_addr.address != local_vectors["btc_mainnet_p2wpkh_address"]:
-        raise AssertionError(f"unexpected mainnet P2WPKH address response: {btc_addr.address}")
-
-    response_type, payload = run_local_wire_oracle(
-        gate,
-        messages.MessageType.GetPublicKey,
-        messages.GetPublicKey(
-            address_n=[0x8000002C, 0x80000001, 0x80000000],
-            coin_name="Testnet",
-            script_type=messages.InputScriptType.SPENDADDRESS,
+        (
+            messages.InputScriptType.SPENDWITNESS,
+            [0x80000054, 0x80000001, 0x80000000],
+            "Testnet",
         ),
-    )
-    if response_type != messages.MessageType.PublicKey:
-        raise AssertionError(f"GetPublicKey response type mismatch: {response_type}")
-    public_key = protobuf.load_message(io.BytesIO(payload), messages.PublicKey)
-    if getattr(public_key.node, "private_key", None):
-        raise AssertionError("PublicKey response unexpectedly contains private_key")
-    if not public_key.xpub:
-        raise AssertionError("PublicKey response missing xpub")
+        (
+            messages.InputScriptType.SPENDP2SHWITNESS,
+            [0x80000031, 0x80000001, 0x80000000],
+            "Testnet",
+        ),
+        (
+            messages.InputScriptType.SPENDADDRESS,
+            [0x8000002C, 0x80000000, 0x80000000],
+            "Bitcoin",
+        ),
+        (
+            messages.InputScriptType.SPENDWITNESS,
+            [0x80000054, 0x80000000, 0x80000000],
+            "Bitcoin",
+        ),
+        (
+            messages.InputScriptType.SPENDP2SHWITNESS,
+            [0x80000031, 0x80000000, 0x80000000],
+            "Bitcoin",
+        ),
+    ]
+    for script_type, address_n, coin_name in btc_public_key_cases:
+        response_type, payload = run_local_wire_oracle(
+            gate,
+            messages.MessageType.GetPublicKey,
+            messages.GetPublicKey(
+                address_n=address_n,
+                coin_name=coin_name,
+                script_type=script_type,
+            ),
+        )
+        if response_type != messages.MessageType.PublicKey:
+            raise AssertionError(
+                f"GetPublicKey response type mismatch for {coin_name}/{script_type}: {response_type}"
+            )
+        public_key = protobuf.load_message(io.BytesIO(payload), messages.PublicKey)
+        if getattr(public_key.node, "private_key", None):
+            raise AssertionError("PublicKey response unexpectedly contains private_key")
+        if not public_key.xpub:
+            raise AssertionError("PublicKey response missing xpub")
 
     response_type, payload = run_local_wire_oracle(
         gate,

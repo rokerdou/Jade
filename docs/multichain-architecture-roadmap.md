@@ -161,6 +161,9 @@ main/
 - 敏感接口静态门禁：`tools/check_sensitive_key_boundaries.py`。
 - ETH/BTC/TRON 地址、签名、protobuf、UI 摘要、外部 oracle host gates。
 - BTC P2WPKH/BIP84 硬件协议测试。
+- BTC `GetPublicKey` 已支持账户级 BIP44/P2PKH、BIP49/P2SH-P2WPKH、BIP84/P2WPKH，
+  覆盖 Bitcoin/Testnet，并按 Trezor/OneKey 的 `script_type + ignore_xpub_magic` 规则选择
+  `xpub/tpub/ypub/upub/zpub/vpub` 公钥版本字节。
 
 继续要求：
 
