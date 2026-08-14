@@ -228,10 +228,10 @@ main/
 
 仍未完成：
 
-- legacy P2PKH non-segwit sighash / scriptSig 序列化。
 - P2SH-P2WPKH 硬件 trezorlib 测试。
-- legacy/P2PKH signed raw tx 独立 oracle 和硬件 trezorlib 测试。
-- legacy/P2PKH 签名前必须增加 non-segwit digest oracle。
+- legacy/P2PKH 硬件 trezorlib 测试。
+- legacy/P2PKH 外部 P2PKH/base58 输出地址解析尚未开放；当前 legacy 输入可以发送到
+  已支持的 bech32 外部地址，或同账户 BIP44 change。
 
 4. P2SH-P2WPKH 已实验性开放。
    - P2SH-P2WPKH 继续使用 segwit v0/BIP143 sighash。
@@ -240,10 +240,15 @@ main/
    - 注入通道只存在于 host gate，不进入固件构建和 USB 协议。
    - legacy P2PKH 需要 non-segwit sighash 和 scriptSig 序列化，风险更高，排在后面。
 
-5. legacy P2PKH 后续再开放。
-   - 必须有 prev_tx verified amount/script。
-   - 必须有 signer digest oracle。
-   - 必须有 raw tx oracle。
+5. legacy P2PKH 已实验性开放。
+   - 仅支持 BIP44 P2PKH 输入，且必须完成 prev_tx verified amount/script 绑定。
+   - 使用 libwally `WALLY_SIGTYPE_PRE_SW` 生成 non-segwit sighash。
+   - raw tx 使用标准 P2PKH `scriptSig = <DER+SIGHASH_ALL> <compressed_pubkey>`，
+     不带 segwit marker/witness。
+   - Host gate 使用 `embit` 计算 legacy sighash、`ecdsa` 生成真实签名，再解析
+     设备返回 raw tx 并验签，避免本仓 C 代码自测自己。
+   - 注入签名只存在于 host gate；固件仍然只走 wallet_core digest 签名边界，
+     协议层/链层不读取 private key/seed/mnemonic。
 
 暂不做：
 
@@ -385,9 +390,9 @@ tools/
 1. P2SH-P2WPKH 硬件 trezorlib 测试
    - 覆盖真实 USB transport、本机确认 UI、真实 wallet_core 签名路径。
 
-2. legacy P2PKH 签名设计
-   - 先做 non-segwit sighash/raw tx oracle。
-   - 再考虑硬件签名入口。
+2. legacy/P2SH-P2WPKH 硬件 trezorlib 测试
+   - 覆盖真实 USB transport、本机确认 UI、真实 wallet_core 签名路径。
+   - legacy P2PKH 重点确认 raw tx 不带 witness、scriptSig 标准且主机可验签。
 
 ## 每次改动必须检查
 

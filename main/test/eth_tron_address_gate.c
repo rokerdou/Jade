@@ -1293,7 +1293,8 @@ int wally_tx_get_input_signature_hash(const struct wally_tx* tx, size_t index, c
     (void)cache;
     if (!tx || index >= tx->num_inputs || !script
         || (script_len != sizeof(EXPECTED_BTC_P2WPKH_SCRIPTPUBKEY) && script_len != WALLY_SCRIPTPUBKEY_P2PKH_LEN)
-        || sighash != 1 || flags != WALLY_SIGTYPE_SW_V0 || !bytes_out || len != sizeof(EXPECTED_BTC_TEST_DIGEST)) {
+        || sighash != 1 || (flags != WALLY_SIGTYPE_SW_V0 && flags != WALLY_SIGTYPE_PRE_SW) || !bytes_out
+        || len != sizeof(EXPECTED_BTC_TEST_DIGEST)) {
         return WALLY_EINVAL;
     }
     memcpy(bytes_out, EXPECTED_BTC_TEST_DIGEST, sizeof(EXPECTED_BTC_TEST_DIGEST));
@@ -1303,7 +1304,7 @@ int wally_tx_get_input_signature_hash(const struct wally_tx* tx, size_t index, c
 
 int wally_tx_to_bytes(const struct wally_tx* tx, uint32_t flags, unsigned char* bytes_out, size_t len, size_t* written)
 {
-    if (!tx || flags != WALLY_TX_FLAG_USE_WITNESS || !bytes_out || !written || tx->num_inputs == 0
+    if (!tx || (flags != WALLY_TX_FLAG_USE_WITNESS && flags != 0) || !bytes_out || !written || tx->num_inputs == 0
         || tx->num_outputs == 0) {
         return WALLY_EINVAL;
     }
@@ -1348,8 +1349,10 @@ int wally_tx_to_bytes(const struct wally_tx* tx, uint32_t flags, unsigned char* 
     } while (false)
 
     WRITE_U32_LE(tx->version);
-    WRITE_BYTE(0);
-    WRITE_BYTE(1);
+    if (flags == WALLY_TX_FLAG_USE_WITNESS) {
+        WRITE_BYTE(0);
+        WRITE_BYTE(1);
+    }
     WRITE_COMPACT(tx->num_inputs);
     for (size_t i = 0; i < tx->num_inputs; ++i) {
         const struct wally_tx_input* const input = &tx->inputs[i];
@@ -1368,15 +1371,17 @@ int wally_tx_to_bytes(const struct wally_tx* tx, uint32_t flags, unsigned char* 
         WRITE_COMPACT(output->script_len);
         WRITE_BYTES(output->script, output->script_len);
     }
-    for (size_t i = 0; i < tx->num_inputs; ++i) {
-        const struct wally_tx_witness_stack* const witness = tx->inputs[i].witness;
-        if (!witness || witness->num_items == 0) {
-            return WALLY_EINVAL;
-        }
-        WRITE_COMPACT(witness->num_items);
-        for (size_t j = 0; j < witness->num_items; ++j) {
-            WRITE_COMPACT(witness->items[j].witness_len);
-            WRITE_BYTES(witness->items[j].witness, witness->items[j].witness_len);
+    if (flags == WALLY_TX_FLAG_USE_WITNESS) {
+        for (size_t i = 0; i < tx->num_inputs; ++i) {
+            const struct wally_tx_witness_stack* const witness = tx->inputs[i].witness;
+            if (!witness || witness->num_items == 0) {
+                return WALLY_EINVAL;
+            }
+            WRITE_COMPACT(witness->num_items);
+            for (size_t j = 0; j < witness->num_items; ++j) {
+                WRITE_COMPACT(witness->items[j].witness_len);
+                WRITE_BYTES(witness->items[j].witness, witness->items[j].witness_len);
+            }
         }
     }
     WRITE_U32_LE(tx->locktime);
