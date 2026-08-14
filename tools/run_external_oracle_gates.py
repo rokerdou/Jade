@@ -638,6 +638,18 @@ def btc_tx_output_address_mainnet() -> str:
     return "bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4"
 
 
+def btc_tx_p2pkh_address_testnet() -> str:
+    return base58.b58encode_check(b"\x6f" + hash160(BTC_TEST_COMPRESSED_PUBKEY)).decode()
+
+
+def btc_tx_p2pkh_address_mainnet() -> str:
+    return base58.b58encode_check(b"\x00" + hash160(BTC_TEST_COMPRESSED_PUBKEY)).decode()
+
+
+def btc_tx_p2sh_p2wpkh_address_testnet() -> str:
+    return base58.b58encode_check(b"\xc4" + hash160(btc_p2wpkh_script_pubkey())).decode()
+
+
 def btc_embit_public_key():
     from embit import ec
 
@@ -1059,7 +1071,9 @@ def check_embit_btc_signed_tx_oracle(
             raise AssertionError(f"BTC output {index} scriptPubKey mismatch: {txout.script_pubkey.data.hex()}")
 
 
-def check_embit_btc_p2sh_p2wpkh_signed_tx_oracle(raw_tx: bytes, *, prev_txid: bytes, amount: int) -> None:
+def check_embit_btc_p2sh_p2wpkh_signed_tx_oracle(
+    raw_tx: bytes, *, prev_txid: bytes, amount: int, expected_output_script: bytes | None = None
+) -> None:
     from embit import script
     from embit.transaction import Transaction
 
@@ -1092,11 +1106,13 @@ def check_embit_btc_p2sh_p2wpkh_signed_tx_oracle(raw_tx: bytes, *, prev_txid: by
     txout = tx.vout[0]
     if txout.value != 90_000:
         raise AssertionError(f"P2SH-P2WPKH output amount mismatch: {txout.value}")
-    if txout.script_pubkey.data != btc_p2wpkh_script_pubkey():
+    if txout.script_pubkey.data != (expected_output_script or btc_p2wpkh_script_pubkey()):
         raise AssertionError(f"P2SH-P2WPKH output script mismatch: {txout.script_pubkey.data.hex()}")
 
 
-def check_embit_btc_p2pkh_signed_tx_oracle(raw_tx: bytes, *, prev_txid: bytes) -> None:
+def check_embit_btc_p2pkh_signed_tx_oracle(
+    raw_tx: bytes, *, prev_txid: bytes, expected_output_script: bytes | None = None
+) -> None:
     from embit import script
     from embit.transaction import Transaction
 
@@ -1137,7 +1153,7 @@ def check_embit_btc_p2pkh_signed_tx_oracle(raw_tx: bytes, *, prev_txid: bytes) -
     txout = tx.vout[0]
     if txout.value != 90_000:
         raise AssertionError(f"P2PKH output amount mismatch: {txout.value}")
-    if txout.script_pubkey.data != btc_p2wpkh_script_pubkey():
+    if txout.script_pubkey.data != (expected_output_script or btc_p2wpkh_script_pubkey()):
         raise AssertionError(f"P2PKH output script mismatch: {txout.script_pubkey.data.hex()}")
 
 
@@ -1413,6 +1429,71 @@ def check_local_btc_signtx_wire_script_oracle(gate: Path) -> None:
         prev_txid=legacy_prev_txid[::-1],
     )
 
+    legacy_base58_output = btc_tx_output_external(amount=90_000, address=btc_tx_p2pkh_address_testnet())
+    legacy_base58_unsigned_tx = Transaction(
+        version=2,
+        vin=[TransactionInput(legacy_prev_txid[::-1], 0)],
+        vout=[TransactionOutput(90_000, script.Script(btc_p2pkh_script_pubkey()))],
+        locktime=0,
+    )
+    legacy_base58_digest = legacy_base58_unsigned_tx.sighash_legacy(
+        0, script.Script(btc_p2pkh_script_pubkey()), sighash=1
+    )
+    legacy_base58_responses = run_local_wire_script(
+        gate,
+        [
+            (
+                messages.MessageType.SignTx,
+                messages.SignTx(coin_name="Testnet", inputs_count=1, outputs_count=1, version=2, lock_time=0),
+            ),
+            (messages.MessageType.TxAck, btc_tx_ack_meta(1, 1)),
+            (messages.MessageType.TxAck, btc_tx_ack_input(legacy_input)),
+            (messages.MessageType.TxAck, btc_tx_ack_output(legacy_base58_output)),
+            (messages.MessageType.TxAck, btc_tx_ack_meta(1, 2)),
+            (messages.MessageType.TxAck, btc_tx_ack_prev_input()),
+            (messages.MessageType.TxAck, btc_tx_ack_prev_output(100_000, legacy_script_pubkey)),
+            (messages.MessageType.TxAck, btc_tx_ack_prev_output(1_000)),
+        ],
+        btc_compact_signatures=[btc_sign_digest_compact(legacy_base58_digest)],
+    )
+    legacy_base58_final = assert_btc_tx_request(
+        legacy_base58_responses[-1],
+        messages.RequestType.TXFINISHED,
+        signature_index=0,
+        expect_serialized_tx=True,
+    )
+    check_embit_btc_p2pkh_signed_tx_oracle(
+        legacy_base58_final.serialized.serialized_tx,
+        prev_txid=legacy_prev_txid[::-1],
+        expected_output_script=btc_p2pkh_script_pubkey(),
+    )
+
+    wrong_network_base58_responses = run_local_wire_script(
+        gate,
+        [
+            (
+                messages.MessageType.SignTx,
+                messages.SignTx(coin_name="Testnet", inputs_count=1, outputs_count=1, version=2, lock_time=0),
+            ),
+            (messages.MessageType.TxAck, btc_tx_ack_meta(1, 1)),
+            (messages.MessageType.TxAck, btc_tx_ack_input(legacy_input)),
+            (
+                messages.MessageType.TxAck,
+                btc_tx_ack_output(btc_tx_output_external(amount=90_000, address=btc_tx_p2pkh_address_mainnet())),
+            ),
+            (messages.MessageType.TxAck, btc_tx_ack_meta(1, 2)),
+            (messages.MessageType.TxAck, btc_tx_ack_prev_input()),
+            (messages.MessageType.TxAck, btc_tx_ack_prev_output(100_000, legacy_script_pubkey)),
+            (messages.MessageType.TxAck, btc_tx_ack_prev_output(1_000)),
+        ],
+        btc_compact_signatures=[btc_sign_digest_compact(legacy_base58_digest)],
+    )
+    assert_btc_failure(
+        wrong_network_base58_responses[-1],
+        messages.FailureType.DataError,
+        "BTC wrong-network base58 output",
+    )
+
     legacy_mismatch_prev_txid = btc_prev_txid_for_single_input_two_outputs(
         prevout0_script_pubkey=btc_p2wpkh_script_pubkey()
     )
@@ -1587,6 +1668,46 @@ def check_local_btc_signtx_wire_script_oracle(gate: Path) -> None:
         p2sh_final.serialized.serialized_tx,
         prev_txid=p2sh_true_sig_prev_txid[::-1],
         amount=100_000,
+    )
+
+    p2sh_base58_output = btc_tx_output_external(amount=90_000, address=btc_tx_p2sh_p2wpkh_address_testnet())
+    p2sh_base58_unsigned_tx = Transaction(
+        version=2,
+        vin=[TransactionInput(p2sh_true_sig_prev_txid[::-1], 0)],
+        vout=[TransactionOutput(90_000, script.Script(btc_p2sh_p2wpkh_script_pubkey()))],
+        locktime=0,
+    )
+    p2sh_base58_digest = p2sh_base58_unsigned_tx.sighash_segwit(
+        0, script.Script(btc_p2pkh_script_code()), 100_000, sighash=1
+    )
+    p2sh_base58_responses = run_local_wire_script(
+        gate,
+        [
+            (
+                messages.MessageType.SignTx,
+                messages.SignTx(coin_name="Testnet", inputs_count=1, outputs_count=1, version=2, lock_time=0),
+            ),
+            (messages.MessageType.TxAck, btc_tx_ack_meta(1, 1)),
+            (messages.MessageType.TxAck, btc_tx_ack_input(p2sh_true_sig_input)),
+            (messages.MessageType.TxAck, btc_tx_ack_output(p2sh_base58_output)),
+            (messages.MessageType.TxAck, btc_tx_ack_meta(1, 2)),
+            (messages.MessageType.TxAck, btc_tx_ack_prev_input(script_sig=b"\x53")),
+            (messages.MessageType.TxAck, btc_tx_ack_prev_output(100_000, btc_p2sh_p2wpkh_script_pubkey())),
+            (messages.MessageType.TxAck, btc_tx_ack_prev_output(1_000)),
+        ],
+        btc_compact_signatures=[btc_sign_digest_compact(p2sh_base58_digest)],
+    )
+    p2sh_base58_final = assert_btc_tx_request(
+        p2sh_base58_responses[-1],
+        messages.RequestType.TXFINISHED,
+        signature_index=0,
+        expect_serialized_tx=True,
+    )
+    check_embit_btc_p2sh_p2wpkh_signed_tx_oracle(
+        p2sh_base58_final.serialized.serialized_tx,
+        prev_txid=p2sh_true_sig_prev_txid[::-1],
+        amount=100_000,
+        expected_output_script=btc_p2sh_p2wpkh_script_pubkey(),
     )
 
 

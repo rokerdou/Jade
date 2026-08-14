@@ -1019,6 +1019,44 @@ int wally_addr_segwit_to_bytes(
     return WALLY_OK;
 }
 
+int wally_address_to_scriptpubkey(
+    const char* addr, uint32_t network, unsigned char* bytes_out, size_t len, size_t* written)
+{
+    const bool ok_testnet_p2pkh = addr && strcmp(addr, "mrCDrCybB6J1vRfbwM5hemdJz73FwDBC8r") == 0
+        && network == WALLY_NETWORK_BITCOIN_TESTNET;
+    const bool ok_mainnet_p2pkh = addr && strcmp(addr, "1BgGZ9tcN4rm9KBzDn7KprQz87SZ26SAMH") == 0
+        && network == WALLY_NETWORK_BITCOIN_MAINNET;
+    const bool ok_testnet_p2sh = addr && strcmp(addr, "2NAUYAHhujozruyzpsFRP63mbrdaU5wnEpN") == 0
+        && network == WALLY_NETWORK_BITCOIN_TESTNET;
+    const bool ok_mainnet_p2sh = addr && strcmp(addr, "3JvL6Ymt8MVWiCNHC7oWU6nLeHNJKLZGLN") == 0
+        && network == WALLY_NETWORK_BITCOIN_MAINNET;
+    if (!bytes_out || !written
+        || ((ok_testnet_p2pkh || ok_mainnet_p2pkh) && len < WALLY_SCRIPTPUBKEY_P2PKH_LEN)
+        || ((ok_testnet_p2sh || ok_mainnet_p2sh) && len < WALLY_SCRIPTPUBKEY_P2SH_LEN)) {
+        return WALLY_EINVAL;
+    }
+
+    if (ok_testnet_p2pkh || ok_mainnet_p2pkh) {
+        bytes_out[0] = 0x76;
+        bytes_out[1] = 0xa9;
+        bytes_out[2] = HASH160_LEN;
+        memcpy(bytes_out + 3, EXPECTED_BTC_TESTNET_HASH160, sizeof(EXPECTED_BTC_TESTNET_HASH160));
+        bytes_out[3 + HASH160_LEN] = 0x88;
+        bytes_out[4 + HASH160_LEN] = 0xac;
+        *written = WALLY_SCRIPTPUBKEY_P2PKH_LEN;
+        return WALLY_OK;
+    }
+    if (ok_testnet_p2sh || ok_mainnet_p2sh) {
+        bytes_out[0] = 0xa9;
+        bytes_out[1] = HASH160_LEN;
+        memcpy(bytes_out + 2, EXPECTED_BTC_P2SH_P2WPKH_HASH160, sizeof(EXPECTED_BTC_P2SH_P2WPKH_HASH160));
+        bytes_out[2 + HASH160_LEN] = 0x87;
+        *written = WALLY_SCRIPTPUBKEY_P2SH_LEN;
+        return WALLY_OK;
+    }
+    return WALLY_EINVAL;
+}
+
 int wally_witness_program_from_bytes(const unsigned char* bytes, size_t bytes_len, uint32_t flags,
     unsigned char* bytes_out, size_t len, size_t* written)
 {
@@ -3618,7 +3656,7 @@ int main(int argc, char** argv)
     CHECK(strcmp(g_last_trezor_btc_confirm_request.to, "tb1qw508d6qejxtdg4y5r3zarvary0c5xw7kxpjzsx") == 0);
     CHECK(g_last_trezor_btc_confirm_request.amount == 90000);
     CHECK(g_last_trezor_btc_confirm_request.fee == 10000);
-    CHECK(g_last_trezor_btc_confirm_request.fee_rate_sats_per_vbyte == 91);
+    CHECK(g_last_trezor_btc_confirm_request.fee_rate_sats_per_vbyte == 89);
     CHECK(g_last_ui_summary.chain == CHAIN_CONFIRM_CHAIN_BITCOIN);
     CHECK(g_last_ui_summary.operation == CHAIN_CONFIRM_OPERATION_NATIVE_TRANSFER);
     CHECK(chain_confirm_summary_has_field(&g_last_ui_summary, CHAIN_CONFIRM_FIELD_PATH));
@@ -3637,7 +3675,7 @@ int main(int argc, char** argv)
     const chain_confirm_field_t* const btc_fee_rate
         = find_confirm_field(&g_last_ui_summary, CHAIN_CONFIRM_FIELD_FEE_RATE);
     CHECK(btc_fee_rate && btc_fee_rate->value_type == CHAIN_CONFIRM_VALUE_TEXT);
-    CHECK(strcmp(btc_fee_rate->value.text, "91 sat/vB") == 0);
+    CHECK(strcmp(btc_fee_rate->value.text, "89 sat/vB") == 0);
     CHECK(test_confirm_summary_fits_tdisplay_s3(&g_last_ui_summary));
     CHECK(trezor_btc_tx_request_has_signed_serialized_payload(session_response_payload, session_response_payload_len));
 

@@ -129,7 +129,8 @@ bool trezor_bitcoin_policy_estimate_basic_fee_rate(trezor_bitcoin_signing_state_
     }
     const bool testnet = trezor_bitcoin_coin_is_testnet(coin);
     for (size_t i = 0; i < state->outputs_len; ++i) {
-        uint64_t output_vbytes = TREZOR_BITCOIN_P2WPKH_OUTPUT_VBYTES;
+        uint64_t output_vbytes = state->outputs[i].has_address ? TREZOR_BITCOIN_P2PKH_OUTPUT_VBYTES
+                                                                : TREZOR_BITCOIN_P2WPKH_OUTPUT_VBYTES;
         if (!state->outputs[i].has_address) {
             if (input_script_type == BITCOIN_P2PKH_SPENDADDRESS
                 && bitcoin_path_is_p2pkh_change(

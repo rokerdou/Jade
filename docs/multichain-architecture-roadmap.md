@@ -230,15 +230,14 @@ main/
 
 - P2SH-P2WPKH 硬件 trezorlib 测试。
 - legacy/P2PKH 硬件 trezorlib 测试。
-- legacy/P2PKH 外部 P2PKH/base58 输出地址解析尚未开放；当前 legacy 输入可以发送到
-  已支持的 bech32 外部地址，或同账户 BIP44 change。
+- legacy/P2PKH 硬件 trezorlib 测试。
 
 4. P2SH-P2WPKH 已实验性开放。
    - P2SH-P2WPKH 继续使用 segwit v0/BIP143 sighash。
    - Host gate 增加测试签名注入：Python 用 `embit` 计算 sighash、`ecdsa`
      真实签名，C gate 组 raw tx，再由 Python 解析 scriptSig/witness 并验签。
    - 注入通道只存在于 host gate，不进入固件构建和 USB 协议。
-   - legacy P2PKH 需要 non-segwit sighash 和 scriptSig 序列化，风险更高，排在后面。
+   - base58 外部输出由统一 output script 解析器处理，不在 P2SH 签名路径里手写解析。
 
 5. legacy P2PKH 已实验性开放。
    - 仅支持 BIP44 P2PKH 输入，且必须完成 prev_tx verified amount/script 绑定。
@@ -249,6 +248,14 @@ main/
      设备返回 raw tx 并验签，避免本仓 C 代码自测自己。
    - 注入签名只存在于 host gate；固件仍然只走 wallet_core digest 签名边界，
      协议层/链层不读取 private key/seed/mnemonic。
+
+6. legacy/base58 外部输出地址解析已实验性开放。
+   - 支持主网/testnet P2PKH 和 P2SH base58check 地址输出。
+   - 固件侧优先尝试 bech32，再调用 libwally `wally_address_to_scriptpubkey()` 解析 base58。
+   - 确认 UI 之前会先验证 output script，错误网络/畸形地址不会进入签名确认摘要。
+   - Host gate 使用 `base58` 生成地址、`embit.script` 生成期望 scriptPubKey，并验证
+     signed raw tx 的输出脚本完全一致。
+   - 已覆盖 testnet 交易发送到 mainnet base58 地址必须拒绝。
 
 暂不做：
 

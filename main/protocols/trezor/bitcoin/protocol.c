@@ -14,6 +14,14 @@
 
 #define TREZOR_BITCOIN_SIGHASH_ALL 1U
 
+static uint32_t trezor_bitcoin_coin_wally_network(const trezor_bitcoin_coin_t coin)
+{
+    return trezor_bitcoin_coin_is_testnet(coin) ? WALLY_NETWORK_BITCOIN_TESTNET : WALLY_NETWORK_BITCOIN_MAINNET;
+}
+
+static bool trezor_bitcoin_output_script(const trezor_bitcoin_tx_output_t* output, trezor_bitcoin_coin_t coin,
+    uint8_t* script, size_t script_len, size_t* written);
+
 static bool trezor_bitcoin_add_u64(uint64_t* const total, const uint64_t value)
 {
     if (!total || value > UINT64_MAX - *total) {
@@ -35,9 +43,25 @@ bool trezor_bitcoin_signing_to_confirm_request(
     request->path_len = state->inputs[0].address_n_len;
     memcpy(request->path, state->inputs[0].address_n, request->path_len * sizeof(request->path[0]));
 
+    trezor_bitcoin_coin_t coin = TREZOR_BITCOIN_COIN_MAINNET;
+    if (!trezor_bitcoin_policy_signing_coin(state, &coin)) {
+        wally_bzero(request, sizeof(*request));
+        return false;
+    }
+
     size_t external_outputs = 0;
     for (size_t i = 0; i < state->outputs_len; ++i) {
         const trezor_bitcoin_tx_output_t* const output = &state->outputs[i];
+        uint8_t validated_script[WALLY_SEGWIT_ADDRESS_PUBKEY_MAX_LEN];
+        size_t validated_script_len = 0;
+        wally_bzero(validated_script, sizeof(validated_script));
+        const bool valid_output = trezor_bitcoin_output_script(
+            output, coin, validated_script, sizeof(validated_script), &validated_script_len);
+        wally_bzero(validated_script, sizeof(validated_script));
+        if (!valid_output) {
+            wally_bzero(request, sizeof(*request));
+            return false;
+        }
         if (output->has_address) {
             ++external_outputs;
             if (external_outputs == 1) {
@@ -206,12 +230,20 @@ static bool trezor_bitcoin_output_script(const trezor_bitcoin_tx_output_t* const
     if (!output || !script || !written) {
         return false;
     }
+    *written = 0;
 
     if (output->has_address) {
-        return wally_addr_segwit_to_bytes(output->address, trezor_bitcoin_coin_segwit_hrp(coin), 0, script,
-                   script_len, written)
+        if (wally_addr_segwit_to_bytes(output->address, trezor_bitcoin_coin_segwit_hrp(coin), 0, script,
+                script_len, written)
+                == WALLY_OK
+            && *written > 0) {
+            return true;
+        }
+        *written = 0;
+        return wally_address_to_scriptpubkey(
+                   output->address, trezor_bitcoin_coin_wally_network(coin), script, script_len, written)
             == WALLY_OK
-            && *written > 0;
+            && (*written == WALLY_SCRIPTPUBKEY_P2PKH_LEN || *written == WALLY_SCRIPTPUBKEY_P2SH_LEN);
     }
 
     wallet_core_path_t path;
