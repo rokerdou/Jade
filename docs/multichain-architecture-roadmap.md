@@ -190,7 +190,8 @@ main/
 
 2. `bitcoin/signing_state.c/h` 后续完善
    - 已有 prev_tx request/ack collect/verify host harness。
-   - 下一步补 scriptPubKey 与派生路径/脚本类型绑定，再考虑开放 P2SH-P2WPKH 签名。
+   - 已补 scriptPubKey 与派生路径/脚本类型绑定。下一步在真实签名 oracle 建好后，
+     再考虑开放 P2SH-P2WPKH 签名。
 
 门禁：
 
@@ -216,18 +217,28 @@ main/
    - 当前 input.prev_index 必须从 verified prevout 取 amount/script_pubkey。
    - 对 legacy/P2SH，禁止继续信任主机在 current input 里给的 amount。
 
+3. 接入 `script_policy` 到 prev_tx finish 流程。已完成基础版本：
+   - P2PKH：`address_n/script_type` 必须生成与 verified prevout 相同的
+     `OP_DUP OP_HASH160 <pubKeyHash> OP_EQUALVERIFY OP_CHECKSIG`。
+   - P2WPKH：支持标准 `0 <pubKeyHash>` 模板校验。
+   - P2SH-P2WPKH：必须先由 `address_n` 生成 `0 <pubKeyHash>` redeem script，
+     再 hash160 后匹配 verified prevout 的 `OP_HASH160 <redeemHash> OP_EQUAL`。
+   - 超长、未知、非标准、路径不匹配脚本全部拒绝。
+   - Host oracle 使用 `embit.script` 生成脚本向量，避免本仓 C 代码自测自己。
+
 仍未完成：
 
-- scriptPubKey 与 address_n/script_type 的绑定校验。
-- P2SH-P2WPKH redeem script 与 prevout scriptPubKey 绑定。
 - legacy P2PKH non-segwit sighash / scriptSig 序列化。
-- legacy/P2SH signed raw tx 独立 oracle 和硬件 trezorlib 测试。
+- P2SH-P2WPKH signed raw tx 独立 oracle 和硬件 trezorlib 测试。
+- legacy/P2PKH signed raw tx 独立 oracle 和硬件 trezorlib 测试。
+- Host gate 目前 BTC 签名仍使用 fake signature，只能验证 raw tx 结构；开放
+  legacy/P2SH 签名前必须增加真实签名/digest oracle。
 
-3. P2SH-P2WPKH 优先于 legacy P2PKH。
+4. P2SH-P2WPKH 优先于 legacy P2PKH。
    - P2SH-P2WPKH 可以继续使用 segwit v0 sighash，但 prevout script/redeem script 绑定更严格。
    - legacy P2PKH 需要 non-segwit sighash 和 scriptSig 序列化，风险更高，排在后面。
 
-4. legacy P2PKH 后续再开放。
+5. legacy P2PKH 后续再开放。
    - 必须有 prev_tx verified amount/script。
    - 必须有 signer digest oracle。
    - 必须有 raw tx oracle。
@@ -369,9 +380,9 @@ tools/
 
 建议接下来按这个顺序推进：
 
-1. BTC prev_tx script policy 绑定
-   - 把 verified prevout scriptPubKey 与 input path/script_type 绑定。
-   - 继续拒绝不匹配、不认识、过长或非标准脚本。
+1. BTC 真实签名/digest oracle
+   - 当前 host gate 的 BTC wallet 签名是 fake signature，不能证明 ECDSA 有效。
+   - 需要建立不泄漏固件私钥的本机 oracle：用第三方库对同一 digest/交易语义签名或验签。
 
 2. P2SH-P2WPKH 签名实验性接入
    - 只在 prev_tx verified 后允许。

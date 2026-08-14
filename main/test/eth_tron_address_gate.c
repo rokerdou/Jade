@@ -22,6 +22,7 @@
 #include "protocols/trezor/bitcoin/prev_tx_verifier.h"
 #include "protocols/trezor/bitcoin/protocol.h"
 #include "protocols/trezor/bitcoin/requests.h"
+#include "protocols/trezor/bitcoin/script_policy.h"
 #include "protocols/trezor/bitcoin/signing_state.h"
 #include "protocols/trezor/dispatcher.h"
 #include "protocols/trezor/ethereum/protocol.h"
@@ -1819,6 +1820,7 @@ int main(int argc, char** argv)
     CHECK(bitcoin_path_is_testnet_p2pkh_account_public_node(btc_account_path, ARRAY_LEN(btc_account_path)));
     CHECK(!bitcoin_path_is_testnet_p2pkh_account_public_node(btc_state_path, ARRAY_LEN(btc_state_path)));
     CHECK(!bitcoin_path_is_testnet_p2pkh_account_public_node(btc_wrong_coin, 3));
+    CHECK(bitcoin_path_is_p2pkh_signing(btc_state_path, ARRAY_LEN(btc_state_path), true));
     CHECK(bitcoin_path_is_testnet_p2wpkh_signing(btc_signing_path, ARRAY_LEN(btc_signing_path)));
     CHECK(bitcoin_path_is_p2wpkh_signing(
         btc_mainnet_signing_path, ARRAY_LEN(btc_mainnet_signing_path), false));
@@ -1861,6 +1863,29 @@ int main(int argc, char** argv)
     CHECK(bitcoin_wallet_p2sh_p2wpkh_testnet_address_from_path(&btc_wallet_path, btc_address, sizeof(btc_address)));
     CHECK(strcmp(btc_address, "2NAUYAHhujozruyzpsFRP63mbrdaU5wnEpN") == 0);
     memset(&btc_wallet_path, 0, sizeof(btc_wallet_path));
+
+    trezor_bitcoin_tx_input_t script_policy_input;
+    memset(&script_policy_input, 0, sizeof(script_policy_input));
+    script_policy_input.address_n_len = ARRAY_LEN(btc_state_path);
+    memcpy(script_policy_input.address_n, btc_state_path, sizeof(btc_state_path));
+    script_policy_input.script_type = BITCOIN_P2PKH_SPENDADDRESS;
+    const uint8_t btc_p2pkh_script[] = { 0x76, 0xa9, 0x14, 0x75, 0x1e, 0x76, 0xe8, 0x19, 0x91, 0x96, 0xd4,
+        0x54, 0x94, 0x1c, 0x45, 0xd1, 0xb3, 0xa3, 0x23, 0xf1, 0x43, 0x3b, 0xd6, 0x88, 0xac };
+    CHECK(trezor_bitcoin_script_policy_prevout_matches_input(&script_policy_input, TREZOR_BITCOIN_COIN_TESTNET,
+        btc_p2pkh_script, sizeof(btc_p2pkh_script)));
+    CHECK(!trezor_bitcoin_script_policy_prevout_matches_input(&script_policy_input, TREZOR_BITCOIN_COIN_TESTNET,
+        EXPECTED_BTC_P2WPKH_SCRIPTPUBKEY, sizeof(EXPECTED_BTC_P2WPKH_SCRIPTPUBKEY)));
+    memset(&script_policy_input, 0, sizeof(script_policy_input));
+    script_policy_input.address_n_len = ARRAY_LEN(btc_p2sh_p2wpkh_path);
+    memcpy(script_policy_input.address_n, btc_p2sh_p2wpkh_path, sizeof(btc_p2sh_p2wpkh_path));
+    script_policy_input.script_type = BITCOIN_P2SH_P2WPKH_SPENDP2SHWITNESS;
+    const uint8_t btc_p2sh_p2wpkh_script[] = { 0xa9, 0x14, 0xbc, 0xfe, 0xb7, 0x28, 0xb5, 0x84, 0x25,
+        0x3d, 0x5f, 0x3f, 0x70, 0xbc, 0xb7, 0x80, 0xe9, 0xef, 0x21, 0x8a, 0x68, 0xf4, 0x87 };
+    CHECK(trezor_bitcoin_script_policy_prevout_matches_input(&script_policy_input, TREZOR_BITCOIN_COIN_TESTNET,
+        btc_p2sh_p2wpkh_script, sizeof(btc_p2sh_p2wpkh_script)));
+    CHECK(!trezor_bitcoin_script_policy_prevout_matches_input(&script_policy_input, TREZOR_BITCOIN_COIN_TESTNET,
+        EXPECTED_BTC_P2WPKH_SCRIPTPUBKEY, sizeof(EXPECTED_BTC_P2WPKH_SCRIPTPUBKEY)));
+    memset(&script_policy_input, 0, sizeof(script_policy_input));
 
     const uint32_t tron_external[] = { chain_path_harden(44), chain_path_harden(195), chain_path_harden(0), 0, 0 };
     const uint32_t tron_change[] = { chain_path_harden(44), chain_path_harden(195), chain_path_harden(0), 1, 0 };

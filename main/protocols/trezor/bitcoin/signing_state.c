@@ -5,9 +5,11 @@
 #include "policy.h"
 #include "prev_tx_verifier.h"
 #include "requests.h"
+#include "script_policy.h"
 
 #include "../../../chains/bitcoin/path.h"
 
+#include <string.h>
 #include <wally_crypto.h>
 
 void trezor_bitcoin_signing_reset(trezor_bitcoin_signing_state_t* const state)
@@ -196,8 +198,18 @@ bool trezor_bitcoin_signing_apply_tx_ack(
             return false;
         }
         trezor_bitcoin_tx_input_t* const input = &state->inputs[state->prev_tx_input_index];
+        trezor_bitcoin_coin_t coin = TREZOR_BITCOIN_COIN_MAINNET;
+        if (!trezor_bitcoin_policy_signing_coin(state, &coin)
+            || !trezor_bitcoin_script_policy_prevout_matches_input(input, coin, script_pubkey, script_pubkey_len)
+            || script_pubkey_len > sizeof(input->verified_prevout_script)) {
+            wally_bzero(script_pubkey, sizeof(script_pubkey));
+            return false;
+        }
         input->amount = amount;
         input->has_amount = true;
+        memcpy(input->verified_prevout_script, script_pubkey, script_pubkey_len);
+        input->verified_prevout_script_len = script_pubkey_len;
+        input->has_verified_prevout_script = true;
         ++state->prev_tx_input_index;
         wally_bzero(script_pubkey, sizeof(script_pubkey));
         return trezor_bitcoin_signing_start_next_prev_tx(state);

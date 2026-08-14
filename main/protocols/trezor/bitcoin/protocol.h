@@ -16,6 +16,7 @@
 #define TREZOR_BITCOIN_SIGNATURE_MAX_LEN (EC_SIGNATURE_DER_MAX_LEN + 1U)
 #define TREZOR_BITCOIN_SIGNED_TX_MAX_LEN 1800
 #define TREZOR_BITCOIN_PREV_SCRIPT_MAX_LEN 520
+#define TREZOR_BITCOIN_STANDARD_PREVOUT_SCRIPT_MAX_LEN 34
 
 struct wally_tx;
 
@@ -70,6 +71,9 @@ typedef struct {
     uint32_t script_type;
     bool has_amount;
     uint64_t amount;
+    bool has_verified_prevout_script;
+    uint8_t verified_prevout_script[TREZOR_BITCOIN_STANDARD_PREVOUT_SCRIPT_MAX_LEN];
+    size_t verified_prevout_script_len;
 } trezor_bitcoin_tx_input_t;
 
 typedef struct {
