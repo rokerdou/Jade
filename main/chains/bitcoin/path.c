@@ -41,6 +41,30 @@ bool bitcoin_path_is_p2sh_p2wpkh_account_public_node(
     return bitcoin_path_is_account_public_node(path, path_len, 49, testnet);
 }
 
+bool bitcoin_path_is_legacy_multisig_account_public_node(const uint32_t* const path, const size_t path_len)
+{
+    return path && path_len == 1 && path[0] == chain_path_harden(45);
+}
+
+static bool bitcoin_path_is_bip48_account_public_node(
+    const uint32_t* const path, const size_t path_len, const bool testnet, const uint32_t script_type)
+{
+    const uint32_t slip44 = testnet ? BITCOIN_TESTNET_SLIP44 : BITCOIN_MAINNET_SLIP44;
+    return path && path_len == 4 && path[0] == chain_path_harden(48) && path[1] == chain_path_harden(slip44)
+        && (path[2] & 0x80000000U) != 0 && path[3] == chain_path_harden(script_type);
+}
+
+bool bitcoin_path_is_p2sh_p2wsh_account_public_node(
+    const uint32_t* const path, const size_t path_len, const bool testnet)
+{
+    return bitcoin_path_is_bip48_account_public_node(path, path_len, testnet, 1);
+}
+
+bool bitcoin_path_is_p2wsh_account_public_node(const uint32_t* const path, const size_t path_len, const bool testnet)
+{
+    return bitcoin_path_is_bip48_account_public_node(path, path_len, testnet, 2);
+}
+
 bool bitcoin_path_is_testnet_p2wpkh_signing(const uint32_t* const path, const size_t path_len)
 {
     return bitcoin_path_is_p2wpkh_signing(path, path_len, true);

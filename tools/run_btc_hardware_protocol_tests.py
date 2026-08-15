@@ -29,12 +29,14 @@ if HOST_ORACLE_SITE_PACKAGES.exists():
 
 from embit import bip32, ec, networks, script
 from embit.transaction import Transaction, TransactionInput, TransactionOutput
+import base58
 
 
 HARDENED = 0x80000000
 P2WPKH_SCRIPT_TYPE = messages.InputScriptType.SPENDWITNESS
 P2PKH_SCRIPT_TYPE = messages.InputScriptType.SPENDADDRESS
 P2SH_P2WPKH_SCRIPT_TYPE = messages.InputScriptType.SPENDP2SHWITNESS
+MULTISIG_SCRIPT_TYPE = messages.InputScriptType.SPENDMULTISIG
 PAYTOADDRESS = messages.OutputScriptType.PAYTOADDRESS
 
 
@@ -71,6 +73,15 @@ def account_path_for_script(script_type: messages.InputScriptType, *, testnet: b
     if script_type == P2WPKH_SCRIPT_TYPE:
         return [h(84), h(coin_type), h(account)]
     raise ValueError(f"unsupported account script type: {script_type}")
+
+
+def bip45_multisig_account_path() -> list[int]:
+    return [h(45)]
+
+
+def bip48_multisig_account_path(*, testnet: bool, account: int = 0, script_flag: int) -> list[int]:
+    coin_type = 1 if testnet else 0
+    return [h(48), h(coin_type), h(account), h(script_flag)]
 
 
 @dataclass(frozen=True)
@@ -229,6 +240,58 @@ def test_account_xpubs(session: Any) -> None:
                 request_script_type=request_script_type,
             )
             print(f"  PASS {coin_name}/{enum_name(script_type)} {mode} account xpub={xpub[:8]}...", flush=True)
+
+    print("RUN BTC multisig xpub-only import paths", flush=True)
+    multisig_cases = [
+        ("Testnet", bip45_multisig_account_path(), P2PKH_SCRIPT_TYPE, "tpub", bytes.fromhex("043587cf")),
+        ("Bitcoin", bip45_multisig_account_path(), MULTISIG_SCRIPT_TYPE, "xpub", bytes.fromhex("0488b21e")),
+        (
+            "Testnet",
+            bip48_multisig_account_path(testnet=True, script_flag=1),
+            P2PKH_SCRIPT_TYPE,
+            "Upub",
+            bytes.fromhex("024289ef"),
+        ),
+        (
+            "Bitcoin",
+            bip48_multisig_account_path(testnet=False, script_flag=1),
+            MULTISIG_SCRIPT_TYPE,
+            "Ypub",
+            bytes.fromhex("0295b43f"),
+        ),
+        (
+            "Testnet",
+            bip48_multisig_account_path(testnet=True, script_flag=2),
+            P2PKH_SCRIPT_TYPE,
+            "Vpub",
+            bytes.fromhex("02575483"),
+        ),
+        (
+            "Bitcoin",
+            bip48_multisig_account_path(testnet=False, script_flag=2),
+            MULTISIG_SCRIPT_TYPE,
+            "Zpub",
+            bytes.fromhex("02aa7ed3"),
+        ),
+    ]
+    for coin_name, path, request_script_type, expected_prefix, expected_version in multisig_cases:
+        response = btc.get_public_node(
+            session,
+            path,
+            show_display=False,
+            coin_name=coin_name,
+            script_type=request_script_type,
+        )
+        xpub = getattr(response, "xpub", None)
+        if not xpub or not xpub.startswith(expected_prefix):
+            raise AssertionError(f"{coin_name} multisig xpub prefix mismatch: expected {expected_prefix}, got {xpub[:4]}")
+        decoded_xpub = base58.b58decode_check(xpub)
+        if len(decoded_xpub) != 78 or decoded_xpub[:4] != expected_version:
+            raise AssertionError(
+                f"{coin_name} multisig xpub version mismatch: expected {expected_version.hex()}, "
+                f"got {decoded_xpub[:4].hex()}"
+            )
+        print(f"  PASS {coin_name} multisig xpub={xpub[:8]}...", flush=True)
 
 
 def assert_signed_tx(

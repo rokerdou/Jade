@@ -171,6 +171,10 @@ main/
 - BTC `GetPublicKey` 已支持账户级 BIP44/P2PKH、BIP49/P2SH-P2WPKH、BIP84/P2WPKH，
   覆盖 Bitcoin/Testnet，并按 Trezor/OneKey 的 `script_type + ignore_xpub_magic` 规则选择
   `xpub/tpub/ypub/upub/zpub/vpub` 公钥版本字节。
+- BTC `GetPublicKey` 已支持多签 xpub-only 导入路径：
+  BIP45 `m/45'` 返回 `xpub/tpub`，BIP48 `m/48'/coin'/account'/1'` 返回
+  `Ypub/Upub`，BIP48 `m/48'/coin'/account'/2'` 返回 `Zpub/Vpub`。这只表示
+  Sparrow/OneKey 可以获取 cosigner public node，不表示多签地址确认或多签签名已经开放。
 - Sparrow/lark 的 singlesig xpub 导入会用默认 `SPENDADDRESS` 调
   `GetPublicKey(m/49'...)` / `GetPublicKey(m/84'...)`。固件现在只在账户级 public-node
   导出路径把这个默认值视为客户端兼容占位，并按 BIP purpose 推断 ypub/zpub；
@@ -247,7 +251,8 @@ main/
   导入和签名表现。
 - Sparrow/OneKey 完整导入兼容：`GetPublicKey`、`GetAddress`、`show_display`、
   `ignore_xpub_magic`、model/version/internal_model、firmware range 仍需真实客户端矩阵测试。
-- P2WSH/P2SH multisig 与 BIP48 暂不开放。它们不是简单 xpub 版本字节问题，还需要
+- P2WSH/P2SH multisig 的 xpub-only 导入已开放；地址显示和签名仍暂不开放。它们不是
+  简单 xpub 版本字节问题，还需要
   descriptor/multisig/pubkey order/witnessScript/change policy/fee review 的完整门禁；
   当前固件必须继续拒绝 `SPENDMULTISIG` 和未知 witness script 签名请求。
 
@@ -306,10 +311,15 @@ main/
 2. multisig
    - 必须参考 OneKey/Trezor 的 `MultisigRedeemScriptType` 与原版 Jade descriptor/multisig
      代码，先做 request normalizer。
+   - 原版 Jade 的 `main/multisig.c`、`main/descriptor.c`、`main/process/sign_psbt.c`
+     可以复用的是脚本构造、descriptor 查找、PSBT 输入/输出校验思路；不能直接把 native
+     CBOR RPC process 函数接进 Trezor USB adapter。Trezor `MultisigRedeemScriptType`
+     必须先转换成内部 descriptor/policy 模型，再进入 UI 和 signer。
    - 开放前必须校验 `m/n`、xpub fingerprint、每个 cosigner pubkey 派生、`address_n`
      不含非法 hardened 后缀、script_type 与 redeem/witness script 匹配、change path 属于
      已登记 descriptor。
-   - 未完成 descriptor/xpub/path/change 绑定前，只能明确拒绝，不能半支持。
+   - 未完成 descriptor/xpub/path/change 绑定前，只能开放 public-node 导入；地址确认和
+     签名必须明确拒绝，不能半支持。
    - 当前 gate 已覆盖 `GetAddress` multisig 字段、`SignTx` multisig input/output 的拒绝路径。
      这些请求必须停在协议/normalizer 边界，不能进入 public key/address/signing policy。
 
@@ -464,7 +474,8 @@ tools/
    - legacy P2PKH 重点确认 raw tx 不带 witness、scriptSig 标准且主机可验签。
 
 2. Sparrow/OneKey 导入兼容矩阵
-   - 分别测试 BIP44/P2PKH、BIP49/P2SH-P2WPKH、BIP84/P2WPKH 的账户 xpub 导入。
+   - 分别测试 BIP44/P2PKH、BIP49/P2SH-P2WPKH、BIP84/P2WPKH、BIP45/P2SH multisig、
+     BIP48/P2SH-P2WSH、BIP48/P2WSH 的账户 xpub 导入。
    - 覆盖 `ignore_xpub_magic=true/false`、`show_display=false`、model/version/internal_model。
 
 3. PSBT/multisig/Taproot 先做 host gate 和安全拒绝

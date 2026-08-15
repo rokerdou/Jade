@@ -203,6 +203,18 @@ int main(void)
     CHECK(wallet_core_get_public_node_with_version(&path, 0x044A5262U, &node));
     CHECK(strcmp(node.xpub, TEST_XPUB) == 0);
     CHECK(last_serialized_public_node_matches(0x044A5262U, 7, 5));
+    CHECK(wallet_core_get_public_node_with_version(&path, 0x0295B43FU, &node));
+    CHECK(strcmp(node.xpub, TEST_XPUB) == 0);
+    CHECK(last_serialized_public_node_matches(0x0295B43FU, 7, 5));
+    CHECK(wallet_core_get_public_node_with_version(&path, 0x02AA7ED3U, &node));
+    CHECK(strcmp(node.xpub, TEST_XPUB) == 0);
+    CHECK(last_serialized_public_node_matches(0x02AA7ED3U, 7, 5));
+    CHECK(wallet_core_get_public_node_with_version(&path, 0x024289EFU, &node));
+    CHECK(strcmp(node.xpub, TEST_XPUB) == 0);
+    CHECK(last_serialized_public_node_matches(0x024289EFU, 7, 5));
+    CHECK(wallet_core_get_public_node_with_version(&path, 0x02575483U, &node));
+    CHECK(strcmp(node.xpub, TEST_XPUB) == 0);
+    CHECK(last_serialized_public_node_matches(0x02575483U, 7, 5));
     CHECK(!wallet_core_get_public_node_with_version(&path, 0x0488ADE4U, &node));
     CHECK(!wallet_core_get_public_node_with_version(&path, BIP32_VER_TEST_PRIVATE, &node));
 

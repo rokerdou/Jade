@@ -1048,6 +1048,14 @@ int wally_base58_from_bytes(const unsigned char* bytes, size_t bytes_len, uint32
             expected = "zpub6sKjfGYbfXMjShduKdN7nc81Cf3UZF1ew8uxhj1ju1stFRkaJ9gdGECQ6ExRBiPAKnxMrFd6nM8nMVvM6GryHwGBbitLifqddJbRGa32Jcz";
         } else if (public_version == 0x045F1CF6U) {
             expected = "vpub5ZzgSbrw4oBp3WsRzCDcxFjzWnTgnm3fGgq5a9SCNzNN32VfHX2NmyZr1R85C5mUhEV8rMErwhiapMU6DVCv6zXn8N6eP2ZgYQLqiFuYj8G";
+        } else if (public_version == 0x0295B43FU) {
+            expected = "Ypub6jPZUqc85oNd1ycARw3UQbNJkUwHpyhkLJ3QqbPPtnLQpWWFotuLjHQBsjxJkEx99cuXyN2fCuAjbNvYfobueBhFZrJKYAV9FJoeTujaT5k";
+        } else if (public_version == 0x02AA7ED3U) {
+            expected = "Zpub74DpnWH3EUv6sGoHGHq6cgTovT5jmbhFFQZdczHHGniHscKV4Z4uMM4Ktwutk9c4ZG2LiqdDfZXHUfY7PW1vSRNrSBzk85JdX2sHrUqSLZN";
+        } else if (public_version == 0x024289EFU) {
+            expected = "Upub5S4WGAvTV5Chcnqh6VtyaEzJ4cMW4VjkfqxXi1orNkptc7FLoGF6F2mdnv7xkcLTX4SJyTeRNFkY4EUHo1wrTExr6VWdCXDCAQZ4ub8xNrb";
+        } else if (public_version == 0x02575483U) {
+            expected = "Vpub5ktmZqbNdkkBU62ovrgbnL5oEaVx17jFaxUkVQhjkmCmfD4a3vQes6Rmp85YkWzNvhZ7iwEypv75wX5rWiMsFUeSxqD3nS2gS8ciJEEU6M9";
         }
         if (!expected) {
             return WALLY_EINVAL;
@@ -2048,6 +2056,17 @@ int main(int argc, char** argv)
         = { chain_path_harden(84), chain_path_harden(0), chain_path_harden(0) };
     const uint32_t btc_mainnet_p2sh_p2wpkh_account_path[]
         = { chain_path_harden(49), chain_path_harden(0), chain_path_harden(0) };
+    const uint32_t btc_legacy_multisig_account_path[] = { chain_path_harden(45) };
+    const uint32_t btc_p2sh_p2wsh_account_path[]
+        = { chain_path_harden(48), chain_path_harden(1), chain_path_harden(0), chain_path_harden(1) };
+    const uint32_t btc_p2wsh_account_path[]
+        = { chain_path_harden(48), chain_path_harden(1), chain_path_harden(0), chain_path_harden(2) };
+    const uint32_t btc_mainnet_p2sh_p2wsh_account_path[]
+        = { chain_path_harden(48), chain_path_harden(0), chain_path_harden(0), chain_path_harden(1) };
+    const uint32_t btc_mainnet_p2wsh_account_path[]
+        = { chain_path_harden(48), chain_path_harden(0), chain_path_harden(0), chain_path_harden(2) };
+    const uint32_t btc_bip48_wrong_script_type_path[]
+        = { chain_path_harden(48), chain_path_harden(1), chain_path_harden(0), chain_path_harden(3) };
     const uint32_t btc_wrong_coin[]
         = { chain_path_harden(44), chain_path_harden(0), chain_path_harden(0), 0, 0 };
     CHECK(bitcoin_path_is_trezor_connect_state_testnet_p2pkh(btc_state_path, ARRAY_LEN(btc_state_path)));
@@ -2061,6 +2080,17 @@ int main(int argc, char** argv)
         btc_mainnet_p2wpkh_account_path, ARRAY_LEN(btc_mainnet_p2wpkh_account_path), false));
     CHECK(bitcoin_path_is_p2sh_p2wpkh_account_public_node(
         btc_mainnet_p2sh_p2wpkh_account_path, ARRAY_LEN(btc_mainnet_p2sh_p2wpkh_account_path), false));
+    CHECK(bitcoin_path_is_legacy_multisig_account_public_node(
+        btc_legacy_multisig_account_path, ARRAY_LEN(btc_legacy_multisig_account_path)));
+    CHECK(bitcoin_path_is_p2sh_p2wsh_account_public_node(
+        btc_p2sh_p2wsh_account_path, ARRAY_LEN(btc_p2sh_p2wsh_account_path), true));
+    CHECK(bitcoin_path_is_p2wsh_account_public_node(btc_p2wsh_account_path, ARRAY_LEN(btc_p2wsh_account_path), true));
+    CHECK(bitcoin_path_is_p2sh_p2wsh_account_public_node(
+        btc_mainnet_p2sh_p2wsh_account_path, ARRAY_LEN(btc_mainnet_p2sh_p2wsh_account_path), false));
+    CHECK(bitcoin_path_is_p2wsh_account_public_node(
+        btc_mainnet_p2wsh_account_path, ARRAY_LEN(btc_mainnet_p2wsh_account_path), false));
+    CHECK(!bitcoin_path_is_p2wsh_account_public_node(
+        btc_bip48_wrong_script_type_path, ARRAY_LEN(btc_bip48_wrong_script_type_path), true));
     CHECK(!bitcoin_path_is_p2wpkh_account_public_node(btc_account_path, ARRAY_LEN(btc_account_path), true));
     CHECK(bitcoin_path_is_p2pkh_signing(btc_state_path, ARRAY_LEN(btc_state_path), true));
     CHECK(bitcoin_path_is_testnet_p2wpkh_signing(btc_signing_path, ARRAY_LEN(btc_signing_path)));
@@ -2120,6 +2150,48 @@ int main(int argc, char** argv)
     CHECK(trezor_bitcoin_public_node_version(&btc_public_node_request, &btc_public_node_version));
     CHECK(btc_public_node_version == 0x049D7CB2U);
     btc_public_node_request.script_type = BITCOIN_P2WPKH_SPENDWITNESS;
+    CHECK(!trezor_bitcoin_public_node_version(&btc_public_node_request, &btc_public_node_version));
+
+    wally_bzero(&btc_public_node_request, sizeof(btc_public_node_request));
+    btc_public_node_request.kind = TREZOR_PUBLIC_KEY_REQUEST_GENERIC;
+    btc_public_node_request.has_coin_name = true;
+    memcpy(btc_public_node_request.coin_name, "Bitcoin", sizeof("Bitcoin"));
+    btc_public_node_request.address_n_len = ARRAY_LEN(btc_legacy_multisig_account_path);
+    memcpy(btc_public_node_request.address_n, btc_legacy_multisig_account_path, sizeof(btc_legacy_multisig_account_path));
+    CHECK(trezor_bitcoin_public_node_version(&btc_public_node_request, &btc_public_node_version));
+    CHECK(btc_public_node_version == BIP32_VER_MAIN_PUBLIC);
+    btc_public_node_request.has_coin_name = true;
+    memcpy(btc_public_node_request.coin_name, "Testnet", sizeof("Testnet"));
+    CHECK(trezor_bitcoin_public_node_version(&btc_public_node_request, &btc_public_node_version));
+    CHECK(btc_public_node_version == BIP32_VER_TEST_PUBLIC);
+
+    wally_bzero(&btc_public_node_request, sizeof(btc_public_node_request));
+    btc_public_node_request.kind = TREZOR_PUBLIC_KEY_REQUEST_GENERIC;
+    btc_public_node_request.has_coin_name = true;
+    memcpy(btc_public_node_request.coin_name, "Testnet", sizeof("Testnet"));
+    btc_public_node_request.address_n_len = ARRAY_LEN(btc_p2sh_p2wsh_account_path);
+    memcpy(btc_public_node_request.address_n, btc_p2sh_p2wsh_account_path, sizeof(btc_p2sh_p2wsh_account_path));
+    CHECK(trezor_bitcoin_public_node_version(&btc_public_node_request, &btc_public_node_version));
+    CHECK(btc_public_node_version == 0x024289EFU);
+    btc_public_node_request.has_script_type = true;
+    btc_public_node_request.script_type = BITCOIN_MULTISIG_SPENDMULTISIG;
+    CHECK(trezor_bitcoin_public_node_version(&btc_public_node_request, &btc_public_node_version));
+    CHECK(btc_public_node_version == 0x024289EFU);
+    btc_public_node_request.has_ignore_xpub_magic = true;
+    btc_public_node_request.ignore_xpub_magic = true;
+    CHECK(trezor_bitcoin_public_node_version(&btc_public_node_request, &btc_public_node_version));
+    CHECK(btc_public_node_version == BIP32_VER_TEST_PUBLIC);
+
+    wally_bzero(&btc_public_node_request, sizeof(btc_public_node_request));
+    btc_public_node_request.kind = TREZOR_PUBLIC_KEY_REQUEST_GENERIC;
+    btc_public_node_request.has_coin_name = true;
+    memcpy(btc_public_node_request.coin_name, "Bitcoin", sizeof("Bitcoin"));
+    btc_public_node_request.address_n_len = ARRAY_LEN(btc_mainnet_p2wsh_account_path);
+    memcpy(btc_public_node_request.address_n, btc_mainnet_p2wsh_account_path, sizeof(btc_mainnet_p2wsh_account_path));
+    CHECK(trezor_bitcoin_public_node_version(&btc_public_node_request, &btc_public_node_version));
+    CHECK(btc_public_node_version == 0x02AA7ED3U);
+    btc_public_node_request.has_script_type = true;
+    btc_public_node_request.script_type = BITCOIN_P2SH_P2WPKH_SPENDP2SHWITNESS;
     CHECK(!trezor_bitcoin_public_node_version(&btc_public_node_request, &btc_public_node_version));
     CHECK(!bitcoin_path_is_testnet_p2wpkh_signing(btc_state_path, ARRAY_LEN(btc_state_path)));
     CHECK(!bitcoin_path_is_testnet_p2sh_p2wpkh_signing(btc_signing_path, ARRAY_LEN(btc_signing_path)));

@@ -108,7 +108,8 @@ static uint32_t wallet_core_fingerprint_to_u32(const uint8_t fingerprint[BIP32_K
 static bool wallet_core_bip32_public_version_allowed(const uint32_t version)
 {
     return version == 0 || version == BIP32_VER_MAIN_PUBLIC || version == BIP32_VER_TEST_PUBLIC
-        || version == 0x049D7CB2U || version == 0x04B24746U || version == 0x044A5262U || version == 0x045F1CF6U;
+        || version == 0x049D7CB2U || version == 0x04B24746U || version == 0x044A5262U || version == 0x045F1CF6U
+        || version == 0x0295B43FU || version == 0x02AA7ED3U || version == 0x024289EFU || version == 0x02575483U;
 }
 
 static void wallet_core_write_be32(uint8_t* const output, const uint32_t value)

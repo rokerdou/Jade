@@ -95,7 +95,8 @@ static bool trezor_public_key_decode_common(const uint8_t* const payload, const 
             uint64_t script_type = 0;
             if (wire_type != TREZOR_PROTOBUF_WIRE_VARINT
                 || !trezor_protobuf_read_varint_value(value, value_len, &script_type)
-                || (script_type != BITCOIN_P2PKH_SPENDADDRESS && script_type != BITCOIN_P2WPKH_SPENDWITNESS
+                || (script_type != BITCOIN_P2PKH_SPENDADDRESS && script_type != BITCOIN_MULTISIG_SPENDMULTISIG
+                    && script_type != BITCOIN_P2WPKH_SPENDWITNESS
                     && script_type != BITCOIN_P2SH_P2WPKH_SPENDP2SHWITNESS)) {
                 return false;
             }
