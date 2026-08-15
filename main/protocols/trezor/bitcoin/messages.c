@@ -48,6 +48,43 @@ static bool trezor_bitcoin_read_coin_name(
     return trezor_bitcoin_coin_from_name(output, &coin);
 }
 
+static bool trezor_bitcoin_normalize_multisig_payload(const uint8_t* const payload, const size_t payload_len,
+    const bool has_multisig, const uint32_t script_type, trezor_bitcoin_multisig_summary_t* const summary)
+{
+    if (!summary) {
+        return false;
+    }
+    wally_bzero(summary, sizeof(*summary));
+    if (!has_multisig) {
+        return true;
+    }
+    if (!payload || payload_len == 0) {
+        return false;
+    }
+
+    trezor_bitcoin_multisig_t multisig;
+    trezor_bitcoin_multisig_policy_t policy;
+    wally_bzero(&multisig, sizeof(multisig));
+    wally_bzero(&policy, sizeof(policy));
+    const bool ok = trezor_bitcoin_multisig_decode(payload, payload_len, &multisig)
+        && trezor_bitcoin_multisig_normalize(&multisig, script_type, &policy)
+        && policy.num_pubkeys <= UINT8_MAX && policy.script_pubkey_len <= sizeof(summary->script_pubkey);
+    if (ok) {
+        summary->variant = policy.variant;
+        summary->threshold = policy.threshold;
+        summary->num_pubkeys = (uint8_t)policy.num_pubkeys;
+        summary->sorted = policy.sorted;
+        memcpy(summary->script_pubkey, policy.script_pubkey, policy.script_pubkey_len);
+        summary->script_pubkey_len = policy.script_pubkey_len;
+    }
+    wally_bzero(&multisig, sizeof(multisig));
+    wally_bzero(&policy, sizeof(policy));
+    if (!ok) {
+        wally_bzero(summary, sizeof(*summary));
+    }
+    return ok;
+}
+
 bool trezor_bitcoin_get_address_decode(
     const uint8_t* const payload, const size_t payload_len, trezor_bitcoin_get_address_t* const output)
 {
@@ -62,6 +99,8 @@ bool trezor_bitcoin_get_address_decode(
         return false;
     }
 
+    const uint8_t* multisig_payload = NULL;
+    size_t multisig_payload_len = 0;
     while (reader.pos < reader.len) {
         uint32_t field_number = 0;
         uint8_t wire_type = 0;
@@ -92,7 +131,13 @@ bool trezor_bitcoin_get_address_decode(
             }
             output->has_show_display = true;
         } else if (field_number == 4) {
-            return false;
+            if (wire_type != TREZOR_PROTOBUF_WIRE_LEN || output->has_multisig
+                || value_len == 0) {
+                return false;
+            }
+            multisig_payload = value;
+            multisig_payload_len = value_len;
+            output->has_multisig = true;
         } else if (field_number == 5) {
             uint64_t script_type = 0;
             if (wire_type != TREZOR_PROTOBUF_WIRE_VARINT
@@ -116,12 +161,17 @@ bool trezor_bitcoin_get_address_decode(
         }
     }
 
-    const bool supported_script = !output->has_script_type || output->script_type == BITCOIN_P2PKH_SPENDADDRESS
-        || output->script_type == BITCOIN_P2WPKH_SPENDWITNESS
-        || output->script_type == BITCOIN_P2SH_P2WPKH_SPENDP2SHWITNESS;
+    const uint32_t script_type = output->has_script_type ? output->script_type : BITCOIN_P2PKH_SPENDADDRESS;
+    const bool supported_script = output->has_multisig
+        ? (script_type == BITCOIN_MULTISIG_SPENDMULTISIG || script_type == BITCOIN_P2WPKH_SPENDWITNESS
+            || script_type == BITCOIN_P2SH_P2WPKH_SPENDP2SHWITNESS)
+        : (script_type == BITCOIN_P2PKH_SPENDADDRESS || script_type == BITCOIN_P2WPKH_SPENDWITNESS
+            || script_type == BITCOIN_P2SH_P2WPKH_SPENDP2SHWITNESS);
     trezor_bitcoin_coin_t coin = TREZOR_BITCOIN_COIN_MAINNET;
     return output->address_n_len > 0
-        && (!output->has_coin_name || trezor_bitcoin_coin_from_name(output->coin_name, &coin)) && supported_script;
+        && (!output->has_coin_name || trezor_bitcoin_coin_from_name(output->coin_name, &coin)) && supported_script
+        && trezor_bitcoin_normalize_multisig_payload(
+            multisig_payload, multisig_payload_len, output->has_multisig, script_type, &output->multisig);
 }
 
 bool trezor_bitcoin_sign_tx_decode(
@@ -234,6 +284,8 @@ static bool trezor_bitcoin_tx_input_decode(
         return false;
     }
 
+    const uint8_t* multisig_payload = NULL;
+    size_t multisig_payload_len = 0;
     while (reader.pos < reader.len) {
         uint32_t field_number = 0;
         uint8_t wire_type = 0;
@@ -272,6 +324,14 @@ static bool trezor_bitcoin_tx_input_decode(
                 || !trezor_bitcoin_uint32_value(value, value_len, &output->script_type)) {
                 return false;
             }
+        } else if (field_number == 7) {
+            if (wire_type != TREZOR_PROTOBUF_WIRE_LEN || output->has_multisig
+                || value_len == 0) {
+                return false;
+            }
+            multisig_payload = value;
+            multisig_payload_len = value_len;
+            output->has_multisig = true;
         } else if (field_number == 8) {
             if (wire_type != TREZOR_PROTOBUF_WIRE_VARINT
                 || !trezor_bitcoin_uint64_value(value, value_len, &output->amount)) {
@@ -289,13 +349,18 @@ static bool trezor_bitcoin_tx_input_decode(
         }
     }
 
-    const bool supported_script = output->script_type == BITCOIN_P2PKH_SPENDADDRESS
-        || output->script_type == BITCOIN_P2WPKH_SPENDWITNESS
-        || output->script_type == BITCOIN_P2SH_P2WPKH_SPENDP2SHWITNESS;
+    const bool supported_script = output->has_multisig
+        ? (output->script_type == BITCOIN_MULTISIG_SPENDMULTISIG
+            || output->script_type == BITCOIN_P2WPKH_SPENDWITNESS
+            || output->script_type == BITCOIN_P2SH_P2WPKH_SPENDP2SHWITNESS)
+        : (output->script_type == BITCOIN_P2PKH_SPENDADDRESS
+            || output->script_type == BITCOIN_P2WPKH_SPENDWITNESS
+            || output->script_type == BITCOIN_P2SH_P2WPKH_SPENDP2SHWITNESS);
     return output->address_n_len > 0 && output->has_prev_hash && output->has_prev_index
         && (output->has_amount || output->script_type == BITCOIN_P2PKH_SPENDADDRESS
             || output->script_type == BITCOIN_P2SH_P2WPKH_SPENDP2SHWITNESS)
-        && supported_script;
+        && supported_script && trezor_bitcoin_normalize_multisig_payload(multisig_payload, multisig_payload_len,
+                                   output->has_multisig, output->script_type, &output->multisig);
 }
 
 static bool trezor_bitcoin_tx_output_decode(
@@ -314,6 +379,8 @@ static bool trezor_bitcoin_tx_output_decode(
         return false;
     }
 
+    const uint8_t* multisig_payload = NULL;
+    size_t multisig_payload_len = 0;
     while (reader.pos < reader.len) {
         uint32_t field_number = 0;
         uint8_t wire_type = 0;
@@ -348,13 +415,25 @@ static bool trezor_bitcoin_tx_output_decode(
                 || !trezor_bitcoin_uint32_value(value, value_len, &output->script_type)) {
                 return false;
             }
+        } else if (field_number == 5) {
+            if (wire_type != TREZOR_PROTOBUF_WIRE_LEN || output->has_multisig
+                || value_len == 0) {
+                return false;
+            }
+            multisig_payload = value;
+            multisig_payload_len = value_len;
+            output->has_multisig = true;
         } else {
             return false;
         }
     }
 
-    return output->has_amount && output->script_type == 0
-        && ((output->has_address && output->address_n_len == 0) || (!output->has_address && output->address_n_len > 0));
+    const bool address_source_ok = output->has_multisig
+        ? (!output->has_address && output->address_n_len > 0 && output->script_type == BITCOIN_PAYTOMULTISIG)
+        : ((output->has_address && output->address_n_len == 0) || (!output->has_address && output->address_n_len > 0));
+    return output->has_amount && address_source_ok
+        && trezor_bitcoin_normalize_multisig_payload(multisig_payload, multisig_payload_len, output->has_multisig,
+            BITCOIN_MULTISIG_SPENDMULTISIG, &output->multisig);
 }
 
 bool trezor_bitcoin_prev_input_decode(

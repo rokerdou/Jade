@@ -164,7 +164,7 @@ bool trezor_bitcoin_policy_signing_coin(
 static bool trezor_bitcoin_policy_input_is_supported_without_prev_tx_verification(
     const trezor_bitcoin_tx_input_t* const input, const bool testnet)
 {
-    return input && input->script_type == BITCOIN_P2WPKH_SPENDWITNESS && input->has_prev_hash
+    return input && !input->has_multisig && input->script_type == BITCOIN_P2WPKH_SPENDWITNESS && input->has_prev_hash
         && input->has_prev_index && input->has_amount
         && bitcoin_path_is_p2wpkh_signing(input->address_n, input->address_n_len, testnet);
 }
@@ -172,7 +172,8 @@ static bool trezor_bitcoin_policy_input_is_supported_without_prev_tx_verificatio
 static bool trezor_bitcoin_policy_input_is_p2sh_p2wpkh_verified(
     const trezor_bitcoin_tx_input_t* const input, const bool testnet)
 {
-    return input && input->script_type == BITCOIN_P2SH_P2WPKH_SPENDP2SHWITNESS && input->has_prev_hash
+    return input && !input->has_multisig && input->script_type == BITCOIN_P2SH_P2WPKH_SPENDP2SHWITNESS
+        && input->has_prev_hash
         && input->has_prev_index && input->has_amount && input->has_verified_prevout_script
         && input->verified_prevout_script_len == 23
         && bitcoin_path_is_p2sh_p2wpkh_signing(input->address_n, input->address_n_len, testnet);
@@ -181,7 +182,7 @@ static bool trezor_bitcoin_policy_input_is_p2sh_p2wpkh_verified(
 static bool trezor_bitcoin_policy_input_is_p2pkh_verified(
     const trezor_bitcoin_tx_input_t* const input, const bool testnet)
 {
-    return input && input->script_type == BITCOIN_P2PKH_SPENDADDRESS && input->has_prev_hash
+    return input && !input->has_multisig && input->script_type == BITCOIN_P2PKH_SPENDADDRESS && input->has_prev_hash
         && input->has_prev_index && input->has_amount && input->has_verified_prevout_script
         && input->verified_prevout_script_len == WALLY_SCRIPTPUBKEY_P2PKH_LEN
         && bitcoin_path_is_p2pkh_signing(input->address_n, input->address_n_len, testnet);
@@ -215,7 +216,7 @@ bool trezor_bitcoin_policy_is_p2wpkh_basic(const trezor_bitcoin_signing_state_t*
     size_t external_outputs = 0;
     for (size_t i = 0; i < state->outputs_len; ++i) {
         const trezor_bitcoin_tx_output_t* const output = &state->outputs[i];
-        if (!output->has_amount || output->script_type != 0) {
+        if (!output->has_amount || output->has_multisig || output->script_type != BITCOIN_PAYTOADDRESS) {
             return false;
         }
         if (output->has_address) {
@@ -266,7 +267,7 @@ bool trezor_bitcoin_policy_is_basic(const trezor_bitcoin_signing_state_t* const 
     size_t external_outputs = 0;
     for (size_t i = 0; i < state->outputs_len; ++i) {
         const trezor_bitcoin_tx_output_t* const output = &state->outputs[i];
-        if (!output->has_amount || output->script_type != 0) {
+        if (!output->has_amount || output->has_multisig || output->script_type != BITCOIN_PAYTOADDRESS) {
             return false;
         }
         if (output->has_address) {

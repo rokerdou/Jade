@@ -119,7 +119,7 @@ static bool trezor_bitcoin_script_policy_build_p2sh_p2wpkh(
 bool trezor_bitcoin_script_policy_prevout_matches_input(const trezor_bitcoin_tx_input_t* const input,
     const trezor_bitcoin_coin_t coin, const uint8_t* const script_pubkey, const size_t script_pubkey_len)
 {
-    if (!input || !script_pubkey || script_pubkey_len == 0
+    if (!input || input->has_multisig || !script_pubkey || script_pubkey_len == 0
         || script_pubkey_len > TREZOR_BITCOIN_STANDARD_PREVOUT_SCRIPT_MAX_LEN) {
         return false;
     }

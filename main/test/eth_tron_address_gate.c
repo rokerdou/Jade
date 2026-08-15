@@ -2183,6 +2183,9 @@ int main(int argc, char** argv)
     CHECK(HEX_UI_LINES_FOR_BYTES(TRON_ADDRESS_LEN) <= CHAIN_CONFIRM_UI_MAX_MESSAGE_LINES);
     CHECK(HEX_UI_LINES_FOR_BYTES(EVM_ABI_WORD_LEN) <= CHAIN_CONFIRM_UI_MAX_MESSAGE_LINES);
     CHECK(HEX_UI_LINES_FOR_BYTES(CHAIN_CONFIRM_MAX_BYTES) <= CHAIN_CONFIRM_UI_MAX_MESSAGE_LINES);
+    CHECK(sizeof(trezor_bitcoin_tx_input_t) <= 512);
+    CHECK(sizeof(trezor_bitcoin_tx_output_t) <= 256);
+    CHECK(sizeof(trezor_bitcoin_signing_state_t) <= 8192);
     CHECK(test_protobuf_rejects_malformed_inputs());
     CHECK(test_fake_ui_rejects_unrenderable_summary());
 

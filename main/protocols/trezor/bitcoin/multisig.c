@@ -193,7 +193,7 @@ bool trezor_bitcoin_multisig_decode(
         } else if (field_number == 2) {
             if (wire_type != TREZOR_PROTOBUF_WIRE_LEN
                 || output->signatures_len >= TREZOR_BITCOIN_MULTISIG_MAX_SIGNERS
-                || value_len > TREZOR_BITCOIN_SIGNATURE_MAX_LEN) {
+                || value_len > TREZOR_BITCOIN_MULTISIG_SIGNATURE_MAX_LEN) {
                 return false;
             }
             memcpy(output->signatures[output->signatures_len], value, value_len);

@@ -17,6 +17,10 @@
 #define TREZOR_BITCOIN_SIGNED_TX_MAX_LEN 1800
 #define TREZOR_BITCOIN_PREV_SCRIPT_MAX_LEN 520
 #define TREZOR_BITCOIN_STANDARD_PREVOUT_SCRIPT_MAX_LEN 34
+#define BITCOIN_PAYTOADDRESS 0
+#define BITCOIN_PAYTOMULTISIG 2
+
+#include "multisig.h"
 
 struct wally_tx;
 
@@ -44,6 +48,8 @@ typedef struct {
     bool ignore_xpub_magic;
     bool has_chunkify;
     bool chunkify;
+    bool has_multisig;
+    trezor_bitcoin_multisig_summary_t multisig;
 } trezor_bitcoin_get_address_t;
 
 typedef struct {
@@ -74,6 +80,8 @@ typedef struct {
     bool has_verified_prevout_script;
     uint8_t verified_prevout_script[TREZOR_BITCOIN_STANDARD_PREVOUT_SCRIPT_MAX_LEN];
     size_t verified_prevout_script_len;
+    bool has_multisig;
+    trezor_bitcoin_multisig_summary_t multisig;
 } trezor_bitcoin_tx_input_t;
 
 typedef struct {
@@ -84,6 +92,8 @@ typedef struct {
     bool has_amount;
     uint64_t amount;
     uint32_t script_type;
+    bool has_multisig;
+    trezor_bitcoin_multisig_summary_t multisig;
 } trezor_bitcoin_tx_output_t;
 
 typedef struct {

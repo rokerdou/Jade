@@ -75,7 +75,7 @@ static bool trezor_wallet_get_bitcoin_address(
     void* ctx, const trezor_bitcoin_get_address_t* const request, char* const address, const size_t address_len)
 {
     (void)ctx;
-    if (!request || !address || !trezor_auth_bridge_wallet_ready() || !request->has_coin_name
+    if (!request || !address || !trezor_auth_bridge_wallet_ready() || !request->has_coin_name || request->has_multisig
         || (strcmp(request->coin_name, "Testnet") != 0 && strcmp(request->coin_name, "Bitcoin") != 0)
         || (request->has_script_type && request->script_type != BITCOIN_P2PKH_SPENDADDRESS
             && request->script_type != BITCOIN_P2WPKH_SPENDWITNESS

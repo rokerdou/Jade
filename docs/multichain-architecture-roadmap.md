@@ -259,6 +259,10 @@ main/
   `pubkeys[]` 与 new-style `nodes[] + address_n`，拒绝 `HDNodeType.private_key`、
   hardened suffix、`m > n`，并转换为内部 multisig policy/redeem script/scriptPubKey。
   这仍是前置安全层，不等于开放 multisig 地址或签名。
+- BTC `GetAddress`、`TxInputType`、`TxOutputType` 的 `multisig` 字段已接入 decode：
+  合法 multisig 请求会完成 normalizer 并保存小型 summary，随后仍在地址/签名策略层
+  明确拒绝。协议状态不会把完整 multisig pubkey/policy 嵌入每个 input/output，以避免
+  T-Display-S3/ESP32-S3 上的栈和状态内存膨胀。
 
 4. P2SH-P2WPKH 已实验性开放。
    - P2SH-P2WPKH 继续使用 segwit v0/BIP143 sighash。
@@ -326,11 +330,16 @@ main/
      解析 Trezor protobuf 后派生 cosigner 子公钥，构建 `MULTI_P2SH`、`MULTI_P2WSH`、
      `MULTI_P2WSH_P2SH` policy，并生成 redeem script/scriptPubKey 用于后续 prevout/change
      绑定。
+   - `messages.c` 已把 `GetAddress.multisig`、`TxInputType.multisig`、
+     `TxOutputType.multisig` 纳入解析，但只保留 scriptPubKey summary；完整 normalizer
+     临时对象用完即清零，不进入长期 signing state。
    - Host gate 使用 `trezorlib` 生成 `MultisigRedeemScriptType` payload，使用第三方
      `embit.script.multisig()` 生成期望 redeem script，覆盖 old-style/new-style、
      BIP67 lexicographic 排序、private_key 字段拒绝、hardened suffix 拒绝、`m > n` 拒绝。
      由于当前 host gate 没有链接真实 libwally，BIP32 子派生只在生产固件路径由 libwally
      执行；host oracle 用已派生 child xpub + 空 suffix 避免 fake derivation 自测。
+   - Host gate 已新增 BTC signing state 结构尺寸门禁，防止后续把完整 multisig 结构塞进
+     每个 input/output，造成 ESP32 栈/堆压力。
    - 未完成 descriptor/xpub/path/change 绑定前，只能开放 public-node 导入；地址确认和
      签名必须明确拒绝，不能半支持。
    - 当前 gate 已覆盖 `GetAddress` multisig 字段、`SignTx` multisig input/output 的拒绝路径，

@@ -835,6 +835,7 @@ def btc_tx_input(
     prev_index: int = 0,
     amount: int = 100_000,
     script_type: messages.InputScriptType = messages.InputScriptType.SPENDWITNESS,
+    multisig: messages.MultisigRedeemScriptType | None = None,
 ) -> messages.TxInputType:
     return messages.TxInputType(
         address_n=path or btc_input_path(),
@@ -843,6 +844,7 @@ def btc_tx_input(
         script_type=script_type,
         amount=amount,
         sequence=0xFFFFFFFF,
+        multisig=multisig,
     )
 
 
@@ -854,11 +856,18 @@ def btc_tx_output_external(amount: int = 90_000, address: str | None = None) -> 
     )
 
 
-def btc_tx_output_change(amount: int = 5_000, *, path: list[int] | None = None) -> messages.TxOutputType:
+def btc_tx_output_change(
+    amount: int = 5_000,
+    *,
+    path: list[int] | None = None,
+    script_type: messages.OutputScriptType = messages.OutputScriptType.PAYTOADDRESS,
+    multisig: messages.MultisigRedeemScriptType | None = None,
+) -> messages.TxOutputType:
     return messages.TxOutputType(
         address_n=path or btc_input_path(change=1),
         amount=amount,
-        script_type=messages.OutputScriptType.PAYTOADDRESS,
+        script_type=script_type,
+        multisig=multisig,
     )
 
 
@@ -1309,8 +1318,12 @@ def check_embit_psbt_oracle() -> bytes:
     return raw
 
 
-def check_trezor_multisig_normalizer_oracle(gate: Path) -> None:
-    """Validate Trezor multisig protobuf normalization against embit scripts."""
+def trezor_multisig_fixture() -> tuple[
+    list[messages.HDNodeType],
+    list[object],
+    bytes,
+    bytes,
+]:
     from embit import bip32, script
 
     seeds = [bytes([0x11]) * 32, bytes([0x22]) * 32, bytes([0x33]) * 32]
@@ -1321,6 +1334,14 @@ def check_trezor_multisig_normalizer_oracle(gate: Path) -> None:
 
     preserved_redeem = script.multisig(2, child_pubkeys).data
     sorted_redeem = script.multisig(2, sorted(child_pubkeys, key=lambda pubkey: pubkey.sec())).data
+    return child_hd_nodes, child_pubkeys, preserved_redeem, sorted_redeem
+
+
+def check_trezor_multisig_normalizer_oracle(gate: Path) -> None:
+    """Validate Trezor multisig protobuf normalization against embit scripts."""
+    from embit import script
+
+    child_hd_nodes, child_pubkeys, preserved_redeem, sorted_redeem = trezor_multisig_fixture()
 
     old_style = messages.MultisigRedeemScriptType(
         pubkeys=[messages.HDNodePathType(node=node, address_n=[]) for node in child_hd_nodes],
@@ -1360,7 +1381,13 @@ def check_trezor_multisig_normalizer_oracle(gate: Path) -> None:
     if parsed.get("threshold") != "2" or parsed.get("num_pubkeys") != "3" or parsed.get("sorted") != "1":
         raise AssertionError(f"unexpected sorted P2SH-P2WSH multisig policy: {parsed}")
 
-    private_key_node = hdnode_type_from_xpub(str(child_nodes[0]))
+    private_key_node = messages.HDNodeType(
+        depth=child_hd_nodes[0].depth,
+        fingerprint=child_hd_nodes[0].fingerprint,
+        child_num=child_hd_nodes[0].child_num,
+        chain_code=child_hd_nodes[0].chain_code,
+        public_key=child_hd_nodes[0].public_key,
+    )
     private_key_node.private_key = b"\x01" * 32
     assert_multisig_normalizer_rejects(
         gate,
@@ -1378,7 +1405,7 @@ def check_trezor_multisig_normalizer_oracle(gate: Path) -> None:
     assert_multisig_normalizer_rejects(
         gate,
         messages.MultisigRedeemScriptType(
-            nodes=[hdnode_type_from_xpub(str(node)) for node in account_nodes],
+            nodes=child_hd_nodes,
             address_n=[0x80000000],
             signatures=[b"", b"", b""],
             m=2,
@@ -1412,6 +1439,14 @@ def check_local_btc_signtx_wire_script_oracle(gate: Path) -> None:
     external_output = btc_tx_output_external(amount=90_000)
     change_output = btc_tx_output_change(amount=45_000)
     common_meta = btc_tx_ack_meta(2, 2)
+    multisig_nodes, _, _, _ = trezor_multisig_fixture()
+    multisig = messages.MultisigRedeemScriptType(
+        nodes=multisig_nodes,
+        address_n=[],
+        signatures=[b"", b"", b""],
+        m=2,
+        pubkeys_order=messages.MultisigPubkeysOrder.PRESERVED,
+    )
 
     single_responses = run_local_wire_script(
         gate,
@@ -1613,12 +1648,11 @@ def check_local_btc_signtx_wire_script_oracle(gate: Path) -> None:
     )
     assert_btc_failure(unsupported_script_responses[-1], messages.FailureType.DataError, "BTC unsupported input script")
 
-    multisig = messages.MultisigRedeemScriptType(m=2, nodes=[], signatures=[b"", b""])
     get_multisig_address_res = run_local_wire_oracle(
         gate,
         messages.MessageType.GetAddress,
         messages.GetAddress(
-            address_n=btc_input_path(),
+            address_n=[0x80000030, 0x80000001, 0x80000000, 0x80000002, 0, 0],
             coin_name="Testnet",
             show_display=False,
             script_type=messages.InputScriptType.SPENDMULTISIG,
@@ -1626,6 +1660,33 @@ def check_local_btc_signtx_wire_script_oracle(gate: Path) -> None:
         ),
     )
     assert_btc_failure(get_multisig_address_res, messages.FailureType.DataError, "BTC multisig address request")
+
+    valid_multisig_input_responses = run_local_wire_script(
+        gate,
+        [
+            (
+                messages.MessageType.SignTx,
+                messages.SignTx(coin_name="Testnet", inputs_count=1, outputs_count=1, version=2, lock_time=0),
+            ),
+            (messages.MessageType.TxAck, btc_tx_ack_meta(1, 1)),
+            (
+                messages.MessageType.TxAck,
+                btc_tx_ack_input(
+                    btc_tx_input(
+                        path=[0x80000030, 0x80000001, 0x80000000, 0x80000002, 0, 0],
+                        script_type=messages.InputScriptType.SPENDMULTISIG,
+                        multisig=multisig,
+                    )
+                ),
+            ),
+            (messages.MessageType.TxAck, btc_tx_ack_output(external_output)),
+        ],
+    )
+    assert_btc_failure(
+        valid_multisig_input_responses[-1],
+        messages.FailureType.DataError,
+        "BTC valid multisig input remains policy-rejected",
+    )
 
     get_taproot_address_res = run_local_wire_oracle(
         gate,
@@ -1685,7 +1746,7 @@ def check_local_btc_signtx_wire_script_oracle(gate: Path) -> None:
                 messages.MessageType.TxAck,
                 btc_tx_ack_output(
                     messages.TxOutputType(
-                        address_n=btc_input_path(change=1),
+                        address_n=[0x80000030, 0x80000001, 0x80000000, 0x80000002, 1, 0],
                         amount=90_000,
                         script_type=messages.OutputScriptType.PAYTOMULTISIG,
                         multisig=multisig,

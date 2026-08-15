@@ -1,9 +1,8 @@
 #ifndef TREZOR_BITCOIN_MULTISIG_H_
 #define TREZOR_BITCOIN_MULTISIG_H_
 
-#include "protocol.h"
-
 #include "../../../wallet.h"
+#include "../../../wallet_core/wallet_core.h"
 
 #include <stdbool.h>
 #include <stddef.h>
@@ -14,6 +13,9 @@
 // Keep this adapter-local so the Trezor protocol normalizer does not pull in
 // Jade's CBOR RPC signer layer. The value intentionally mirrors signer.h.
 #define TREZOR_BITCOIN_MULTISIG_MAX_SIGNERS 15U
+#define TREZOR_BITCOIN_MULTISIG_SIGNATURE_MAX_LEN (EC_SIGNATURE_DER_MAX_LEN + 1U)
+#define TREZOR_BITCOIN_MULTISIG_SCRIPT_PUBKEY_MAX_LEN 520U
+#define TREZOR_BITCOIN_MULTISIG_STANDARD_SCRIPT_PUBKEY_MAX_LEN 34U
 #define TREZOR_BITCOIN_MULTISIG_REDEEM_SCRIPT_MAX_LEN                                                                              \
     (1U + 1U + (TREZOR_BITCOIN_MULTISIG_MAX_SIGNERS * (1U + EC_PUBLIC_KEY_LEN)) + 1U + 1U)
 
@@ -38,7 +40,7 @@ typedef struct {
     size_t nodes_len;
     uint32_t address_n[WALLET_CORE_MAX_PATH_LEN];
     size_t address_n_len;
-    uint8_t signatures[TREZOR_BITCOIN_MULTISIG_MAX_SIGNERS][TREZOR_BITCOIN_SIGNATURE_MAX_LEN];
+    uint8_t signatures[TREZOR_BITCOIN_MULTISIG_MAX_SIGNERS][TREZOR_BITCOIN_MULTISIG_SIGNATURE_MAX_LEN];
     size_t signature_lens[TREZOR_BITCOIN_MULTISIG_MAX_SIGNERS];
     size_t signatures_len;
     uint32_t threshold;
@@ -55,9 +57,18 @@ typedef struct {
     uint8_t pubkeys[TREZOR_BITCOIN_MULTISIG_MAX_SIGNERS * EC_PUBLIC_KEY_LEN];
     uint8_t redeem_script[TREZOR_BITCOIN_MULTISIG_REDEEM_SCRIPT_MAX_LEN];
     size_t redeem_script_len;
-    uint8_t script_pubkey[TREZOR_BITCOIN_PREV_SCRIPT_MAX_LEN];
+    uint8_t script_pubkey[TREZOR_BITCOIN_MULTISIG_SCRIPT_PUBKEY_MAX_LEN];
     size_t script_pubkey_len;
 } trezor_bitcoin_multisig_policy_t;
+
+typedef struct {
+    script_variant_t variant;
+    uint8_t threshold;
+    uint8_t num_pubkeys;
+    bool sorted;
+    uint8_t script_pubkey[TREZOR_BITCOIN_MULTISIG_STANDARD_SCRIPT_PUBKEY_MAX_LEN];
+    size_t script_pubkey_len;
+} trezor_bitcoin_multisig_summary_t;
 
 bool trezor_bitcoin_multisig_decode(const uint8_t* payload, size_t payload_len, trezor_bitcoin_multisig_t* output);
 bool trezor_bitcoin_multisig_normalize(const trezor_bitcoin_multisig_t* multisig, uint32_t script_type,
