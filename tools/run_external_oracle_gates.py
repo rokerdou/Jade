@@ -32,6 +32,7 @@ WIRE_INIT_HEADER_LEN = 9
 WIRE_CONT_HEADER_LEN = 1
 WIRE_MARKER = 0x3F
 WIRE_MAGIC = 0x23
+ONEKEY_SIGN_PSBT_MESSAGE_TYPE = 10052
 
 
 def parse_vectors(output: str) -> dict[str, str]:
@@ -439,6 +440,13 @@ def wire_encode(message_type: int, payload: bytes) -> bytes:
 
 def run_local_wire_oracle(gate: Path, message_type: int, message: messages.MessageType) -> tuple[int, bytes]:
     wire = wire_encode(message_type, message_payload(message))
+    output = subprocess.check_output([str(gate), "--trezor-wire-oracle", wire.hex()], text=True)
+    parsed = parse_vectors(output)
+    return int(parsed["response_type"]), bytes.fromhex(parsed["response_payload"])
+
+
+def run_local_raw_wire_oracle(gate: Path, message_type: int, payload: bytes) -> tuple[int, bytes]:
+    wire = wire_encode(message_type, payload)
     output = subprocess.check_output([str(gate), "--trezor-wire-oracle", wire.hex()], text=True)
     parsed = parse_vectors(output)
     return int(parsed["response_type"]), bytes.fromhex(parsed["response_payload"])
@@ -1159,6 +1167,44 @@ def check_embit_btc_p2pkh_signed_tx_oracle(
         raise AssertionError(f"P2PKH output script mismatch: {txout.script_pubkey.data.hex()}")
 
 
+def check_embit_psbt_oracle() -> bytes:
+    """Build and parse a minimal unsigned PSBT with independent community code."""
+    from embit import psbt, script
+    from embit.transaction import Transaction, TransactionInput, TransactionOutput
+
+    prev_hash = bytes.fromhex("44" * 32)
+    input_script = script.Script(btc_p2wpkh_script_pubkey())
+    output_script = script.Script(btc_p2pkh_script_pubkey())
+    unsigned = Transaction(
+        version=2,
+        vin=[TransactionInput(prev_hash, 3)],
+        vout=[TransactionOutput(90_000, output_script)],
+        locktime=0,
+    )
+    packet = psbt.PSBT(unsigned)
+    packet.inputs[0].witness_utxo = TransactionOutput(100_000, input_script)
+
+    raw = packet.serialize()
+    parsed = psbt.PSBT.parse(raw)
+    if parsed.serialize() != raw:
+        raise AssertionError("PSBT oracle failed round-trip serialization")
+    if parsed.tx.version != 2 or parsed.tx.locktime != 0:
+        raise AssertionError("PSBT oracle unsigned tx version/locktime mismatch")
+    if len(parsed.tx.vin) != 1 or len(parsed.tx.vout) != 1:
+        raise AssertionError("PSBT oracle input/output count mismatch")
+    if parsed.tx.vin[0].txid != prev_hash or parsed.tx.vin[0].vout != 3:
+        raise AssertionError("PSBT oracle input outpoint mismatch")
+    if parsed.tx.vout[0].value != 90_000 or parsed.tx.vout[0].script_pubkey.data != btc_p2pkh_script_pubkey():
+        raise AssertionError("PSBT oracle output mismatch")
+    if parsed.inputs[0].witness_utxo is None:
+        raise AssertionError("PSBT oracle missing witness_utxo")
+    if parsed.inputs[0].witness_utxo.value != 100_000:
+        raise AssertionError("PSBT oracle witness_utxo amount mismatch")
+    if parsed.inputs[0].witness_utxo.script_pubkey.data != btc_p2wpkh_script_pubkey():
+        raise AssertionError("PSBT oracle witness_utxo script mismatch")
+    return raw
+
+
 def check_local_btc_signtx_wire_script_oracle(gate: Path) -> None:
     btc_pubkey_hash = hash160(BTC_TEST_COMPRESSED_PUBKEY)
     btc_p2wpkh_script = b"\x00\x14" + btc_pubkey_hash
@@ -1367,6 +1413,89 @@ def check_local_btc_signtx_wire_script_oracle(gate: Path) -> None:
         ],
     )
     assert_btc_failure(unsupported_script_responses[-1], messages.FailureType.DataError, "BTC unsupported input script")
+
+    multisig = messages.MultisigRedeemScriptType(m=2, nodes=[], signatures=[b"", b""])
+    get_multisig_address_res = run_local_wire_oracle(
+        gate,
+        messages.MessageType.GetAddress,
+        messages.GetAddress(
+            address_n=btc_input_path(),
+            coin_name="Testnet",
+            show_display=False,
+            script_type=messages.InputScriptType.SPENDMULTISIG,
+            multisig=multisig,
+        ),
+    )
+    assert_btc_failure(get_multisig_address_res, messages.FailureType.DataError, "BTC multisig address request")
+
+    get_taproot_address_res = run_local_wire_oracle(
+        gate,
+        messages.MessageType.GetAddress,
+        messages.GetAddress(
+            address_n=[0x80000056, 0x80000001, 0x80000000, 0, 0],
+            coin_name="Testnet",
+            show_display=False,
+            script_type=messages.InputScriptType.SPENDTAPROOT,
+        ),
+    )
+    assert_btc_failure(get_taproot_address_res, messages.FailureType.DataError, "BTC taproot address request")
+
+    get_taproot_xpub_res = run_local_wire_oracle(
+        gate,
+        messages.MessageType.GetPublicKey,
+        messages.GetPublicKey(
+            address_n=[0x80000056, 0x80000001, 0x80000000],
+            coin_name="Testnet",
+            script_type=messages.InputScriptType.SPENDTAPROOT,
+        ),
+    )
+    assert_btc_failure(get_taproot_xpub_res, messages.FailureType.DataError, "BTC taproot public key request")
+
+    taproot_input_responses = run_local_wire_script(
+        gate,
+        [
+            (
+                messages.MessageType.SignTx,
+                messages.SignTx(coin_name="Testnet", inputs_count=1, outputs_count=1, version=2, lock_time=0),
+            ),
+            (messages.MessageType.TxAck, btc_tx_ack_meta(1, 1)),
+            (
+                messages.MessageType.TxAck,
+                btc_tx_ack_input(
+                    btc_tx_input(
+                        path=[0x80000056, 0x80000001, 0x80000000, 0, 0],
+                        script_type=messages.InputScriptType.SPENDTAPROOT,
+                        amount=100_000,
+                    )
+                ),
+            ),
+        ],
+    )
+    assert_btc_failure(taproot_input_responses[-1], messages.FailureType.DataError, "BTC taproot input script")
+
+    multisig_output_responses = run_local_wire_script(
+        gate,
+        [
+            (
+                messages.MessageType.SignTx,
+                messages.SignTx(coin_name="Testnet", inputs_count=1, outputs_count=1, version=2, lock_time=0),
+            ),
+            (messages.MessageType.TxAck, btc_tx_ack_meta(1, 1)),
+            (messages.MessageType.TxAck, btc_tx_ack_input(tx_input_0)),
+            (
+                messages.MessageType.TxAck,
+                btc_tx_ack_output(
+                    messages.TxOutputType(
+                        address_n=btc_input_path(change=1),
+                        amount=90_000,
+                        script_type=messages.OutputScriptType.PAYTOMULTISIG,
+                        multisig=multisig,
+                    )
+                ),
+            ),
+        ],
+    )
+    assert_btc_failure(multisig_output_responses[-1], messages.FailureType.DataError, "BTC multisig output")
 
     legacy_script_pubkey = btc_p2pkh_script_pubkey()
     legacy_prev_txid = btc_prev_txid_for_single_input_two_outputs(prevout0_script_pubkey=legacy_script_pubkey)
@@ -2105,6 +2234,14 @@ def check_trezorlib_protocol_oracle(gate: Path, local_vectors: dict[str, str]) -
     if failure.code != messages.FailureType.UnexpectedMessage:
         raise AssertionError(f"TxAckPaymentRequest unexpected failure code: {failure.code}")
 
+    psbt_payload = check_embit_psbt_oracle()
+    response_type, payload = run_local_raw_wire_oracle(gate, ONEKEY_SIGN_PSBT_MESSAGE_TYPE, psbt_payload)
+    if response_type != messages.MessageType.Failure:
+        raise AssertionError(f"OneKey SignPsbt must be rejected until adapter policy exists: {response_type}")
+    failure = protobuf.load_message(io.BytesIO(payload), messages.Failure)
+    if failure.code != messages.FailureType.DataError:
+        raise AssertionError(f"OneKey SignPsbt unexpected failure code: {failure.code}")
+
 
 def main() -> int:
     parser = argparse.ArgumentParser()
@@ -2144,6 +2281,7 @@ def main() -> int:
     check_erc20_calldata_oracle(local, expected)
     check_trezorlib_btc_protobuf_oracle()
     check_trezorlib_btc_signtx_host_flow_oracle()
+    check_embit_psbt_oracle()
     check_local_btc_signtx_wire_script_oracle(gate)
     check_trezorlib_protocol_oracle(gate, local)
     print("PASS external_oracle_gates")

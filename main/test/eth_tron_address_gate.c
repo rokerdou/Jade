@@ -2642,6 +2642,28 @@ int main(int argc, char** argv)
         && trezor_bitcoin_get_address.script_type == BITCOIN_P2PKH_SPENDADDRESS);
     const size_t trezor_bitcoin_payload_len = trezor_bitcoin_writer.len;
 
+    uint8_t trezor_bitcoin_taproot_payload[256];
+    trezor_protobuf_writer_init(
+        &trezor_bitcoin_writer, trezor_bitcoin_taproot_payload, sizeof(trezor_bitcoin_taproot_payload));
+    for (size_t i = 0; i < ARRAY_LEN(btc_state_path); ++i) {
+        CHECK(trezor_protobuf_write_varint_field(&trezor_bitcoin_writer, 1, btc_state_path[i]));
+    }
+    CHECK(trezor_protobuf_write_string_field(&trezor_bitcoin_writer, 2, "Testnet"));
+    CHECK(trezor_protobuf_write_varint_field(&trezor_bitcoin_writer, 5, 5));
+    CHECK(!trezor_bitcoin_get_address_decode(
+        trezor_bitcoin_taproot_payload, trezor_bitcoin_writer.len, &trezor_bitcoin_get_address));
+
+    uint8_t trezor_bitcoin_multisig_payload[256];
+    trezor_protobuf_writer_init(
+        &trezor_bitcoin_writer, trezor_bitcoin_multisig_payload, sizeof(trezor_bitcoin_multisig_payload));
+    for (size_t i = 0; i < ARRAY_LEN(btc_state_path); ++i) {
+        CHECK(trezor_protobuf_write_varint_field(&trezor_bitcoin_writer, 1, btc_state_path[i]));
+    }
+    CHECK(trezor_protobuf_write_string_field(&trezor_bitcoin_writer, 2, "Testnet"));
+    CHECK(trezor_protobuf_write_bytes_field(&trezor_bitcoin_writer, 4, (const uint8_t*)"\x08\x02", 2));
+    CHECK(!trezor_bitcoin_get_address_decode(
+        trezor_bitcoin_multisig_payload, trezor_bitcoin_writer.len, &trezor_bitcoin_get_address));
+
     uint8_t trezor_bitcoin_address_payload[64];
     size_t trezor_bitcoin_address_payload_len = 0;
     CHECK(trezor_bitcoin_address_encode("mrCDrCybB6J1vRfbwM5hemdJz73FwDBC8r", trezor_bitcoin_address_payload,
@@ -3028,6 +3050,17 @@ int main(int argc, char** argv)
     CHECK(trezor_public_key_request.address_n_len == ARRAY_LEN(btc_account_path));
     CHECK(memcmp(trezor_public_key_request.address_n, btc_account_path, sizeof(btc_account_path)) == 0);
     const size_t trezor_btc_public_key_payload_len = trezor_btc_public_key_writer.len;
+
+    uint8_t trezor_btc_taproot_public_key_payload[256];
+    trezor_protobuf_writer_init(&trezor_btc_public_key_writer, trezor_btc_taproot_public_key_payload,
+        sizeof(trezor_btc_taproot_public_key_payload));
+    for (size_t i = 0; i < ARRAY_LEN(btc_account_path); ++i) {
+        CHECK(trezor_protobuf_write_varint_field(&trezor_btc_public_key_writer, 1, btc_account_path[i]));
+    }
+    CHECK(trezor_protobuf_write_string_field(&trezor_btc_public_key_writer, 4, "Testnet"));
+    CHECK(trezor_protobuf_write_varint_field(&trezor_btc_public_key_writer, 5, 5));
+    CHECK(!trezor_public_key_decode_generic(trezor_btc_taproot_public_key_payload,
+        trezor_btc_public_key_writer.len, &trezor_public_key_request));
 
     uint8_t trezor_btc_mainnet_public_key_payload[256];
     trezor_protobuf_writer_t trezor_btc_mainnet_public_key_writer;
@@ -3849,6 +3882,31 @@ int main(int argc, char** argv)
     CHECK(g_last_trezor_btc_confirm_request.amount == 90000);
     CHECK(g_last_trezor_btc_confirm_request.change == 5000);
     CHECK(g_last_trezor_btc_confirm_request.fee == 5000);
+    CHECK(g_last_trezor_btc_confirm_request.fee_rate_sats_per_vbyte == 35);
+    CHECK(g_last_ui_summary.chain == CHAIN_CONFIRM_CHAIN_BITCOIN);
+    CHECK(g_last_ui_summary.operation == CHAIN_CONFIRM_OPERATION_NATIVE_TRANSFER);
+    CHECK(chain_confirm_summary_has_field(&g_last_ui_summary, CHAIN_CONFIRM_FIELD_PATH));
+    const chain_confirm_field_t* const btc_change_case_to
+        = find_confirm_field(&g_last_ui_summary, CHAIN_CONFIRM_FIELD_TO);
+    CHECK(btc_change_case_to && btc_change_case_to->value_type == CHAIN_CONFIRM_VALUE_TEXT);
+    CHECK(strcmp(btc_change_case_to->value.text, "tb1qw508d6qejxtdg4y5r3zarvary0c5xw7kxpjzsx") == 0);
+    const chain_confirm_field_t* const btc_change_case_amount
+        = find_confirm_field(&g_last_ui_summary, CHAIN_CONFIRM_FIELD_AMOUNT);
+    CHECK(btc_change_case_amount && btc_change_case_amount->value_type == CHAIN_CONFIRM_VALUE_TEXT);
+    CHECK(strcmp(btc_change_case_amount->value.text, "90000 sats") == 0);
+    const chain_confirm_field_t* const btc_change_case_change
+        = find_confirm_field(&g_last_ui_summary, CHAIN_CONFIRM_FIELD_CHANGE);
+    CHECK(btc_change_case_change && btc_change_case_change->value_type == CHAIN_CONFIRM_VALUE_TEXT);
+    CHECK(strcmp(btc_change_case_change->value.text, "5000 sats") == 0);
+    const chain_confirm_field_t* const btc_change_case_fee
+        = find_confirm_field(&g_last_ui_summary, CHAIN_CONFIRM_FIELD_FEE);
+    CHECK(btc_change_case_fee && btc_change_case_fee->value_type == CHAIN_CONFIRM_VALUE_TEXT);
+    CHECK(strcmp(btc_change_case_fee->value.text, "5000 sats") == 0);
+    const chain_confirm_field_t* const btc_change_case_fee_rate
+        = find_confirm_field(&g_last_ui_summary, CHAIN_CONFIRM_FIELD_FEE_RATE);
+    CHECK(btc_change_case_fee_rate && btc_change_case_fee_rate->value_type == CHAIN_CONFIRM_VALUE_TEXT);
+    CHECK(strcmp(btc_change_case_fee_rate->value.text, "35 sat/vB") == 0);
+    CHECK(test_confirm_summary_fits_tdisplay_s3(&g_last_ui_summary));
     CHECK(trezor_btc_tx_request_has_signed_payload(session_response_payload, session_response_payload_len,
         TREZOR_BITCOIN_REQUEST_TXFINISHED, 0, true, 1, 2));
 

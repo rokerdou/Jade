@@ -292,6 +292,9 @@ main/
      OneKey `SignPsbt` 时，再加“安全拒绝 -> host parser gate -> policy -> UI -> signer”的小步链路。
    - 当前代码只实现到“安全拒绝”阶段：10052 `SignPsbt` 可被 trace 识别，但固定返回
      `Failure/DataError`。
+   - Host gate 已用第三方 `embit.psbt` 构造并 round-trip 解析最小 PSBT，随后通过本机
+     Trezor wire oracle 验证 OneKey `SignPsbt` 扩展消息必须返回 `Failure/DataError`。
+     这保证 PSBT/raw bytes 不会在没有 adapter policy 的情况下进入签名路径。
 
 2. multisig
    - 必须参考 OneKey/Trezor 的 `MultisigRedeemScriptType` 与原版 Jade descriptor/multisig
@@ -300,6 +303,8 @@ main/
      不含非法 hardened 后缀、script_type 与 redeem/witness script 匹配、change path 属于
      已登记 descriptor。
    - 未完成 descriptor/xpub/path/change 绑定前，只能明确拒绝，不能半支持。
+   - 当前 gate 已覆盖 `GetAddress` multisig 字段、`SignTx` multisig input/output 的拒绝路径。
+     这些请求必须停在协议/normalizer 边界，不能进入 public key/address/signing policy。
 
 3. Taproot / BIP86
    - OneKey/Trezor proto 的 `SPENDTAPROOT=5`、`PAYTOTAPROOT=6` 只是协议入口，不等于可签名。
@@ -308,6 +313,14 @@ main/
      Taproot。
    - 推荐顺序：先实现 BIP86 `GetPublicKey/GetAddress` host oracle 和明确 `SignTx`
      Taproot 拒绝；再加 Schnorr signer 边界；最后开放 Taproot 签名。
+   - 当前 gate 已覆盖 `GetAddress`、`GetPublicKey`、`SignTx` Taproot script type 拒绝。
+     在 x-only pubkey、BIP341 sighash、Schnorr signer 和 UI 摘要绑定完成前，不能开放。
+
+4. UI 摘要门禁
+   - BTC 签名 host gate 必须验证 review model 中 `Path/To/Amount/Change/Fee/FeeRate`
+     与交易 policy 计算结果一致。
+   - 所有新增 BTC 摘要字段必须通过 `test_confirm_summary_fits_tdisplay_s3()`，避免再次出现
+     超过 T-Display-S3 对话框行数或分页约束导致的确认流异常。
 
 ### Phase 3: 收敛 Protocol Adapter / App Service
 
@@ -449,7 +462,8 @@ tools/
 
 3. PSBT/multisig/Taproot 先做 host gate 和安全拒绝
    - 标准 Trezor `SignTx/TxAck` 优先于 OneKey `SignPsbt` 扩展。
-   - multisig/Taproot 未完成 oracle 与 policy 前继续拒绝。
+   - OneKey `SignPsbt` 已有第三方 PSBT oracle + wire 拒绝门禁。
+   - multisig/Taproot 已有 protocol-level 拒绝门禁；未完成 descriptor/path/script policy 前继续拒绝。
 
 ## 每次改动必须检查
 
