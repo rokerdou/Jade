@@ -136,7 +136,7 @@ def assert_address(session: Any, *, coin_name: str, path: list[int], expected_pr
 
 def account_xpub(
     session: Any, *, coin_name: str, testnet: bool, script_type: messages.InputScriptType = P2WPKH_SCRIPT_TYPE,
-    account: int = 0
+    account: int = 0, expected_prefix: str | None = None
 ) -> str:
     response = btc.get_public_node(
         session,
@@ -148,6 +148,11 @@ def account_xpub(
     xpub = getattr(response, "xpub", None)
     if not xpub:
         raise AssertionError("GetPublicKey did not return xpub")
+    if expected_prefix is not None and not xpub.startswith(expected_prefix):
+        raise AssertionError(
+            f"{coin_name}/{script_type} xpub prefix mismatch: expected {expected_prefix}, got {xpub[:4]}"
+        )
+    bip32.HDKey.from_base58(xpub)
     return xpub
 
 
@@ -178,6 +183,38 @@ def optional_account_xpub(
     except (exceptions.TrezorFailure, exceptions.Cancelled) as exc:
         print(f"  WARN account xpub unavailable for change oracle: {exc}", flush=True)
         return None
+
+
+def expected_account_xpub_prefix(*, testnet: bool, script_type: messages.InputScriptType) -> str:
+    if script_type == P2PKH_SCRIPT_TYPE:
+        return "tpub" if testnet else "xpub"
+    if script_type == P2SH_P2WPKH_SCRIPT_TYPE:
+        return "upub" if testnet else "ypub"
+    if script_type == P2WPKH_SCRIPT_TYPE:
+        return "vpub" if testnet else "zpub"
+    raise ValueError(f"unsupported account script type: {script_type}")
+
+
+def test_account_xpubs(session: Any) -> None:
+    print("RUN BTC account xpubs testnet/mainnet", flush=True)
+    cases = [
+        ("Testnet", True, P2PKH_SCRIPT_TYPE),
+        ("Testnet", True, P2SH_P2WPKH_SCRIPT_TYPE),
+        ("Testnet", True, P2WPKH_SCRIPT_TYPE),
+        ("Bitcoin", False, P2PKH_SCRIPT_TYPE),
+        ("Bitcoin", False, P2SH_P2WPKH_SCRIPT_TYPE),
+        ("Bitcoin", False, P2WPKH_SCRIPT_TYPE),
+    ]
+    for coin_name, testnet, script_type in cases:
+        prefix = expected_account_xpub_prefix(testnet=testnet, script_type=script_type)
+        xpub = account_xpub(
+            session,
+            coin_name=coin_name,
+            testnet=testnet,
+            script_type=script_type,
+            expected_prefix=prefix,
+        )
+        print(f"  PASS {coin_name}/{enum_name(script_type)} account xpub={xpub[:8]}...", flush=True)
 
 
 def assert_signed_tx(
@@ -632,13 +669,24 @@ def test_mainnet_single(session: Any) -> None:
     )
 
 
-def test_testnet_legacy_p2pkh(session: Any) -> None:
-    print("RUN testnet single-input legacy P2PKH with prev_tx verification", flush=True)
-    output_address = "tb1qw508d6qejxtdg4y5r3zarvary0c5xw7kxpjzsx"
-    xpub = account_xpub(session, coin_name="Testnet", testnet=True, script_type=P2PKH_SCRIPT_TYPE)
+def test_legacy_p2pkh(session: Any, *, coin_name: str, testnet: bool) -> None:
+    network_name = "testnet" if testnet else "mainnet"
+    print(f"RUN {network_name} single-input legacy P2PKH with prev_tx verification", flush=True)
+    output_address = (
+        "tb1qw508d6qejxtdg4y5r3zarvary0c5xw7kxpjzsx"
+        if testnet
+        else "1BoatSLRHtKNngkdXEeobR76b53LETtpyT"
+    )
+    xpub = account_xpub(
+        session,
+        coin_name=coin_name,
+        testnet=testnet,
+        script_type=P2PKH_SCRIPT_TYPE,
+        expected_prefix=expected_account_xpub_prefix(testnet=testnet, script_type=P2PKH_SCRIPT_TYPE),
+    )
     pubkey = public_key_for_xpub(xpub)
-    input_path = p2pkh_path(testnet=True)
-    input_address = p2pkh_address_from_xpub(xpub, testnet=True, change=0, index=0)
+    input_path = p2pkh_path(testnet=testnet)
+    input_address = p2pkh_address_from_xpub(xpub, testnet=testnet, change=0, index=0)
     prev_tx = prev_tx_from_outputs(
         [
             PrevOutput(amount=100_000, script_pubkey=script.p2pkh(pubkey).data),
@@ -657,7 +705,7 @@ def test_testnet_legacy_p2pkh(session: Any) -> None:
     outputs = [messages.TxOutputType(address=output_address, amount=90_000, script_type=PAYTOADDRESS)]
     signatures, raw_tx = sign_btc(
         session,
-        coin_name="Testnet",
+        coin_name=coin_name,
         inputs=inputs,
         outputs=outputs,
         prev_txs={prev_tx.txid: prev_tx},
@@ -671,19 +719,30 @@ def test_testnet_legacy_p2pkh(session: Any) -> None:
         expected_output=ExpectedOutput(output_address, 90_000),
     )
     print(
-        f"PASS testnet legacy P2PKH: from={input_address} to={output_address} amount=90000 "
+        f"PASS {network_name} legacy P2PKH: from={input_address} to={output_address} amount=90000 "
         f"sigs={list(map(len, signatures))} raw_len={len(raw_tx)}",
         flush=True,
     )
 
 
-def test_testnet_p2sh_p2wpkh(session: Any) -> None:
-    print("RUN testnet single-input P2SH-P2WPKH with prev_tx verification", flush=True)
-    output_address = "tb1qw508d6qejxtdg4y5r3zarvary0c5xw7kxpjzsx"
-    xpub = account_xpub(session, coin_name="Testnet", testnet=True, script_type=P2SH_P2WPKH_SCRIPT_TYPE)
+def test_p2sh_p2wpkh(session: Any, *, coin_name: str, testnet: bool) -> None:
+    network_name = "testnet" if testnet else "mainnet"
+    print(f"RUN {network_name} single-input P2SH-P2WPKH with prev_tx verification", flush=True)
+    output_address = (
+        "tb1qw508d6qejxtdg4y5r3zarvary0c5xw7kxpjzsx"
+        if testnet
+        else "3J98t1WpEZ73CNmQviecrnyiWrnqRhWNLy"
+    )
+    xpub = account_xpub(
+        session,
+        coin_name=coin_name,
+        testnet=testnet,
+        script_type=P2SH_P2WPKH_SCRIPT_TYPE,
+        expected_prefix=expected_account_xpub_prefix(testnet=testnet, script_type=P2SH_P2WPKH_SCRIPT_TYPE),
+    )
     pubkey = public_key_for_xpub(xpub)
-    input_path = p2sh_p2wpkh_path(testnet=True)
-    input_address = p2sh_p2wpkh_address_from_xpub(xpub, testnet=True, change=0, index=0)
+    input_path = p2sh_p2wpkh_path(testnet=testnet)
+    input_address = p2sh_p2wpkh_address_from_xpub(xpub, testnet=testnet, change=0, index=0)
     prev_tx = prev_tx_from_outputs(
         [
             PrevOutput(amount=100_000, script_pubkey=script.p2sh(script.p2wpkh(pubkey)).data),
@@ -702,7 +761,7 @@ def test_testnet_p2sh_p2wpkh(session: Any) -> None:
     outputs = [messages.TxOutputType(address=output_address, amount=90_000, script_type=PAYTOADDRESS)]
     signatures, raw_tx = sign_btc(
         session,
-        coin_name="Testnet",
+        coin_name=coin_name,
         inputs=inputs,
         outputs=outputs,
         prev_txs={prev_tx.txid: prev_tx},
@@ -716,10 +775,26 @@ def test_testnet_p2sh_p2wpkh(session: Any) -> None:
         expected_output=ExpectedOutput(output_address, 90_000),
     )
     print(
-        f"PASS testnet P2SH-P2WPKH: from={input_address} to={output_address} amount=90000 "
+        f"PASS {network_name} P2SH-P2WPKH: from={input_address} to={output_address} amount=90000 "
         f"sigs={list(map(len, signatures))} raw_len={len(raw_tx)}",
         flush=True,
     )
+
+
+def test_testnet_legacy_p2pkh(session: Any) -> None:
+    test_legacy_p2pkh(session, coin_name="Testnet", testnet=True)
+
+
+def test_testnet_p2sh_p2wpkh(session: Any) -> None:
+    test_p2sh_p2wpkh(session, coin_name="Testnet", testnet=True)
+
+
+def test_mainnet_legacy_p2pkh(session: Any) -> None:
+    test_legacy_p2pkh(session, coin_name="Bitcoin", testnet=False)
+
+
+def test_mainnet_p2sh_p2wpkh(session: Any) -> None:
+    test_p2sh_p2wpkh(session, coin_name="Bitcoin", testnet=False)
 
 
 def test_rejections() -> None:
@@ -778,9 +853,9 @@ def test_rejections() -> None:
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument(
-        "--include-mainnet-sign",
+        "--skip-mainnet-sign",
         action="store_true",
-        help="Also ask the device to sign a fake mainnet P2WPKH transaction.",
+        help="Skip the fake mainnet P2WPKH signing regression.",
     )
     parser.add_argument("--skip-rejections", action="store_true", help="Skip negative protocol tests.")
     parser.add_argument("--include-legacy", action="store_true", help="Run real-device P2PKH/P2SH-P2WPKH tests.")
@@ -799,6 +874,12 @@ def main() -> int:
     print(f"PASS address testnet={testnet_address}", flush=True)
     print(f"PASS address mainnet={mainnet_address}", flush=True)
 
+    session = get_session("codex-btc-xpubs")
+    try:
+        test_account_xpubs(session)
+    finally:
+        close_session(session)
+
     session = get_session("codex-btc-single")
     try:
         test_testnet_single(session)
@@ -811,23 +892,33 @@ def main() -> int:
     finally:
         close_session(session)
 
-    if args.include_mainnet_sign:
+    if not args.skip_mainnet_sign:
         session = get_session("codex-btc-mainnet")
         try:
             test_mainnet_single(session)
         finally:
             close_session(session)
     else:
-        print("SKIP mainnet signing; pass --include-mainnet-sign to enable", flush=True)
+        print("SKIP mainnet signing", flush=True)
     if args.include_legacy:
         session = get_session("codex-btc-legacy-p2pkh")
         try:
             test_testnet_legacy_p2pkh(session)
         finally:
             close_session(session)
+        session = get_session("codex-btc-mainnet-legacy-p2pkh")
+        try:
+            test_mainnet_legacy_p2pkh(session)
+        finally:
+            close_session(session)
         session = get_session("codex-btc-p2sh-p2wpkh")
         try:
             test_testnet_p2sh_p2wpkh(session)
+        finally:
+            close_session(session)
+        session = get_session("codex-btc-mainnet-p2sh-p2wpkh")
+        try:
+            test_mainnet_p2sh_p2wpkh(session)
         finally:
             close_session(session)
     else:

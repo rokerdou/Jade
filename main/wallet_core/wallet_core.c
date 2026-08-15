@@ -111,6 +111,42 @@ static bool wallet_core_bip32_public_version_allowed(const uint32_t version)
         || version == 0x049D7CB2U || version == 0x04B24746U || version == 0x044A5262U || version == 0x045F1CF6U;
 }
 
+static void wallet_core_write_be32(uint8_t* const output, const uint32_t value)
+{
+    output[0] = (uint8_t)(value >> 24);
+    output[1] = (uint8_t)(value >> 16);
+    output[2] = (uint8_t)(value >> 8);
+    output[3] = (uint8_t)value;
+}
+
+static bool wallet_core_public_node_to_base58(
+    const struct ext_key* const node, const uint32_t public_version, char** const output)
+{
+    if (!node || !output || !wallet_core_bip32_public_version_allowed(public_version)
+        || (node->pub_key[0] != 0x02 && node->pub_key[0] != 0x03)) {
+        return false;
+    }
+
+    uint8_t serialized[BIP32_SERIALIZED_LEN];
+    size_t offset = 0;
+    wallet_core_write_be32(serialized + offset, public_version);
+    offset += sizeof(uint32_t);
+    serialized[offset++] = node->depth;
+    memcpy(serialized + offset, node->parent160, BIP32_KEY_FINGERPRINT_LEN);
+    offset += BIP32_KEY_FINGERPRINT_LEN;
+    wallet_core_write_be32(serialized + offset, node->child_num);
+    offset += sizeof(uint32_t);
+    memcpy(serialized + offset, node->chain_code, sizeof(node->chain_code));
+    offset += sizeof(node->chain_code);
+    memcpy(serialized + offset, node->pub_key, sizeof(node->pub_key));
+    offset += sizeof(node->pub_key);
+
+    const bool ok = offset == sizeof(serialized)
+        && wally_base58_from_bytes(serialized, sizeof(serialized), BASE58_FLAG_CHECKSUM, output) == WALLY_OK && *output;
+    JADE_WALLY_VERIFY(wally_bzero(serialized, sizeof(serialized)));
+    return ok;
+}
+
 bool wallet_core_get_public_node_with_version(
     const wallet_core_path_t* const path, const uint32_t bip32_public_version, wallet_core_public_node_t* const output)
 {
@@ -124,12 +160,9 @@ bool wallet_core_get_public_node_with_version(
     wally_bzero(output, sizeof(*output));
 
     bool ok = wallet_get_hdkey(path->parts, path->len, BIP32_FLAG_KEY_PUBLIC, &derived);
-    if (ok && bip32_public_version != 0) {
-        derived.version = bip32_public_version;
-    }
     if (ok) {
-        ok = bip32_key_to_base58(&derived, BIP32_FLAG_KEY_PUBLIC, &xpub) == WALLY_OK && xpub
-            && strlen(xpub) < sizeof(output->xpub);
+        const uint32_t public_version = bip32_public_version != 0 ? bip32_public_version : derived.version;
+        ok = wallet_core_public_node_to_base58(&derived, public_version, &xpub) && strlen(xpub) < sizeof(output->xpub);
     }
     if (ok) {
         output->depth = derived.depth;

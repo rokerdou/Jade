@@ -26,10 +26,17 @@ static const uint8_t TEST_HASH160[HASH160_LEN]
     = { 0x99, 0x88, 0x77, 0x66, 0x60, 0x61, 0x62, 0x63, 0x64, 0x65,
           0x66, 0x67, 0x68, 0x69, 0x6a, 0x6b, 0x6c, 0x6d, 0x6e, 0x6f };
 static const uint8_t TEST_ROOT_FINGERPRINT[BIP32_KEY_FINGERPRINT_LEN] = { 0xaa, 0xbb, 0xcc, 0xdd };
-static const char TEST_XPUB[] = "xpub-parent-fingerprint-test";
+static const char TEST_XPUB[] = "xpub-serialized-public-node-test";
 
 static keychain_t s_keychain;
-static uint32_t s_last_bip32_base58_version = 0;
+static uint8_t s_last_base58_payload[BIP32_SERIALIZED_LEN];
+static size_t s_last_base58_payload_len = 0;
+static uint32_t s_last_base58_version = 0;
+
+static uint32_t read_be32(const uint8_t* const bytes)
+{
+    return ((uint32_t)bytes[0] << 24) | ((uint32_t)bytes[1] << 16) | ((uint32_t)bytes[2] << 8) | (uint32_t)bytes[3];
+}
 
 const keychain_t* keychain_get(void) { return &s_keychain; }
 
@@ -49,6 +56,7 @@ bool wallet_get_hdkey(const uint32_t* const path, const size_t path_len, const u
     }
 
     memset(output, 0, sizeof(*output));
+    output->version = BIP32_VER_TEST_PUBLIC;
     output->depth = 5;
     output->child_num = path[path_len - 1];
     memcpy(output->parent160, TEST_PARENT160, sizeof(TEST_PARENT160));
@@ -63,20 +71,34 @@ bool wallet_get_hdkey(const uint32_t* const path, const size_t path_len, const u
     return true;
 }
 
-int bip32_key_to_base58(const struct ext_key* const hdkey, const uint32_t flags, char** const output)
+int wally_base58_from_bytes(const unsigned char* const bytes, const size_t bytes_len, const uint32_t flags,
+    char** const output)
 {
-    if (!hdkey || flags != BIP32_FLAG_KEY_PUBLIC || !output
-        || memcmp(hdkey->parent160, TEST_PARENT160, sizeof(TEST_PARENT160)) != 0) {
+    if (!bytes || bytes_len != BIP32_SERIALIZED_LEN || flags != BASE58_FLAG_CHECKSUM || !output) {
         return WALLY_EINVAL;
     }
 
-    s_last_bip32_base58_version = hdkey->version;
+    memcpy(s_last_base58_payload, bytes, bytes_len);
+    s_last_base58_payload_len = bytes_len;
+    s_last_base58_version = read_be32(bytes);
     *output = malloc(sizeof(TEST_XPUB));
     if (!*output) {
         return WALLY_ENOMEM;
     }
     memcpy(*output, TEST_XPUB, sizeof(TEST_XPUB));
     return WALLY_OK;
+}
+
+static bool last_serialized_public_node_matches(
+    const uint32_t version, const uint32_t child_num, const uint8_t depth)
+{
+    return s_last_base58_payload_len == BIP32_SERIALIZED_LEN && s_last_base58_version == version
+        && s_last_base58_payload[4] == depth
+        && memcmp(s_last_base58_payload + 5, TEST_PARENT160, BIP32_KEY_FINGERPRINT_LEN) == 0
+        && read_be32(s_last_base58_payload + 9) == child_num
+        && s_last_base58_payload[13] == 0xc0 && s_last_base58_payload[44] == 0xdf
+        && s_last_base58_payload[45] == 0x02 && s_last_base58_payload[46] == 0x01
+        && s_last_base58_payload[77] == 0x20;
 }
 
 int wally_free_string(char* const str)
@@ -163,24 +185,24 @@ int main(void)
     CHECK(strcmp(node.xpub, TEST_XPUB) == 0);
     CHECK(node.chain_code[0] == 0xc0);
     CHECK(node.chain_code[31] == 0xdf);
-    CHECK(s_last_bip32_base58_version == 0);
+    CHECK(last_serialized_public_node_matches(BIP32_VER_TEST_PUBLIC, 7, 5));
 
     memset(&node, 0, sizeof(node));
     CHECK(wallet_core_get_public_node_with_version(&path, BIP32_VER_TEST_PUBLIC, &node));
     CHECK(strcmp(node.xpub, TEST_XPUB) == 0);
-    CHECK(s_last_bip32_base58_version == BIP32_VER_TEST_PUBLIC);
+    CHECK(last_serialized_public_node_matches(BIP32_VER_TEST_PUBLIC, 7, 5));
     CHECK(wallet_core_get_public_node_with_version(&path, 0x04B24746U, &node));
     CHECK(strcmp(node.xpub, TEST_XPUB) == 0);
-    CHECK(s_last_bip32_base58_version == 0x04B24746U);
+    CHECK(last_serialized_public_node_matches(0x04B24746U, 7, 5));
     CHECK(wallet_core_get_public_node_with_version(&path, 0x049D7CB2U, &node));
     CHECK(strcmp(node.xpub, TEST_XPUB) == 0);
-    CHECK(s_last_bip32_base58_version == 0x049D7CB2U);
+    CHECK(last_serialized_public_node_matches(0x049D7CB2U, 7, 5));
     CHECK(wallet_core_get_public_node_with_version(&path, 0x045F1CF6U, &node));
     CHECK(strcmp(node.xpub, TEST_XPUB) == 0);
-    CHECK(s_last_bip32_base58_version == 0x045F1CF6U);
+    CHECK(last_serialized_public_node_matches(0x045F1CF6U, 7, 5));
     CHECK(wallet_core_get_public_node_with_version(&path, 0x044A5262U, &node));
     CHECK(strcmp(node.xpub, TEST_XPUB) == 0);
-    CHECK(s_last_bip32_base58_version == 0x044A5262U);
+    CHECK(last_serialized_public_node_matches(0x044A5262U, 7, 5));
     CHECK(!wallet_core_get_public_node_with_version(&path, 0x0488ADE4U, &node));
     CHECK(!wallet_core_get_public_node_with_version(&path, BIP32_VER_TEST_PRIVATE, &node));
 
