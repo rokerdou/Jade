@@ -501,6 +501,10 @@ const char* trezor_trace_message_name(const uint16_t message_type)
         return "EthereumPublicKey";
     case TREZOR_MSG_ETHEREUM_SIGN_TX_EIP1559:
         return "EthereumSignTxEIP1559";
+    case TREZOR_MSG_ONEKEY_SIGN_PSBT:
+        return "OneKeySignPsbt";
+    case TREZOR_MSG_ONEKEY_SIGNED_PSBT:
+        return "OneKeySignedPsbt";
     default:
         return "Unknown";
     }

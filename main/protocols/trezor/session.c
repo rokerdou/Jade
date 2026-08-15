@@ -749,6 +749,12 @@ static bool trezor_session_handle_payload_ex(const trezor_session_t* const sessi
         return ok;
     }
 
+    if (request_type == TREZOR_MSG_ONEKEY_SIGN_PSBT) {
+        trezor_trace_set_stage("psbt:unsupported");
+        return trezor_session_failure_payload(TREZOR_FAILURE_DATA_ERROR, "PSBT adapter not enabled", response_type,
+            response_payload, response_payload_len, response_payload_written);
+    }
+
     return trezor_session_failure_payload(TREZOR_FAILURE_UNEXPECTED_MESSAGE, "Unsupported message", response_type,
         response_payload, response_payload_len, response_payload_written);
 }

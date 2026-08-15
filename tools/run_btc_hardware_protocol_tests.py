@@ -28,11 +28,13 @@ if HOST_ORACLE_SITE_PACKAGES.exists():
     sys.path.append(str(HOST_ORACLE_SITE_PACKAGES))
 
 from embit import bip32, ec, networks, script
-from embit.transaction import Transaction
+from embit.transaction import Transaction, TransactionInput, TransactionOutput
 
 
 HARDENED = 0x80000000
 P2WPKH_SCRIPT_TYPE = messages.InputScriptType.SPENDWITNESS
+P2PKH_SCRIPT_TYPE = messages.InputScriptType.SPENDADDRESS
+P2SH_P2WPKH_SCRIPT_TYPE = messages.InputScriptType.SPENDP2SHWITNESS
 PAYTOADDRESS = messages.OutputScriptType.PAYTOADDRESS
 
 
@@ -45,9 +47,30 @@ def p2wpkh_path(*, testnet: bool, index: int = 0, account: int = 0, change: int 
     return [h(84), h(coin_type), h(account), change, index]
 
 
+def p2pkh_path(*, testnet: bool, index: int = 0, account: int = 0, change: int = 0) -> list[int]:
+    coin_type = 1 if testnet else 0
+    return [h(44), h(coin_type), h(account), change, index]
+
+
+def p2sh_p2wpkh_path(*, testnet: bool, index: int = 0, account: int = 0, change: int = 0) -> list[int]:
+    coin_type = 1 if testnet else 0
+    return [h(49), h(coin_type), h(account), change, index]
+
+
 def p2wpkh_account_path(*, testnet: bool, account: int = 0) -> list[int]:
     coin_type = 1 if testnet else 0
     return [h(84), h(coin_type), h(account)]
+
+
+def account_path_for_script(script_type: messages.InputScriptType, *, testnet: bool, account: int = 0) -> list[int]:
+    coin_type = 1 if testnet else 0
+    if script_type == P2PKH_SCRIPT_TYPE:
+        return [h(44), h(coin_type), h(account)]
+    if script_type == P2SH_P2WPKH_SCRIPT_TYPE:
+        return [h(49), h(coin_type), h(account)]
+    if script_type == P2WPKH_SCRIPT_TYPE:
+        return [h(84), h(coin_type), h(account)]
+    raise ValueError(f"unsupported account script type: {script_type}")
 
 
 @dataclass(frozen=True)
@@ -62,6 +85,29 @@ class ExpectedInput:
 class ExpectedOutput:
     address: str | None
     amount: int
+
+
+@dataclass(frozen=True)
+class PrevInput:
+    prev_hash: bytes
+    prev_index: int
+    script_sig: bytes
+    sequence: int = 0xFFFFFFFE
+
+
+@dataclass(frozen=True)
+class PrevOutput:
+    amount: int
+    script_pubkey: bytes
+
+
+@dataclass(frozen=True)
+class PrevTx:
+    version: int
+    lock_time: int
+    inputs: list[PrevInput]
+    outputs: list[PrevOutput]
+    txid: bytes
 
 
 def get_session(app_name: str) -> Any:
@@ -88,13 +134,16 @@ def assert_address(session: Any, *, coin_name: str, path: list[int], expected_pr
     return response
 
 
-def account_xpub(session: Any, *, coin_name: str, testnet: bool, account: int = 0) -> str:
+def account_xpub(
+    session: Any, *, coin_name: str, testnet: bool, script_type: messages.InputScriptType = P2WPKH_SCRIPT_TYPE,
+    account: int = 0
+) -> str:
     response = btc.get_public_node(
         session,
-        p2wpkh_account_path(testnet=testnet, account=account),
+        account_path_for_script(script_type, testnet=testnet, account=account),
         show_display=False,
         coin_name=coin_name,
-        script_type=P2WPKH_SCRIPT_TYPE,
+        script_type=script_type,
     )
     xpub = getattr(response, "xpub", None)
     if not xpub:
@@ -108,9 +157,24 @@ def p2wpkh_address_from_xpub(xpub: str, *, testnet: bool, change: int, index: in
     return script.p2wpkh(key.get_public_key()).address(network)
 
 
-def optional_account_xpub(session: Any, *, coin_name: str, testnet: bool, account: int = 0) -> str | None:
+def p2pkh_address_from_xpub(xpub: str, *, testnet: bool, change: int, index: int) -> str:
+    key = bip32.HDKey.parse(xpub.encode()).child(change).child(index)
+    network = networks.NETWORKS["test" if testnet else "main"]
+    return script.p2pkh(key.get_public_key()).address(network)
+
+
+def p2sh_p2wpkh_address_from_xpub(xpub: str, *, testnet: bool, change: int, index: int) -> str:
+    key = bip32.HDKey.parse(xpub.encode()).child(change).child(index)
+    network = networks.NETWORKS["test" if testnet else "main"]
+    return script.p2sh(script.p2wpkh(key.get_public_key())).address(network)
+
+
+def optional_account_xpub(
+    session: Any, *, coin_name: str, testnet: bool, script_type: messages.InputScriptType = P2WPKH_SCRIPT_TYPE,
+    account: int = 0
+) -> str | None:
     try:
-        return account_xpub(session, coin_name=coin_name, testnet=testnet, account=account)
+        return account_xpub(session, coin_name=coin_name, testnet=testnet, script_type=script_type, account=account)
     except (exceptions.TrezorFailure, exceptions.Cancelled) as exc:
         print(f"  WARN account xpub unavailable for change oracle: {exc}", flush=True)
         return None
@@ -169,8 +233,134 @@ def assert_signed_tx(
                 raise AssertionError(f"output {index} scriptPubKey mismatch: {txout.script_pubkey.data.hex()}")
 
 
+def assert_p2pkh_signed_tx(
+    raw_tx: bytes,
+    *,
+    prev_hash: bytes,
+    prev_index: int,
+    amount: int,
+    expected_pubkey: ec.PublicKey,
+    expected_output: ExpectedOutput,
+) -> None:
+    tx = Transaction.parse(raw_tx)
+    if tx.serialize() != raw_tx:
+        raise AssertionError("P2PKH raw transaction does not round-trip through embit")
+    if len(tx.vin) != 1 or len(tx.vout) != 1:
+        raise AssertionError(f"P2PKH input/output count mismatch: {len(tx.vin)}/{len(tx.vout)}")
+
+    txin = tx.vin[0]
+    if txin.txid != prev_hash or txin.vout != prev_index:
+        raise AssertionError("P2PKH outpoint mismatch")
+    if len(txin.witness.items) != 0:
+        raise AssertionError("P2PKH transaction must not include witness data")
+
+    script_sig = txin.script_sig.data
+    if len(script_sig) < 2:
+        raise AssertionError("P2PKH scriptSig too short")
+    sig_len = script_sig[0]
+    signature_with_sighash = script_sig[1 : 1 + sig_len]
+    pubkey_pos = 1 + sig_len
+    if pubkey_pos >= len(script_sig):
+        raise AssertionError("P2PKH scriptSig missing pubkey")
+    pubkey_len = script_sig[pubkey_pos]
+    pubkey_bytes = script_sig[pubkey_pos + 1 :]
+    if pubkey_len != len(pubkey_bytes):
+        raise AssertionError("P2PKH scriptSig pubkey push length mismatch")
+    if not signature_with_sighash or signature_with_sighash[-1] != 1:
+        raise AssertionError("P2PKH signature must end with SIGHASH_ALL")
+
+    pubkey = ec.PublicKey.parse(pubkey_bytes)
+    if pubkey.sec() != expected_pubkey.sec():
+        raise AssertionError("P2PKH signing pubkey does not match account xpub derivation")
+    signature = ec.Signature.parse(signature_with_sighash[:-1])
+    digest = tx.sighash_legacy(0, script.p2pkh(pubkey), sighash=1)
+    if not pubkey.verify(signature, digest):
+        raise AssertionError("P2PKH signature verification failed")
+    if amount <= 0:
+        raise AssertionError("P2PKH prevout amount must be positive")
+
+    txout = tx.vout[0]
+    if txout.value != expected_output.amount:
+        raise AssertionError(f"P2PKH output amount mismatch: {txout.value}")
+    if expected_output.address is not None:
+        expected_script = script.address_to_scriptpubkey(expected_output.address).data
+        if txout.script_pubkey.data != expected_script:
+            raise AssertionError(f"P2PKH output scriptPubKey mismatch: {txout.script_pubkey.data.hex()}")
+
+
+def assert_p2sh_p2wpkh_signed_tx(
+    raw_tx: bytes,
+    *,
+    prev_hash: bytes,
+    prev_index: int,
+    amount: int,
+    expected_pubkey: ec.PublicKey,
+    expected_output: ExpectedOutput,
+) -> None:
+    tx = Transaction.parse(raw_tx)
+    if tx.serialize() != raw_tx:
+        raise AssertionError("P2SH-P2WPKH raw transaction does not round-trip through embit")
+    if len(tx.vin) != 1 or len(tx.vout) != 1:
+        raise AssertionError(f"P2SH-P2WPKH input/output count mismatch: {len(tx.vin)}/{len(tx.vout)}")
+
+    txin = tx.vin[0]
+    if txin.txid != prev_hash or txin.vout != prev_index:
+        raise AssertionError("P2SH-P2WPKH outpoint mismatch")
+    if len(txin.witness.items) != 2:
+        raise AssertionError("P2SH-P2WPKH witness item count mismatch")
+    signature_with_sighash, pubkey_bytes = txin.witness.items
+    if not signature_with_sighash or signature_with_sighash[-1] != 1:
+        raise AssertionError("P2SH-P2WPKH signature must end with SIGHASH_ALL")
+
+    pubkey = ec.PublicKey.parse(pubkey_bytes)
+    if pubkey.sec() != expected_pubkey.sec():
+        raise AssertionError("P2SH-P2WPKH signing pubkey does not match account xpub derivation")
+    redeem_script = script.p2wpkh(pubkey).data
+    if txin.script_sig.data != bytes([len(redeem_script)]) + redeem_script:
+        raise AssertionError(f"P2SH-P2WPKH scriptSig mismatch: {txin.script_sig.data.hex()}")
+    signature = ec.Signature.parse(signature_with_sighash[:-1])
+    digest = tx.sighash_segwit(0, script.p2pkh(pubkey), amount, sighash=1)
+    if not pubkey.verify(signature, digest):
+        raise AssertionError("P2SH-P2WPKH signature verification failed")
+
+    txout = tx.vout[0]
+    if txout.value != expected_output.amount:
+        raise AssertionError(f"P2SH-P2WPKH output amount mismatch: {txout.value}")
+    if expected_output.address is not None:
+        expected_script = script.address_to_scriptpubkey(expected_output.address).data
+        if txout.script_pubkey.data != expected_script:
+            raise AssertionError(f"P2SH-P2WPKH output scriptPubKey mismatch: {txout.script_pubkey.data.hex()}")
+
+
 def enum_name(value: Any) -> str:
     return getattr(value, "name", str(value))
+
+
+def public_key_for_xpub(xpub: str, *, change: int = 0, index: int = 0) -> ec.PublicKey:
+    return bip32.HDKey.parse(xpub.encode()).child(change).child(index).get_public_key()
+
+
+def prev_tx_from_outputs(outputs: list[PrevOutput]) -> PrevTx:
+    prev_input = PrevInput(prev_hash=bytes.fromhex("aa" * 32), prev_index=7, script_sig=b"\x51")
+    tx = Transaction(
+        version=2,
+        vin=[
+            TransactionInput(
+                prev_input.prev_hash,
+                prev_input.prev_index,
+                script_sig=script.Script(prev_input.script_sig),
+                sequence=prev_input.sequence,
+            )
+        ],
+        vout=[TransactionOutput(output.amount, script.Script(output.script_pubkey)) for output in outputs],
+        locktime=0,
+    )
+    return PrevTx(version=2, lock_time=0, inputs=[prev_input], outputs=outputs, txid=tx.txid())
+
+
+def tx_hash_from_request(response: messages.TxRequest) -> bytes | None:
+    details = getattr(response, "details", None)
+    return getattr(details, "tx_hash", None) if details is not None else None
 
 
 def sign_tx_protocol_driver(
@@ -179,6 +369,7 @@ def sign_tx_protocol_driver(
     coin_name: str,
     inputs: list[messages.TxInputType],
     outputs: list[messages.TxOutputType],
+    prev_txs: dict[bytes, PrevTx] | None = None,
 ) -> tuple[list[bytes | None], bytes]:
     response = session.call(
         messages.SignTx(
@@ -213,12 +404,23 @@ def sign_tx_protocol_driver(
             raise AssertionError("TxRequest missing details")
 
         tx = messages.TransactionType()
+        requested_tx_hash = tx_hash_from_request(response)
         if response.request_type == messages.RequestType.TXMETA:
-            tx.version = 2
-            tx.lock_time = 0
-            tx.inputs_cnt = len(inputs)
-            tx.outputs_cnt = len(outputs)
-            ack_name = "meta"
+            if requested_tx_hash:
+                if not prev_txs or requested_tx_hash not in prev_txs:
+                    raise AssertionError(f"missing prev_tx for {requested_tx_hash.hex()}")
+                prev_tx = prev_txs[requested_tx_hash]
+                tx.version = prev_tx.version
+                tx.lock_time = prev_tx.lock_time
+                tx.inputs_cnt = len(prev_tx.inputs)
+                tx.outputs_cnt = len(prev_tx.outputs)
+                ack_name = f"prev_meta[{requested_tx_hash.hex()}]"
+            else:
+                tx.version = 2
+                tx.lock_time = 0
+                tx.inputs_cnt = len(inputs)
+                tx.outputs_cnt = len(outputs)
+                ack_name = "meta"
         elif response.request_type == messages.RequestType.TXINPUT:
             if response.details.request_index is None or response.details.request_index >= len(inputs):
                 raise AssertionError(f"bad input request index: {response.details.request_index}")
@@ -229,6 +431,33 @@ def sign_tx_protocol_driver(
                 raise AssertionError(f"bad output request index: {response.details.request_index}")
             tx.outputs = [outputs[response.details.request_index]]
             ack_name = f"output[{response.details.request_index}]"
+        elif response.request_type == messages.RequestType.TXORIGINPUT:
+            if not requested_tx_hash or not prev_txs or requested_tx_hash not in prev_txs:
+                raise AssertionError("TXORIGINPUT missing known tx_hash")
+            prev_tx = prev_txs[requested_tx_hash]
+            if response.details.request_index is None or response.details.request_index >= len(prev_tx.inputs):
+                raise AssertionError(f"bad prev input request index: {response.details.request_index}")
+            prev_input = prev_tx.inputs[response.details.request_index]
+            tx.inputs = [
+                messages.TxInputType(
+                    prev_hash=prev_input.prev_hash,
+                    prev_index=prev_input.prev_index,
+                    script_sig=prev_input.script_sig,
+                    sequence=prev_input.sequence,
+                )
+            ]
+            ack_name = f"prev_input[{response.details.request_index}]"
+        elif response.request_type == messages.RequestType.TXORIGOUTPUT:
+            if not requested_tx_hash or not prev_txs or requested_tx_hash not in prev_txs:
+                raise AssertionError("TXORIGOUTPUT missing known tx_hash")
+            prev_tx = prev_txs[requested_tx_hash]
+            if response.details.request_index is None or response.details.request_index >= len(prev_tx.outputs):
+                raise AssertionError(f"bad prev output request index: {response.details.request_index}")
+            prev_output = prev_tx.outputs[response.details.request_index]
+            tx.bin_outputs = [
+                messages.TxOutputBinType(amount=prev_output.amount, script_pubkey=prev_output.script_pubkey)
+            ]
+            ack_name = f"prev_output[{response.details.request_index}]"
         else:
             raise AssertionError(f"unsupported device request type: {response.request_type}")
 
@@ -238,14 +467,17 @@ def sign_tx_protocol_driver(
     return signatures, serialized_tx
 
 
-def sign_p2wpkh(
+def sign_btc(
     session: Any,
     *,
     coin_name: str,
     inputs: list[messages.TxInputType],
     outputs: list[messages.TxOutputType],
+    prev_txs: dict[bytes, PrevTx] | None = None,
 ) -> tuple[list[bytes | None], bytes]:
-    signatures, raw_tx = sign_tx_protocol_driver(session, coin_name=coin_name, inputs=inputs, outputs=outputs)
+    signatures, raw_tx = sign_tx_protocol_driver(
+        session, coin_name=coin_name, inputs=inputs, outputs=outputs, prev_txs=prev_txs
+    )
     if any(signature is None for signature in signatures):
         raise AssertionError("device did not return all required BTC signatures")
     return list(signatures), raw_tx
@@ -287,7 +519,7 @@ def test_testnet_single(session: Any) -> None:
     outputs = [
         messages.TxOutputType(address=output_address, amount=90_000, script_type=PAYTOADDRESS),
     ]
-    signatures, raw_tx = sign_p2wpkh(session, coin_name="Testnet", inputs=inputs, outputs=outputs)
+    signatures, raw_tx = sign_btc(session, coin_name="Testnet", inputs=inputs, outputs=outputs)
     assert_signed_tx(
         raw_tx,
         expected_inputs=[ExpectedInput(prev_hash, 0, 100_000, input_address)],
@@ -346,7 +578,7 @@ def test_testnet_multi_change(session: Any) -> None:
             script_type=PAYTOADDRESS,
         ),
     ]
-    signatures, raw_tx = sign_p2wpkh(session, coin_name="Testnet", inputs=inputs, outputs=outputs)
+    signatures, raw_tx = sign_btc(session, coin_name="Testnet", inputs=inputs, outputs=outputs)
     assert_signed_tx(
         raw_tx,
         expected_inputs=[
@@ -387,7 +619,7 @@ def test_mainnet_single(session: Any) -> None:
     outputs = [
         messages.TxOutputType(address=output_address, amount=90_000, script_type=PAYTOADDRESS),
     ]
-    signatures, raw_tx = sign_p2wpkh(session, coin_name="Bitcoin", inputs=inputs, outputs=outputs)
+    signatures, raw_tx = sign_btc(session, coin_name="Bitcoin", inputs=inputs, outputs=outputs)
     assert_signed_tx(
         raw_tx,
         expected_inputs=[ExpectedInput(prev_hash, 0, 100_000, input_address)],
@@ -395,6 +627,96 @@ def test_mainnet_single(session: Any) -> None:
     )
     print(
         f"PASS mainnet single-input P2WPKH: from={input_address} to={output_address} amount=90000 "
+        f"sigs={list(map(len, signatures))} raw_len={len(raw_tx)}",
+        flush=True,
+    )
+
+
+def test_testnet_legacy_p2pkh(session: Any) -> None:
+    print("RUN testnet single-input legacy P2PKH with prev_tx verification", flush=True)
+    output_address = "tb1qw508d6qejxtdg4y5r3zarvary0c5xw7kxpjzsx"
+    xpub = account_xpub(session, coin_name="Testnet", testnet=True, script_type=P2PKH_SCRIPT_TYPE)
+    pubkey = public_key_for_xpub(xpub)
+    input_path = p2pkh_path(testnet=True)
+    input_address = p2pkh_address_from_xpub(xpub, testnet=True, change=0, index=0)
+    prev_tx = prev_tx_from_outputs(
+        [
+            PrevOutput(amount=100_000, script_pubkey=script.p2pkh(pubkey).data),
+            PrevOutput(amount=1_000, script_pubkey=script.address_to_scriptpubkey(output_address).data),
+        ]
+    )
+    inputs = [
+        messages.TxInputType(
+            address_n=input_path,
+            prev_hash=prev_tx.txid,
+            prev_index=0,
+            script_type=P2PKH_SCRIPT_TYPE,
+            sequence=0xFFFFFFFF,
+        )
+    ]
+    outputs = [messages.TxOutputType(address=output_address, amount=90_000, script_type=PAYTOADDRESS)]
+    signatures, raw_tx = sign_btc(
+        session,
+        coin_name="Testnet",
+        inputs=inputs,
+        outputs=outputs,
+        prev_txs={prev_tx.txid: prev_tx},
+    )
+    assert_p2pkh_signed_tx(
+        raw_tx,
+        prev_hash=prev_tx.txid,
+        prev_index=0,
+        amount=100_000,
+        expected_pubkey=pubkey,
+        expected_output=ExpectedOutput(output_address, 90_000),
+    )
+    print(
+        f"PASS testnet legacy P2PKH: from={input_address} to={output_address} amount=90000 "
+        f"sigs={list(map(len, signatures))} raw_len={len(raw_tx)}",
+        flush=True,
+    )
+
+
+def test_testnet_p2sh_p2wpkh(session: Any) -> None:
+    print("RUN testnet single-input P2SH-P2WPKH with prev_tx verification", flush=True)
+    output_address = "tb1qw508d6qejxtdg4y5r3zarvary0c5xw7kxpjzsx"
+    xpub = account_xpub(session, coin_name="Testnet", testnet=True, script_type=P2SH_P2WPKH_SCRIPT_TYPE)
+    pubkey = public_key_for_xpub(xpub)
+    input_path = p2sh_p2wpkh_path(testnet=True)
+    input_address = p2sh_p2wpkh_address_from_xpub(xpub, testnet=True, change=0, index=0)
+    prev_tx = prev_tx_from_outputs(
+        [
+            PrevOutput(amount=100_000, script_pubkey=script.p2sh(script.p2wpkh(pubkey)).data),
+            PrevOutput(amount=1_000, script_pubkey=script.address_to_scriptpubkey(output_address).data),
+        ]
+    )
+    inputs = [
+        messages.TxInputType(
+            address_n=input_path,
+            prev_hash=prev_tx.txid,
+            prev_index=0,
+            script_type=P2SH_P2WPKH_SCRIPT_TYPE,
+            sequence=0xFFFFFFFF,
+        )
+    ]
+    outputs = [messages.TxOutputType(address=output_address, amount=90_000, script_type=PAYTOADDRESS)]
+    signatures, raw_tx = sign_btc(
+        session,
+        coin_name="Testnet",
+        inputs=inputs,
+        outputs=outputs,
+        prev_txs={prev_tx.txid: prev_tx},
+    )
+    assert_p2sh_p2wpkh_signed_tx(
+        raw_tx,
+        prev_hash=prev_tx.txid,
+        prev_index=0,
+        amount=100_000,
+        expected_pubkey=pubkey,
+        expected_output=ExpectedOutput(output_address, 90_000),
+    )
+    print(
+        f"PASS testnet P2SH-P2WPKH: from={input_address} to={output_address} amount=90000 "
         f"sigs={list(map(len, signatures))} raw_len={len(raw_tx)}",
         flush=True,
     )
@@ -461,6 +783,7 @@ def main() -> int:
         help="Also ask the device to sign a fake mainnet P2WPKH transaction.",
     )
     parser.add_argument("--skip-rejections", action="store_true", help="Skip negative protocol tests.")
+    parser.add_argument("--include-legacy", action="store_true", help="Run real-device P2PKH/P2SH-P2WPKH tests.")
     args = parser.parse_args()
 
     session = get_session("codex-btc-hardware")
@@ -496,6 +819,19 @@ def main() -> int:
             close_session(session)
     else:
         print("SKIP mainnet signing; pass --include-mainnet-sign to enable", flush=True)
+    if args.include_legacy:
+        session = get_session("codex-btc-legacy-p2pkh")
+        try:
+            test_testnet_legacy_p2pkh(session)
+        finally:
+            close_session(session)
+        session = get_session("codex-btc-p2sh-p2wpkh")
+        try:
+            test_testnet_p2sh_p2wpkh(session)
+        finally:
+            close_session(session)
+    else:
+        print("SKIP legacy/P2SH-P2WPKH signing; pass --include-legacy to enable", flush=True)
     if not args.skip_rejections:
         test_rejections()
     print("PASS btc_hardware_protocol_tests", flush=True)

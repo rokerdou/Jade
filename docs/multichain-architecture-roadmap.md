@@ -11,7 +11,8 @@
 - 兼容 Jade 工程约束。新增 `.c` 文件要同时考虑 ESP-IDF `SRC_DIRS`、host gate 手工源列表、`main/amalgamated.c`。
 - 兼容 T-Display-S3 硬件约束。交易确认摘要必须符合现有 LCD 行数、按键导航、Activity 生命周期和 FreeRTOS 栈限制。
 - 协议规范优先级：链官方规范和 BIP/EIP/TRON 文档 > Trezor official common/protob / Connect 行为 > OneKey 实践参考。
-- OneKey 只作架构和流程参考，不直接复制实现，尤其不能引入 OneKey 私有 proto 扩展来假装 Trezor/MetaMask 兼容。
+- OneKey 只作架构和流程参考，不直接复制实现。OneKey 私有 proto 扩展必须放在
+  单独 adapter/feature gate 下，不能假装成 Trezor/MetaMask 标准兼容。
 
 ## 当前代码现状
 
@@ -25,7 +26,8 @@
 - `main/chains/`
   - ETH 已有较完整的 `tx`、`digest`、`authorize`、`confirm`、`wallet` 分层。
   - TRON 已有 `address`、`tx`、`authorize`、`confirm`、`wallet` 基础层，但 USB/Trezor path 尚未正式开放。
-  - BTC 已有 address/path/wallet/confirm，并且 Trezor P2WPKH SignTx 已可用。
+  - BTC 已有 address/path/wallet/confirm。Trezor-compatible `SignTx` 已支持
+    BIP84/P2WPKH，并实验性支持 BIP44/P2PKH、BIP49/P2SH-P2WPKH。
 
 - `main/protocols/trezor/`
   - 已有 WebUSB/HID transport、wire、protobuf、session、features、public key、ETH、BTC 基础协议。
@@ -161,6 +163,11 @@ main/
 - 敏感接口静态门禁：`tools/check_sensitive_key_boundaries.py`。
 - ETH/BTC/TRON 地址、签名、protobuf、UI 摘要、外部 oracle host gates。
 - BTC P2WPKH/BIP84 硬件协议测试。
+- BTC legacy/P2PKH 与 P2SH-P2WPKH 的真实硬件 trezorlib 测试入口已补到
+  `tools/run_btc_hardware_protocol_tests.py --include-legacy`，但仍需在设备解锁后
+  跑实测确认 USB transport、UI 确认和真实 `wallet_core` 签名路径。
+- OneKey `SignPsbt` 消息号已登记到 trace，并在 session 层明确返回 DataError；
+  当前不解析 PSBT payload，不触碰 signer。
 - BTC `GetPublicKey` 已支持账户级 BIP44/P2PKH、BIP49/P2SH-P2WPKH、BIP84/P2WPKH，
   覆盖 Bitcoin/Testnet，并按 Trezor/OneKey 的 `script_type + ignore_xpub_magic` 规则选择
   `xpub/tpub/ypub/upub/zpub/vpub` 公钥版本字节。
@@ -193,8 +200,9 @@ main/
 
 2. `bitcoin/signing_state.c/h` 后续完善
    - 已有 prev_tx request/ack collect/verify host harness。
-   - 已补 scriptPubKey 与派生路径/脚本类型绑定。下一步在真实签名 oracle 建好后，
-     再考虑开放 P2SH-P2WPKH 签名。
+   - 已补 scriptPubKey 与派生路径/脚本类型绑定。
+   - 已补 legacy/P2PKH、P2SH-P2WPKH 的真实硬件 trezorlib 测试入口，测试端用
+     `embit` 独立验证 raw tx 结构、scriptSig/witness、签名有效性和 xpub 派生公钥一致性。
 
 门禁：
 
@@ -231,9 +239,10 @@ main/
 
 仍未完成：
 
-- P2SH-P2WPKH 硬件 trezorlib 测试。
-- legacy/P2PKH 硬件 trezorlib 测试。
-- legacy/P2PKH 硬件 trezorlib 测试。
+- 在真实设备上跑通 `--include-legacy`，记录 P2PKH/P2SH-P2WPKH 的 Sparrow/OneKey
+  导入和签名表现。
+- Sparrow/OneKey 完整导入兼容：`GetPublicKey`、`GetAddress`、`show_display`、
+  `ignore_xpub_magic`、model/version/internal_model、firmware range 仍需真实客户端矩阵测试。
 
 4. P2SH-P2WPKH 已实验性开放。
    - P2SH-P2WPKH 继续使用 segwit v0/BIP143 sighash。
@@ -262,10 +271,43 @@ main/
 
 暂不做：
 
-- multisig
-- PSBT
-- Taproot
+- multisig 真签名开放
+- raw PSBT / OneKey `SignPsbt` 开放
+- Taproot/BIP86 地址和 Schnorr 真签名开放
 - external input / payjoin / replacement tx
+
+### Phase 2.5: PSBT / multisig / Taproot 安全模型
+
+这三块都影响资金安全，不能只靠“消息能解析”就开放。
+
+1. PSBT
+   - 原版 Jade native RPC 已有 `main/process/sign_psbt.c`。核心安全模型是：
+     先解析 PSBT/PSET，识别 singlesig/multisig/Green multisig，再用本机 wallet/descriptor
+     生成期望 script，与 PSBT 内 prevout/change/output 绑定校验，最后才签名。
+   - Trezor-compatible 标准路径通常是主机把 PSBT 转成 `SignTx/TxAck` 交互；OneKey 另有
+     `SignPsbt/SignedPsbt` 扩展。我们后续若接 OneKey 扩展，必须作为单独 adapter：
+     限制 PSBT 总长度、input/output 数量、unknown map 大小、key/value 长度，并复用 Jade
+     PSBT 策略，不让 raw PSBT parser 直接靠近 signer。
+   - 当前策略：先完善标准 `SignTx/TxAck` 覆盖 Sparrow 常规 PSBT 流；只有真实客户端明确需要
+     OneKey `SignPsbt` 时，再加“安全拒绝 -> host parser gate -> policy -> UI -> signer”的小步链路。
+   - 当前代码只实现到“安全拒绝”阶段：10052 `SignPsbt` 可被 trace 识别，但固定返回
+     `Failure/DataError`。
+
+2. multisig
+   - 必须参考 OneKey/Trezor 的 `MultisigRedeemScriptType` 与原版 Jade descriptor/multisig
+     代码，先做 request normalizer。
+   - 开放前必须校验 `m/n`、xpub fingerprint、每个 cosigner pubkey 派生、`address_n`
+     不含非法 hardened 后缀、script_type 与 redeem/witness script 匹配、change path 属于
+     已登记 descriptor。
+   - 未完成 descriptor/xpub/path/change 绑定前，只能明确拒绝，不能半支持。
+
+3. Taproot / BIP86
+   - OneKey/Trezor proto 的 `SPENDTAPROOT=5`、`PAYTOTAPROOT=6` 只是协议入口，不等于可签名。
+   - 固件需要 BIP86 path policy、x-only pubkey/address oracle、BIP341 sighash、Schnorr signer
+     和 UI 摘要绑定。当前 `wallet_core` 只有 ECDSA digest 签名边界，不能用 ECDSA 路径冒充
+     Taproot。
+   - 推荐顺序：先实现 BIP86 `GetPublicKey/GetAddress` host oracle 和明确 `SignTx`
+     Taproot 拒绝；再加 Schnorr signer 边界；最后开放 Taproot 签名。
 
 ### Phase 3: 收敛 Protocol Adapter / App Service
 
@@ -397,12 +439,17 @@ tools/
 
 建议接下来按这个顺序推进：
 
-1. P2SH-P2WPKH 硬件 trezorlib 测试
-   - 覆盖真实 USB transport、本机确认 UI、真实 wallet_core 签名路径。
-
-2. legacy/P2SH-P2WPKH 硬件 trezorlib 测试
+1. legacy/P2PKH 与 P2SH-P2WPKH 硬件 trezorlib 测试
    - 覆盖真实 USB transport、本机确认 UI、真实 wallet_core 签名路径。
    - legacy P2PKH 重点确认 raw tx 不带 witness、scriptSig 标准且主机可验签。
+
+2. Sparrow/OneKey 导入兼容矩阵
+   - 分别测试 BIP44/P2PKH、BIP49/P2SH-P2WPKH、BIP84/P2WPKH 的账户 xpub 导入。
+   - 覆盖 `ignore_xpub_magic=true/false`、`show_display=false`、model/version/internal_model。
+
+3. PSBT/multisig/Taproot 先做 host gate 和安全拒绝
+   - 标准 Trezor `SignTx/TxAck` 优先于 OneKey `SignPsbt` 扩展。
+   - multisig/Taproot 未完成 oracle 与 policy 前继续拒绝。
 
 ## 每次改动必须检查
 
@@ -419,6 +466,7 @@ tools/
 
 - 不引入 Python/MicroPython 到固件运行时。
 - 不直接导入 OneKey 私有 proto 扩展作为 MetaMask/Trezor Connect 主协议。
-- 不开放 legacy/P2SH/multisig/PSBT，直到 prev_tx verification、script policy、UI 摘要和 raw tx oracle 都完成。
+- 不开放 multisig/PSBT/Taproot 真签名，直到 descriptor/path/script policy、UI 摘要、
+  raw tx/PSBT oracle 和真实硬件测试都完成。
 - 不让 Ledger APDU 影响 chain core。Ledger 只能作为 adapter。
 - 不让 USB 层直接调用 wallet_core signer；最终必须经 app service / chain policy / UI review。

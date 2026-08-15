@@ -4412,6 +4412,7 @@ int main(int argc, char** argv)
     CHECK(trezor_dispatcher_message_allowed(TREZOR_MSG_ETHEREUM_TX_ACK));
     CHECK(trezor_dispatcher_message_allowed(TREZOR_MSG_SIGN_TX));
     CHECK(trezor_dispatcher_message_allowed(TREZOR_MSG_TX_ACK));
+    CHECK(trezor_dispatcher_message_allowed(TREZOR_MSG_ONEKEY_SIGN_PSBT));
     CHECK(trezor_dispatcher_message_sensitive_or_unsupported(TREZOR_MSG_LOAD_DEVICE));
     CHECK(trezor_dispatcher_message_sensitive_or_unsupported(TREZOR_MSG_RESET_DEVICE));
     CHECK(trezor_dispatcher_message_sensitive_or_unsupported(TREZOR_MSG_RECOVERY_DEVICE));
@@ -4437,6 +4438,17 @@ int main(int argc, char** argv)
     CHECK(!trezor_check_rejected_message(&trezor_session, TREZOR_MSG_SIGN_IDENTITY, "SignIdentity"));
     CHECK(!trezor_check_rejected_message(&trezor_session, TREZOR_MSG_GET_ECDH_SESSION_KEY, "GetECDHSessionKey"));
     CHECK(!trezor_check_rejected_message(&trezor_session, TREZOR_MSG_UNLOCK_PATH, "UnlockPath"));
+
+    CHECK(trezor_wire_encode_message(TREZOR_MSG_ONEKEY_SIGN_PSBT, NULL, 0, session_request_chunks,
+        sizeof(session_request_chunks), &session_request_len));
+    CHECK(trezor_session_handle_wire(&trezor_session, session_request_chunks, session_request_len,
+        session_response_chunks, sizeof(session_response_chunks), &session_response_len));
+    CHECK(trezor_wire_decode_message(session_response_chunks, session_response_len, &session_response_type,
+        session_response_payload, sizeof(session_response_payload), &session_response_payload_len));
+    CHECK(session_response_type == TREZOR_MSG_FAILURE);
+    CHECK(trezor_payload_has_varint(session_response_payload, session_response_payload_len, 1, TREZOR_FAILURE_DATA_ERROR));
+    CHECK(trezor_trace_format_latest(trace_text, sizeof(trace_text)));
+    CHECK(strstr(trace_text, "OneKeySignPsbt") != NULL);
 
     CHECK(!trezor_check_rejected_wire_message(&trezor_session, TREZOR_MSG_GET_ENTROPY, "GetEntropy"));
     CHECK(!trezor_check_rejected_wire_message(&trezor_session, TREZOR_MSG_LOAD_DEVICE, "LoadDevice"));
