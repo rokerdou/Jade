@@ -152,19 +152,19 @@ def account_xpub(
 
 
 def p2wpkh_address_from_xpub(xpub: str, *, testnet: bool, change: int, index: int) -> str:
-    key = bip32.HDKey.parse(xpub.encode()).child(change).child(index)
+    key = bip32.HDKey.from_base58(xpub).child(change).child(index)
     network = networks.NETWORKS["test" if testnet else "main"]
     return script.p2wpkh(key.get_public_key()).address(network)
 
 
 def p2pkh_address_from_xpub(xpub: str, *, testnet: bool, change: int, index: int) -> str:
-    key = bip32.HDKey.parse(xpub.encode()).child(change).child(index)
+    key = bip32.HDKey.from_base58(xpub).child(change).child(index)
     network = networks.NETWORKS["test" if testnet else "main"]
     return script.p2pkh(key.get_public_key()).address(network)
 
 
 def p2sh_p2wpkh_address_from_xpub(xpub: str, *, testnet: bool, change: int, index: int) -> str:
-    key = bip32.HDKey.parse(xpub.encode()).child(change).child(index)
+    key = bip32.HDKey.from_base58(xpub).child(change).child(index)
     network = networks.NETWORKS["test" if testnet else "main"]
     return script.p2sh(script.p2wpkh(key.get_public_key())).address(network)
 
@@ -219,7 +219,7 @@ def assert_signed_tx(
             actual_script = script.p2wpkh(pubkey).data
             if actual_script != expected_script:
                 raise AssertionError(f"input {index} witness pubkey does not match requested path address")
-        digest = tx.sighash_segwit(index, script.p2wpkh(pubkey), expected.amount, sighash)
+        digest = tx.sighash_segwit(index, script.p2pkh(pubkey), expected.amount, sighash)
         if not pubkey.verify(signature, digest):
             raise AssertionError(f"input {index} witness signature verification failed")
 
@@ -337,7 +337,7 @@ def enum_name(value: Any) -> str:
 
 
 def public_key_for_xpub(xpub: str, *, change: int = 0, index: int = 0) -> ec.PublicKey:
-    return bip32.HDKey.parse(xpub.encode()).child(change).child(index).get_public_key()
+    return bip32.HDKey.from_base58(xpub).child(change).child(index).get_public_key()
 
 
 def prev_tx_from_outputs(outputs: list[PrevOutput]) -> PrevTx:
