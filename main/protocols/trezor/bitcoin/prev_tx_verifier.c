@@ -5,6 +5,18 @@
 #include <wally_crypto.h>
 #include <wally_transaction.h>
 
+static bool trezor_bitcoin_prev_txid_to_wally_hash(
+    const uint8_t* const txid, const size_t txid_len, uint8_t hash[SHA256_LEN])
+{
+    if (!txid || txid_len != SHA256_LEN || !hash) {
+        return false;
+    }
+    for (size_t i = 0; i < SHA256_LEN; ++i) {
+        hash[i] = txid[SHA256_LEN - 1U - i];
+    }
+    return true;
+}
+
 void trezor_bitcoin_prev_tx_verifier_reset(trezor_bitcoin_prev_tx_verifier_t* const verifier)
 {
     if (!verifier) {
@@ -54,9 +66,14 @@ bool trezor_bitcoin_prev_tx_verifier_apply_input(
         return false;
     }
 
-    if (wally_tx_add_raw_input(verifier->tx, input->prev_hash, sizeof(input->prev_hash), input->prev_index,
+    uint8_t wally_txhash[SHA256_LEN];
+    wally_bzero(wally_txhash, sizeof(wally_txhash));
+    const bool ok = trezor_bitcoin_prev_txid_to_wally_hash(input->prev_hash, sizeof(input->prev_hash), wally_txhash)
+        && wally_tx_add_raw_input(verifier->tx, wally_txhash, sizeof(wally_txhash), input->prev_index,
             input->sequence, input->script_sig, input->script_sig_len, NULL, 0)
-        != WALLY_OK) {
+            == WALLY_OK;
+    wally_bzero(wally_txhash, sizeof(wally_txhash));
+    if (!ok) {
         return false;
     }
     ++verifier->inputs_seen;
@@ -92,7 +109,9 @@ bool trezor_bitcoin_prev_tx_verifier_finish(trezor_bitcoin_prev_tx_verifier_t* c
 {
     bool ok = false;
     uint8_t txid[SHA256_LEN];
+    uint8_t expected_wally_txid[SHA256_LEN];
     wally_bzero(txid, sizeof(txid));
+    wally_bzero(expected_wally_txid, sizeof(expected_wally_txid));
     if (!verifier || !verifier->initialized || !verifier->tx || !amount || !script_pubkey || !script_pubkey_written
         || verifier->inputs_seen != verifier->inputs_count || verifier->outputs_seen != verifier->outputs_count
         || !verifier->has_prevout || verifier->prevout_script_len == 0
@@ -100,8 +119,10 @@ bool trezor_bitcoin_prev_tx_verifier_finish(trezor_bitcoin_prev_tx_verifier_t* c
         goto cleanup;
     }
 
-    ok = wally_tx_get_txid(verifier->tx, txid, sizeof(txid)) == WALLY_OK
-        && memcmp(txid, verifier->expected_txid, sizeof(txid)) == 0;
+    ok = trezor_bitcoin_prev_txid_to_wally_hash(verifier->expected_txid, sizeof(verifier->expected_txid),
+             expected_wally_txid)
+        && wally_tx_get_txid(verifier->tx, txid, sizeof(txid)) == WALLY_OK
+        && memcmp(txid, expected_wally_txid, sizeof(txid)) == 0;
     if (ok) {
         *amount = verifier->prevout_amount;
         memcpy(script_pubkey, verifier->prevout_script, verifier->prevout_script_len);
@@ -121,6 +142,7 @@ cleanup:
         }
     }
     wally_bzero(txid, sizeof(txid));
+    wally_bzero(expected_wally_txid, sizeof(expected_wally_txid));
     trezor_bitcoin_prev_tx_verifier_reset(verifier);
     return ok;
 }

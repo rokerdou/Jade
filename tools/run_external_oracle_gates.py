@@ -833,7 +833,7 @@ def btc_prev_txid_for_single_input_two_outputs(
         + p2wpkh_script
         + bytes.fromhex("00000000")
     )
-    return local_gate_double_sha256(raw)
+    return local_gate_double_sha256(raw)[::-1]
 
 
 def local_gate_sha256(data: bytes) -> bytes:
@@ -1511,7 +1511,7 @@ def check_local_btc_signtx_wire_script_oracle(gate: Path) -> None:
 
     legacy_unsigned_tx = Transaction(
         version=2,
-        vin=[TransactionInput(legacy_prev_txid[::-1], 0)],
+        vin=[TransactionInput(legacy_prev_txid, 0)],
         vout=[TransactionOutput(90_000, script.Script(btc_p2wpkh_script_pubkey()))],
         locktime=0,
     )
@@ -1557,13 +1557,13 @@ def check_local_btc_signtx_wire_script_oracle(gate: Path) -> None:
     )
     check_embit_btc_p2pkh_signed_tx_oracle(
         legacy_final.serialized.serialized_tx,
-        prev_txid=legacy_prev_txid[::-1],
+        prev_txid=legacy_prev_txid,
     )
 
     legacy_base58_output = btc_tx_output_external(amount=90_000, address=btc_tx_p2pkh_address_testnet())
     legacy_base58_unsigned_tx = Transaction(
         version=2,
-        vin=[TransactionInput(legacy_prev_txid[::-1], 0)],
+        vin=[TransactionInput(legacy_prev_txid, 0)],
         vout=[TransactionOutput(90_000, script.Script(btc_p2pkh_script_pubkey()))],
         locktime=0,
     )
@@ -1595,7 +1595,7 @@ def check_local_btc_signtx_wire_script_oracle(gate: Path) -> None:
     )
     check_embit_btc_p2pkh_signed_tx_oracle(
         legacy_base58_final.serialized.serialized_tx,
-        prev_txid=legacy_prev_txid[::-1],
+        prev_txid=legacy_prev_txid,
         expected_output_script=btc_p2pkh_script_pubkey(),
     )
 
@@ -1767,7 +1767,7 @@ def check_local_btc_signtx_wire_script_oracle(gate: Path) -> None:
     )
     unsigned_tx = Transaction(
         version=2,
-        vin=[TransactionInput(p2sh_true_sig_prev_txid[::-1], 0)],
+        vin=[TransactionInput(p2sh_true_sig_prev_txid, 0)],
         vout=[TransactionOutput(90_000, script.Script(btc_p2wpkh_script_pubkey()))],
         locktime=0,
     )
@@ -1797,14 +1797,14 @@ def check_local_btc_signtx_wire_script_oracle(gate: Path) -> None:
     )
     check_embit_btc_p2sh_p2wpkh_signed_tx_oracle(
         p2sh_final.serialized.serialized_tx,
-        prev_txid=p2sh_true_sig_prev_txid[::-1],
+        prev_txid=p2sh_true_sig_prev_txid,
         amount=100_000,
     )
 
     p2sh_base58_output = btc_tx_output_external(amount=90_000, address=btc_tx_p2sh_p2wpkh_address_testnet())
     p2sh_base58_unsigned_tx = Transaction(
         version=2,
-        vin=[TransactionInput(p2sh_true_sig_prev_txid[::-1], 0)],
+        vin=[TransactionInput(p2sh_true_sig_prev_txid, 0)],
         vout=[TransactionOutput(90_000, script.Script(btc_p2sh_p2wpkh_script_pubkey()))],
         locktime=0,
     )
@@ -1836,7 +1836,7 @@ def check_local_btc_signtx_wire_script_oracle(gate: Path) -> None:
     )
     check_embit_btc_p2sh_p2wpkh_signed_tx_oracle(
         p2sh_base58_final.serialized.serialized_tx,
-        prev_txid=p2sh_true_sig_prev_txid[::-1],
+        prev_txid=p2sh_true_sig_prev_txid,
         amount=100_000,
         expected_output_script=btc_p2sh_p2wpkh_script_pubkey(),
     )

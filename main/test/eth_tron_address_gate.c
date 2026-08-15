@@ -2872,6 +2872,10 @@ int main(int argc, char** argv)
         == WALLY_OK);
     CHECK(wally_tx_get_txid(expected_prev_tx, expected_prev_txid, sizeof(expected_prev_txid)) == WALLY_OK);
     CHECK(wally_tx_free(expected_prev_tx) == WALLY_OK);
+    uint8_t expected_prev_txid_wire[SHA256_LEN];
+    for (size_t i = 0; i < sizeof(expected_prev_txid_wire); ++i) {
+        expected_prev_txid_wire[i] = expected_prev_txid[sizeof(expected_prev_txid_wire) - 1U - i];
+    }
 
     trezor_bitcoin_transaction_t trezor_btc_prev_meta;
     memset(&trezor_btc_prev_meta, 0, sizeof(trezor_btc_prev_meta));
@@ -2889,7 +2893,7 @@ int main(int argc, char** argv)
     trezor_bitcoin_prev_tx_verifier_t trezor_btc_prev_verifier;
     memset(&trezor_btc_prev_verifier, 0, sizeof(trezor_btc_prev_verifier));
     CHECK(trezor_bitcoin_prev_tx_verifier_init(&trezor_btc_prev_verifier, &trezor_btc_prev_meta,
-        expected_prev_txid, sizeof(expected_prev_txid), 0));
+        expected_prev_txid_wire, sizeof(expected_prev_txid_wire), 0));
     CHECK(!trezor_bitcoin_prev_tx_verifier_apply_output(&trezor_btc_prev_verifier, &trezor_btc_valid_prev_output));
     CHECK(trezor_bitcoin_prev_tx_verifier_apply_input(&trezor_btc_prev_verifier, &trezor_btc_valid_prev_input));
     CHECK(trezor_bitcoin_prev_tx_verifier_apply_output(&trezor_btc_prev_verifier, &trezor_btc_valid_prev_output));
@@ -2906,7 +2910,7 @@ int main(int argc, char** argv)
         == 0);
 
     uint8_t wrong_prev_txid[SHA256_LEN];
-    memcpy(wrong_prev_txid, expected_prev_txid, sizeof(wrong_prev_txid));
+    memcpy(wrong_prev_txid, expected_prev_txid_wire, sizeof(wrong_prev_txid));
     wrong_prev_txid[0] ^= 0x01;
     CHECK(trezor_bitcoin_prev_tx_verifier_init(&trezor_btc_prev_verifier, &trezor_btc_prev_meta,
         wrong_prev_txid, sizeof(wrong_prev_txid), 0));
@@ -2919,7 +2923,7 @@ int main(int argc, char** argv)
     CHECK(verified_prevout_script_len == 0);
 
     CHECK(!trezor_bitcoin_prev_tx_verifier_init(&trezor_btc_prev_verifier, &trezor_btc_prev_meta,
-        expected_prev_txid, sizeof(expected_prev_txid), trezor_btc_prev_meta.outputs_cnt));
+        expected_prev_txid_wire, sizeof(expected_prev_txid_wire), trezor_btc_prev_meta.outputs_cnt));
 
     trezor_protobuf_writer_init(&trezor_btc_output_writer, trezor_btc_output_payload, sizeof(trezor_btc_output_payload));
     CHECK(trezor_protobuf_write_string_field(
