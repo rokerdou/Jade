@@ -87,6 +87,9 @@ uint8_t storage_get_ble_flags(void);
 bool storage_set_qr_flags(uint32_t flags);
 uint32_t storage_get_qr_flags(void);
 
+bool storage_set_trezor_usb_compat_mode(bool enabled);
+bool storage_get_trezor_usb_compat_mode(void);
+
 // Generic multisig
 bool storage_set_multisig_registration(const char* name, const uint8_t* registration, size_t registration_len);
 bool storage_get_multisig_registration(

@@ -16,6 +16,7 @@
 #include "../../chains/ethereum/sign.h"
 #include "../../chains/ethereum/wallet.h"
 #include "../../idletimer.h"
+#include "../../storage.h"
 #include "../../ui/chain_confirm.h"
 #include "../../wallet_core/wallet_core.h"
 
@@ -219,19 +220,20 @@ trezor_session_t trezor_wallet_adapter_session(const trezor_wallet_adapter_confi
     const uint8_t* const session_id = config ? config->session_id : NULL;
     const size_t session_id_len = config ? config->session_id_len : 0;
     const bool has_session_id = session_id && session_id_len == TREZOR_FEATURES_SESSION_ID_LEN;
+    const bool compat_mode = storage_get_trezor_usb_compat_mode();
 
     trezor_session_t session = {
         .features = {
-            // Sparrow/Lark rejects custom Trezor-compatible models during discovery. Report a
-            // Safe 5/T3T1-compatible identity on this transport while keeping the custom firmware
-            // identity in fw_vendor/label.
+            // Compat mode reports a Safe 5/T3T1-compatible identity for hosts that reject
+            // custom models during discovery. Custom mode reports UNKNOWN to avoid official
+            // Trezor firmware-release handling while keeping the same transport.
             .vendor = "trezor.io",
             .fw_vendor = "Jade T-Display-S3",
             .device_id = config ? config->device_id : NULL,
             .language = "en-US",
             .label = "Jade T-Display-S3",
-            .model = "Safe 5",
-            .internal_model = "T3T1",
+            .model = compat_mode ? "Safe 5" : "Jade",
+            .internal_model = compat_mode ? "T3T1" : "UNKNOWN",
             .session_id = has_session_id ? session_id : NULL,
             .session_id_len = has_session_id ? session_id_len : 0,
             // T3T1 hosts such as Sparrow/Lark require at least 2.1.0 for discovery.

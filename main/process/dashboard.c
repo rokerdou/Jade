@@ -200,7 +200,8 @@ gui_activity_t* make_wallet_settings_activity(void);
 gui_activity_t* make_device_settings_activity(void);
 gui_activity_t* make_usbstorage_settings_activity(bool unlocked);
 gui_activity_t* make_authentication_activity(bool initialised_and_pin_unlocked);
-gui_activity_t* make_prefs_settings_activity(bool initialised_and_locked, gui_view_node_t** qr_mode_network_item);
+gui_activity_t* make_prefs_settings_activity(
+    bool initialised_and_locked, gui_view_node_t** qr_mode_network_item, gui_view_node_t** trezor_usb_mode_item);
 gui_activity_t* make_display_settings_activity(void);
 gui_activity_t* make_info_activity(const char* fw_version);
 gui_activity_t* make_device_info_activity(void);
@@ -2181,6 +2182,47 @@ static void handle_network_type(gui_view_node_t* network_type_item)
     update_network_menu_label(network_type_item);
 }
 
+#ifdef CONFIG_TREZOR_USB_HID
+static const char* trezor_usb_mode_label(const bool compat_mode)
+{
+    return compat_mode ? "Compat" : "Custom";
+}
+
+static void update_trezor_usb_mode_menu_label(gui_view_node_t* trezor_usb_mode_item)
+{
+    JADE_ASSERT(trezor_usb_mode_item);
+    update_menu_item(trezor_usb_mode_item, "Trezor USB", trezor_usb_mode_label(storage_get_trezor_usb_compat_mode()));
+}
+
+static void handle_trezor_usb_mode(gui_view_node_t* trezor_usb_mode_item)
+{
+    JADE_ASSERT(trezor_usb_mode_item);
+
+    bool compat_mode = storage_get_trezor_usb_compat_mode();
+    gui_view_node_t* mode_textbox = NULL;
+    gui_activity_t* const act_mode = make_carousel_activity("Trezor USB", NULL, &mode_textbox);
+    gui_update_text(mode_textbox, trezor_usb_mode_label(compat_mode));
+    gui_set_current_activity(act_mode);
+
+    int32_t ev_id;
+    while (true) {
+        if (gui_activity_wait_event(act_mode, GUI_EVENT, ESP_EVENT_ANY_ID, NULL, &ev_id, NULL, 0)) {
+            if (ev_id == GUI_WHEEL_LEFT_EVENT || ev_id == GUI_WHEEL_RIGHT_EVENT) {
+                compat_mode = !compat_mode;
+                gui_update_text(mode_textbox, trezor_usb_mode_label(compat_mode));
+            } else if (ev_id == gui_get_click_event()) {
+                break;
+            }
+        }
+    }
+
+    if (compat_mode != storage_get_trezor_usb_compat_mode()) {
+        storage_set_trezor_usb_compat_mode(compat_mode);
+    }
+    update_trezor_usb_mode_menu_label(trezor_usb_mode_item);
+}
+#endif // CONFIG_TREZOR_USB_HID
+
 // Create the appropriate 'Settings' menu
 static gui_activity_t* create_settings_menu(const bool startup_menu)
 {
@@ -2218,6 +2260,7 @@ static void handle_settings(const bool startup_menu)
     // hw initialised with internal message source (ie. QR-mode)
     const bool hw_qr_mode = keychain_get() && keychain_get_userdata() == SOURCE_INTERNAL;
     gui_view_node_t* network_type_item = NULL;
+    gui_view_node_t* trezor_usb_mode_item = NULL;
 
     // NOTE: menu navigation frees prior screens, as the navigation is
     // potentially unbound with all the back and forward buttons.
@@ -2275,10 +2318,21 @@ static void handle_settings(const bool startup_menu)
         case BTN_SETTINGS_DISPLAY_EXIT:
             // Change to 'Preferences' menu (Settings)
             // Only pass the qr_mode_network_item if we're in QR mode
-            act = make_prefs_settings_activity(hw_locked_initialised, hw_qr_mode ? &network_type_item : NULL);
+            act = make_prefs_settings_activity(hw_locked_initialised, hw_qr_mode ? &network_type_item : NULL,
+#ifdef CONFIG_TREZOR_USB_HID
+                &trezor_usb_mode_item
+#else
+                NULL
+#endif
+            );
             if (network_type_item) {
                 update_network_menu_label(network_type_item);
             }
+#ifdef CONFIG_TREZOR_USB_HID
+            if (trezor_usb_mode_item) {
+                update_trezor_usb_mode_menu_label(trezor_usb_mode_item);
+            }
+#endif
             break;
 
         case BTN_SETTINGS_DISPLAY:
@@ -2346,6 +2400,12 @@ static void handle_settings(const bool startup_menu)
         case BTN_SETTINGS_NETWORK_TYPE:
             handle_network_type(network_type_item);
             break;
+
+#ifdef CONFIG_TREZOR_USB_HID
+        case BTN_SETTINGS_TREZOR_USB_MODE:
+            handle_trezor_usb_mode(trezor_usb_mode_item);
+            break;
+#endif
 
         case BTN_SETTINGS_BLE:
             handle_ble();

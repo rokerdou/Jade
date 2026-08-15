@@ -3819,6 +3819,38 @@ int main(int argc, char** argv)
     CHECK(saw_eth);
     CHECK(!saw_tron);
 
+    trezor_features_t custom_identity_features = features;
+    custom_identity_features.model = "Jade";
+    custom_identity_features.internal_model = "UNKNOWN";
+    memset(features_payload, 0, sizeof(features_payload));
+    features_payload_len = 0;
+    CHECK(trezor_features_encode(
+        &custom_identity_features, features_payload, sizeof(features_payload), &features_payload_len));
+    CHECK(features_payload_len > 0);
+    saw_model = false;
+    saw_internal_model = false;
+    saw_bootloader_mode = false;
+    trezor_protobuf_reader_init(&features_reader, features_payload, features_payload_len);
+    while (features_reader.pos < features_reader.len) {
+        uint32_t field_number = 0;
+        uint8_t wire_type_field = 0;
+        const uint8_t* value = NULL;
+        size_t value_len = 0;
+        CHECK(trezor_protobuf_reader_next(&features_reader, &field_number, &wire_type_field, &value, &value_len));
+        if (field_number == 5) {
+            saw_bootloader_mode = true;
+        } else if (field_number == 21) {
+            saw_model = wire_type_field == TREZOR_PROTOBUF_WIRE_LEN && value_len == strlen("Jade")
+                && memcmp(value, "Jade", value_len) == 0;
+        } else if (field_number == 44) {
+            saw_internal_model = wire_type_field == TREZOR_PROTOBUF_WIRE_LEN && value_len == strlen("UNKNOWN")
+                && memcmp(value, "UNKNOWN", value_len) == 0;
+        }
+    }
+    CHECK(!saw_bootloader_mode);
+    CHECK(saw_model);
+    CHECK(saw_internal_model);
+
     trezor_features_t locked_custom_features = features;
     locked_custom_features.has_unlocked = false;
     locked_custom_features.unlocked = false;

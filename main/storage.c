@@ -38,6 +38,7 @@ static const char* BRIGHTNESS_FIELD = "brightness";
 static const char* GUI_FLAGS_FIELD = "guiflags";
 static const char* BLE_FLAGS_FIELD = "bleflags";
 static const char* QR_FLAGS_FIELD = "qrflags";
+static const char* TREZOR_USB_COMPAT_FIELD = "tzusbcompat";
 
 // Deprecated/removed keys
 static const char* CLICK_EVENT_FIELD = "clickevent";
@@ -683,6 +684,18 @@ uint32_t storage_get_qr_flags(void)
         }
     }
     return flags;
+}
+
+bool storage_set_trezor_usb_compat_mode(const bool enabled)
+{
+    const uint8_t value = enabled ? 1 : 0;
+    return store_blob(DEFAULT_NAMESPACE, TREZOR_USB_COMPAT_FIELD, &value, sizeof(value));
+}
+
+bool storage_get_trezor_usb_compat_mode(void)
+{
+    uint8_t value = 1;
+    return read_blob_fixed(DEFAULT_NAMESPACE, TREZOR_USB_COMPAT_FIELD, &value, sizeof(value)) ? value != 0 : true;
 }
 
 bool storage_set_key_flags(uint8_t flags)

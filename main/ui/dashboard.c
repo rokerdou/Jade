@@ -364,14 +364,20 @@ gui_activity_t* make_device_settings_activity(void)
     return make_menu_activity("Device", hdrbtns, 2, menubtns, 3);
 }
 
-gui_activity_t* make_prefs_settings_activity(const bool initialised_and_locked, gui_view_node_t** network_type_item)
+gui_activity_t* make_prefs_settings_activity(const bool initialised_and_locked, gui_view_node_t** network_type_item,
+    gui_view_node_t** trezor_usb_mode_item)
 {
     btn_data_t hdrbtns[] = { { .txt = "=", .font = JADE_SYMBOLS_16x16_FONT, .ev_id = BTN_SETTINGS_PREFS_EXIT },
         { .txt = NULL, .font = GUI_DEFAULT_FONT, .ev_id = GUI_BUTTON_EVENT_NONE } };
 
     btn_data_t menubtns[] = { { .txt = "Display", .font = GUI_DEFAULT_FONT, .ev_id = BTN_SETTINGS_DISPLAY },
         { .txt = "Idle Timeout", .font = GUI_DEFAULT_FONT, .ev_id = BTN_SETTINGS_IDLE_TIMEOUT },
-        { .txt = "Bluetooth", .font = GUI_DEFAULT_FONT, .ev_id = BTN_SETTINGS_BLE } };
+        { .txt = "Bluetooth", .font = GUI_DEFAULT_FONT, .ev_id = BTN_SETTINGS_BLE },
+#ifdef CONFIG_TREZOR_USB_HID
+        { .txt = NULL, .font = GUI_DEFAULT_FONT, .ev_id = BTN_SETTINGS_TREZOR_USB_MODE },
+#endif
+    };
+    size_t num_menubtns = sizeof(menubtns) / sizeof(menubtns[0]);
 
     // If qr_mode_network_item status control passed, implies want that button visible
     // Otherwise show 'idle timeout' button
@@ -390,7 +396,19 @@ gui_activity_t* make_prefs_settings_activity(const bool initialised_and_locked, 
         menubtns[2].ev_id = BTN_SETTINGS_CHANGE_PIN;
     }
 
-    return make_menu_activity("Settings", hdrbtns, 2, menubtns, 3);
+#ifdef CONFIG_TREZOR_USB_HID
+    if (trezor_usb_mode_item) {
+        gui_make_text(trezor_usb_mode_item, "Trezor USB:", TFT_WHITE);
+        gui_set_align(*trezor_usb_mode_item, GUI_ALIGN_CENTER, GUI_ALIGN_MIDDLE);
+        menubtns[num_menubtns - 1].content = *trezor_usb_mode_item;
+    } else {
+        --num_menubtns;
+    }
+#else
+    (void)trezor_usb_mode_item;
+#endif
+
+    return make_menu_activity("Settings", hdrbtns, 2, menubtns, num_menubtns);
 }
 
 gui_activity_t* make_display_settings_activity(void)
