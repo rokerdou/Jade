@@ -255,6 +255,10 @@ main/
   简单 xpub 版本字节问题，还需要
   descriptor/multisig/pubkey order/witnessScript/change policy/fee review 的完整门禁；
   当前固件必须继续拒绝 `SPENDMULTISIG` 和未知 witness script 签名请求。
+- Trezor `MultisigRedeemScriptType` normalizer 已开始落地：能解析 old-style
+  `pubkeys[]` 与 new-style `nodes[] + address_n`，拒绝 `HDNodeType.private_key`、
+  hardened suffix、`m > n`，并转换为内部 multisig policy/redeem script/scriptPubKey。
+  这仍是前置安全层，不等于开放 multisig 地址或签名。
 
 4. P2SH-P2WPKH 已实验性开放。
    - P2SH-P2WPKH 继续使用 segwit v0/BIP143 sighash。
@@ -318,10 +322,20 @@ main/
    - 开放前必须校验 `m/n`、xpub fingerprint、每个 cosigner pubkey 派生、`address_n`
      不含非法 hardened 后缀、script_type 与 redeem/witness script 匹配、change path 属于
      已登记 descriptor。
+   - 当前已新增 `main/protocols/trezor/bitcoin/multisig.*` normalizer：
+     解析 Trezor protobuf 后派生 cosigner 子公钥，构建 `MULTI_P2SH`、`MULTI_P2WSH`、
+     `MULTI_P2WSH_P2SH` policy，并生成 redeem script/scriptPubKey 用于后续 prevout/change
+     绑定。
+   - Host gate 使用 `trezorlib` 生成 `MultisigRedeemScriptType` payload，使用第三方
+     `embit.script.multisig()` 生成期望 redeem script，覆盖 old-style/new-style、
+     BIP67 lexicographic 排序、private_key 字段拒绝、hardened suffix 拒绝、`m > n` 拒绝。
+     由于当前 host gate 没有链接真实 libwally，BIP32 子派生只在生产固件路径由 libwally
+     执行；host oracle 用已派生 child xpub + 空 suffix 避免 fake derivation 自测。
    - 未完成 descriptor/xpub/path/change 绑定前，只能开放 public-node 导入；地址确认和
      签名必须明确拒绝，不能半支持。
-   - 当前 gate 已覆盖 `GetAddress` multisig 字段、`SignTx` multisig input/output 的拒绝路径。
-     这些请求必须停在协议/normalizer 边界，不能进入 public key/address/signing policy。
+   - 当前 gate 已覆盖 `GetAddress` multisig 字段、`SignTx` multisig input/output 的拒绝路径，
+     并新增 normalizer 级 policy/redeem script 门禁。这些请求仍必须停在
+     协议/normalizer 边界，不能进入 signing policy。
 
 3. Taproot / BIP86
    - OneKey/Trezor proto 的 `SPENDTAPROOT=5`、`PAYTOTAPROOT=6` 只是协议入口，不等于可签名。
@@ -481,7 +495,9 @@ tools/
 3. PSBT/multisig/Taproot 先做 host gate 和安全拒绝
    - 标准 Trezor `SignTx/TxAck` 优先于 OneKey `SignPsbt` 扩展。
    - OneKey `SignPsbt` 已有第三方 PSBT oracle + wire 拒绝门禁。
-   - multisig/Taproot 已有 protocol-level 拒绝门禁；未完成 descriptor/path/script policy 前继续拒绝。
+   - multisig 已有 normalizer 级 policy/redeem script 门禁，但尚未接入
+     descriptor/change/prevout/output 安全绑定；Taproot 已有 protocol-level 拒绝门禁。
+     未完成这些安全模型前继续拒绝签名。
 
 ## 每次改动必须检查
 

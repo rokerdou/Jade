@@ -471,6 +471,110 @@ def run_local_wire_script(
     return responses
 
 
+def c_gate_fake_sha256(data: bytes) -> bytes:
+    """Mirror the host-gate hash shim; production firmware uses libwally."""
+    output = bytearray(32)
+    for index, value in enumerate(data):
+        output[index % len(output)] ^= value
+        slot = (index * 7 + 3) % len(output)
+        output[slot] = (output[slot] + value + index) & 0xFF
+    data_len = len(data)
+    output[0] ^= data_len & 0xFF
+    output[1] ^= (data_len >> 8) & 0xFF
+    output[2] ^= (data_len >> 16) & 0xFF
+    output[3] ^= (data_len >> 24) & 0xFF
+    return bytes(output)
+
+
+def c_gate_fake_hash160(data: bytes) -> bytes:
+    """Mirror the host-gate hash160 shim; used only to exercise C binding flow."""
+    output = bytearray(20)
+    for index, value in enumerate(data):
+        output[index % len(output)] ^= value
+        slot = (index * 5 + 1) % len(output)
+        output[slot] = (output[slot] + value + index) & 0xFF
+    data_len = len(data)
+    output[0] ^= data_len & 0xFF
+    output[1] ^= (data_len >> 8) & 0xFF
+    return bytes(output)
+
+
+def c_gate_fake_multisig_script_pubkey(script_type: messages.InputScriptType, redeem_script: bytes) -> bytes:
+    if script_type == messages.InputScriptType.SPENDMULTISIG:
+        return b"\xa9\x14" + c_gate_fake_hash160(redeem_script) + b"\x87"
+    if script_type == messages.InputScriptType.SPENDWITNESS:
+        return b"\x00\x20" + c_gate_fake_sha256(redeem_script)
+    if script_type == messages.InputScriptType.SPENDP2SHWITNESS:
+        witness_program = b"\x00\x20" + c_gate_fake_sha256(redeem_script)
+        return b"\xa9\x14" + c_gate_fake_hash160(witness_program) + b"\x87"
+    raise AssertionError(f"unsupported multisig script type for host gate: {script_type}")
+
+
+def hdnode_type_from_xpub(xpub: str) -> messages.HDNodeType:
+    raw = base58.b58decode_check(xpub)
+    if len(raw) != 78:
+        raise AssertionError(f"unexpected xpub payload length: {len(raw)}")
+    return messages.HDNodeType(
+        depth=raw[4],
+        fingerprint=int.from_bytes(raw[5:9], "big"),
+        child_num=int.from_bytes(raw[9:13], "big"),
+        chain_code=raw[13:45],
+        public_key=raw[45:78],
+    )
+
+
+def run_multisig_normalizer_gate(
+    gate: Path,
+    multisig: messages.MultisigRedeemScriptType,
+    script_type: messages.InputScriptType,
+    expected_redeem_script: bytes,
+) -> dict[str, str]:
+    expected_script_pubkey = c_gate_fake_multisig_script_pubkey(script_type, expected_redeem_script)
+    output = subprocess.check_output(
+        [
+            str(gate),
+            "--trezor-multisig-normalizer",
+            message_payload(multisig).hex(),
+            str(int(script_type)),
+            expected_script_pubkey.hex(),
+        ],
+        text=True,
+    )
+    parsed = parse_vectors(output)
+    if parsed.get("decoded") != "1" or parsed.get("normalized") != "1" or parsed.get("matched") != "1":
+        raise AssertionError(f"multisig normalizer failed: {parsed}")
+    if bytes.fromhex(parsed["redeem_script"]) != expected_redeem_script:
+        raise AssertionError(
+            f"multisig redeem script mismatch: actual={parsed['redeem_script']} expected={expected_redeem_script.hex()}"
+        )
+    return parsed
+
+
+def assert_multisig_normalizer_rejects(
+    gate: Path,
+    multisig: messages.MultisigRedeemScriptType,
+    script_type: messages.InputScriptType,
+    expected_redeem_script: bytes,
+    case_name: str,
+) -> None:
+    expected_script_pubkey = c_gate_fake_multisig_script_pubkey(script_type, expected_redeem_script)
+    result = subprocess.run(
+        [
+            str(gate),
+            "--trezor-multisig-normalizer",
+            message_payload(multisig).hex(),
+            str(int(script_type)),
+            expected_script_pubkey.hex(),
+        ],
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        check=False,
+    )
+    if result.returncode == 0:
+        raise AssertionError(f"{case_name} unexpectedly passed")
+
+
 def assert_trezor_failure(
     gate: Path,
     message_type: int,
@@ -1203,6 +1307,101 @@ def check_embit_psbt_oracle() -> bytes:
     if parsed.inputs[0].witness_utxo.script_pubkey.data != btc_p2wpkh_script_pubkey():
         raise AssertionError("PSBT oracle witness_utxo script mismatch")
     return raw
+
+
+def check_trezor_multisig_normalizer_oracle(gate: Path) -> None:
+    """Validate Trezor multisig protobuf normalization against embit scripts."""
+    from embit import bip32, script
+
+    seeds = [bytes([0x11]) * 32, bytes([0x22]) * 32, bytes([0x33]) * 32]
+    account_nodes = [bip32.HDKey.from_seed(seed).derive("m/48h/1h/0h/2h").to_public() for seed in seeds]
+    child_nodes = [node.child(0).child(0) for node in account_nodes]
+    child_pubkeys = [node.get_public_key() for node in child_nodes]
+    child_hd_nodes = [hdnode_type_from_xpub(str(node)) for node in child_nodes]
+
+    preserved_redeem = script.multisig(2, child_pubkeys).data
+    sorted_redeem = script.multisig(2, sorted(child_pubkeys, key=lambda pubkey: pubkey.sec())).data
+
+    old_style = messages.MultisigRedeemScriptType(
+        pubkeys=[messages.HDNodePathType(node=node, address_n=[]) for node in child_hd_nodes],
+        signatures=[b"", b"", b""],
+        m=2,
+        pubkeys_order=messages.MultisigPubkeysOrder.PRESERVED,
+    )
+    parsed = run_multisig_normalizer_gate(
+        gate, old_style, messages.InputScriptType.SPENDMULTISIG, preserved_redeem
+    )
+    if parsed.get("threshold") != "2" or parsed.get("num_pubkeys") != "3" or parsed.get("sorted") != "0":
+        raise AssertionError(f"unexpected old-style multisig policy: {parsed}")
+
+    new_style_p2wsh = messages.MultisigRedeemScriptType(
+        nodes=child_hd_nodes,
+        address_n=[],
+        signatures=[b"", b"", b""],
+        m=2,
+        pubkeys_order=messages.MultisigPubkeysOrder.PRESERVED,
+    )
+    parsed = run_multisig_normalizer_gate(
+        gate, new_style_p2wsh, messages.InputScriptType.SPENDWITNESS, preserved_redeem
+    )
+    if parsed.get("threshold") != "2" or parsed.get("num_pubkeys") != "3" or parsed.get("sorted") != "0":
+        raise AssertionError(f"unexpected new-style P2WSH multisig policy: {parsed}")
+
+    new_style_p2sh_p2wsh_sorted = messages.MultisigRedeemScriptType(
+        nodes=child_hd_nodes,
+        address_n=[],
+        signatures=[b"", b"", b""],
+        m=2,
+        pubkeys_order=messages.MultisigPubkeysOrder.LEXICOGRAPHIC,
+    )
+    parsed = run_multisig_normalizer_gate(
+        gate, new_style_p2sh_p2wsh_sorted, messages.InputScriptType.SPENDP2SHWITNESS, sorted_redeem
+    )
+    if parsed.get("threshold") != "2" or parsed.get("num_pubkeys") != "3" or parsed.get("sorted") != "1":
+        raise AssertionError(f"unexpected sorted P2SH-P2WSH multisig policy: {parsed}")
+
+    private_key_node = hdnode_type_from_xpub(str(child_nodes[0]))
+    private_key_node.private_key = b"\x01" * 32
+    assert_multisig_normalizer_rejects(
+        gate,
+        messages.MultisigRedeemScriptType(
+            pubkeys=[messages.HDNodePathType(node=private_key_node, address_n=[])],
+            signatures=[b""],
+            m=1,
+            pubkeys_order=messages.MultisigPubkeysOrder.PRESERVED,
+        ),
+        messages.InputScriptType.SPENDMULTISIG,
+        script.multisig(1, [child_pubkeys[0]]).data,
+        "multisig HDNodeType.private_key",
+    )
+
+    assert_multisig_normalizer_rejects(
+        gate,
+        messages.MultisigRedeemScriptType(
+            nodes=[hdnode_type_from_xpub(str(node)) for node in account_nodes],
+            address_n=[0x80000000],
+            signatures=[b"", b"", b""],
+            m=2,
+            pubkeys_order=messages.MultisigPubkeysOrder.PRESERVED,
+        ),
+        messages.InputScriptType.SPENDWITNESS,
+        preserved_redeem,
+        "multisig hardened child suffix",
+    )
+
+    assert_multisig_normalizer_rejects(
+        gate,
+        messages.MultisigRedeemScriptType(
+            nodes=child_hd_nodes,
+            address_n=[],
+            signatures=[b"", b"", b""],
+            m=4,
+            pubkeys_order=messages.MultisigPubkeysOrder.PRESERVED,
+        ),
+        messages.InputScriptType.SPENDWITNESS,
+        preserved_redeem,
+        "multisig threshold greater than signer count",
+    )
 
 
 def check_local_btc_signtx_wire_script_oracle(gate: Path) -> None:
@@ -2391,6 +2590,7 @@ def main() -> int:
     check_trezorlib_btc_protobuf_oracle()
     check_trezorlib_btc_signtx_host_flow_oracle()
     check_embit_psbt_oracle()
+    check_trezor_multisig_normalizer_oracle(gate)
     check_local_btc_signtx_wire_script_oracle(gate)
     check_trezorlib_protocol_oracle(gate, local)
     print("PASS external_oracle_gates")

@@ -19,6 +19,7 @@
 #include "chains/tron/tx.h"
 #include "crypto/keccak256.h"
 #include "protocols/trezor/bitcoin/messages.h"
+#include "protocols/trezor/bitcoin/multisig.h"
 #include "protocols/trezor/bitcoin/prev_tx_verifier.h"
 #include "protocols/trezor/bitcoin/protocol.h"
 #include "protocols/trezor/bitcoin/public_node.h"
@@ -994,11 +995,57 @@ bool show_chain_confirm_summary_activity(const chain_confirm_summary_t* summary)
 
 int wally_ec_public_key_verify(const unsigned char* pub_key, size_t pub_key_len)
 {
+    if (pub_key && pub_key_len == EC_PUBLIC_KEY_LEN && (pub_key[0] == 0x02 || pub_key[0] == 0x03)) {
+        return WALLY_OK;
+    }
     if (pub_key && pub_key_len == sizeof(PRIVATE_KEY_ONE_UNCOMPRESSED_PUBKEY)
         && memcmp(pub_key, PRIVATE_KEY_ONE_UNCOMPRESSED_PUBKEY, sizeof(PRIVATE_KEY_ONE_UNCOMPRESSED_PUBKEY)) == 0) {
         return WALLY_OK;
     }
     return WALLY_EINVAL;
+}
+
+void jade_abort(const char* const file, const int line_n)
+{
+    (void)file;
+    (void)line_n;
+    abort();
+}
+
+bool is_multisig(const script_variant_t variant)
+{
+    return variant == MULTI_P2WSH || variant == MULTI_P2SH || variant == MULTI_P2WSH_P2SH;
+}
+
+int bip32_key_unserialize(const unsigned char* bytes, size_t bytes_len, struct ext_key* output)
+{
+    if (!bytes || bytes_len != BIP32_SERIALIZED_LEN || !output) {
+        return WALLY_EINVAL;
+    }
+    memset(output, 0, sizeof(*output));
+    output->version
+        = ((uint32_t)bytes[0] << 24) | ((uint32_t)bytes[1] << 16) | ((uint32_t)bytes[2] << 8) | (uint32_t)bytes[3];
+    output->depth = bytes[4];
+    output->child_num
+        = ((uint32_t)bytes[9] << 24) | ((uint32_t)bytes[10] << 16) | ((uint32_t)bytes[11] << 8) | (uint32_t)bytes[12];
+    memcpy(output->chain_code, bytes + 13, sizeof(output->chain_code));
+    memcpy(output->pub_key, bytes + 45, sizeof(output->pub_key));
+    return (output->pub_key[0] == 0x02 || output->pub_key[0] == 0x03) ? WALLY_OK : WALLY_EINVAL;
+}
+
+int bip32_key_from_parent_path(
+    const struct ext_key* hdkey, const uint32_t* child_path, size_t child_path_len, uint32_t flags, struct ext_key* output)
+{
+    if (!hdkey || (!child_path && child_path_len) || flags != BIP32_FLAG_KEY_PUBLIC || !output) {
+        return WALLY_EINVAL;
+    }
+    // Host gate deliberately refuses to fake public-child derivation. The oracle
+    // uses already-derived xpub nodes with an empty suffix for this C-only path.
+    if (child_path_len != 0) {
+        return WALLY_EINVAL;
+    }
+    memcpy(output, hdkey, sizeof(*output));
+    return WALLY_OK;
 }
 
 int wally_base58_from_bytes(const unsigned char* bytes, size_t bytes_len, uint32_t flags, char** output)
@@ -1153,9 +1200,98 @@ int wally_address_to_scriptpubkey(
     return WALLY_EINVAL;
 }
 
+static void sort_compressed_pubkeys(uint8_t* const keys, const size_t num_keys)
+{
+    uint8_t tmp[EC_PUBLIC_KEY_LEN];
+    for (size_t i = 0; i < num_keys; ++i) {
+        for (size_t j = i + 1; j < num_keys; ++j) {
+            if (memcmp(keys + (i * EC_PUBLIC_KEY_LEN), keys + (j * EC_PUBLIC_KEY_LEN), EC_PUBLIC_KEY_LEN) > 0) {
+                memcpy(tmp, keys + (i * EC_PUBLIC_KEY_LEN), sizeof(tmp));
+                memcpy(keys + (i * EC_PUBLIC_KEY_LEN), keys + (j * EC_PUBLIC_KEY_LEN), sizeof(tmp));
+                memcpy(keys + (j * EC_PUBLIC_KEY_LEN), tmp, sizeof(tmp));
+            }
+        }
+    }
+    memset(tmp, 0, sizeof(tmp));
+}
+
+int wally_scriptpubkey_multisig_from_bytes(const unsigned char* bytes, size_t bytes_len, uint32_t threshold,
+    uint32_t flags, unsigned char* bytes_out, size_t len, size_t* written)
+{
+    if (!bytes || bytes_len == 0 || bytes_len % EC_PUBLIC_KEY_LEN != 0 || !bytes_out || !written
+        || (flags != 0 && flags != WALLY_SCRIPT_MULTISIG_SORTED)) {
+        return WALLY_EINVAL;
+    }
+    const size_t num_keys = bytes_len / EC_PUBLIC_KEY_LEN;
+    const size_t script_len = 1U + num_keys * (1U + EC_PUBLIC_KEY_LEN) + 2U;
+    if (num_keys == 0 || num_keys > TREZOR_BITCOIN_MULTISIG_MAX_SIGNERS || threshold == 0 || threshold > num_keys
+        || threshold > 16 || num_keys > 16 || len < script_len) {
+        return WALLY_EINVAL;
+    }
+
+    uint8_t keys[TREZOR_BITCOIN_MULTISIG_MAX_SIGNERS * EC_PUBLIC_KEY_LEN];
+    memcpy(keys, bytes, bytes_len);
+    if (flags == WALLY_SCRIPT_MULTISIG_SORTED) {
+        sort_compressed_pubkeys(keys, num_keys);
+    }
+
+    size_t pos = 0;
+    bytes_out[pos++] = (uint8_t)(0x50U + threshold);
+    for (size_t i = 0; i < num_keys; ++i) {
+        bytes_out[pos++] = EC_PUBLIC_KEY_LEN;
+        memcpy(bytes_out + pos, keys + (i * EC_PUBLIC_KEY_LEN), EC_PUBLIC_KEY_LEN);
+        pos += EC_PUBLIC_KEY_LEN;
+    }
+    bytes_out[pos++] = (uint8_t)(0x50U + num_keys);
+    bytes_out[pos++] = 0xae;
+    *written = pos;
+    memset(keys, 0, sizeof(keys));
+    return pos == script_len ? WALLY_OK : WALLY_EINVAL;
+}
+
+int wally_scriptpubkey_p2sh_from_bytes(
+    const unsigned char* bytes, size_t bytes_len, uint32_t flags, unsigned char* bytes_out, size_t len, size_t* written)
+{
+    if (!bytes || !bytes_out || !written || len < WALLY_SCRIPTPUBKEY_P2SH_LEN
+        || (flags != 0 && flags != WALLY_SCRIPT_HASH160)) {
+        return WALLY_EINVAL;
+    }
+
+    uint8_t hash[HASH160_LEN];
+    if (flags == WALLY_SCRIPT_HASH160) {
+        if (wally_hash160(bytes, bytes_len, hash, sizeof(hash)) != WALLY_OK) {
+            return WALLY_EINVAL;
+        }
+    } else {
+        if (bytes_len != sizeof(hash)) {
+            return WALLY_EINVAL;
+        }
+        memcpy(hash, bytes, sizeof(hash));
+    }
+
+    bytes_out[0] = 0xa9;
+    bytes_out[1] = HASH160_LEN;
+    memcpy(bytes_out + 2, hash, sizeof(hash));
+    bytes_out[2 + HASH160_LEN] = 0x87;
+    *written = WALLY_SCRIPTPUBKEY_P2SH_LEN;
+    memset(hash, 0, sizeof(hash));
+    return WALLY_OK;
+}
+
 int wally_witness_program_from_bytes(const unsigned char* bytes, size_t bytes_len, uint32_t flags,
     unsigned char* bytes_out, size_t len, size_t* written)
 {
+    if (bytes && bytes_len > 0 && flags == WALLY_SCRIPT_SHA256 && bytes_out && len >= WALLY_SCRIPTPUBKEY_P2WSH_LEN
+        && written) {
+        bytes_out[0] = 0x00;
+        bytes_out[1] = SHA256_LEN;
+        if (wally_sha256(bytes, bytes_len, bytes_out + 2, SHA256_LEN) != WALLY_OK) {
+            return WALLY_EINVAL;
+        }
+        *written = WALLY_SCRIPTPUBKEY_P2WSH_LEN;
+        return WALLY_OK;
+    }
+
     if (!bytes || bytes_len != sizeof(PRIVATE_KEY_ONE_COMPRESSED_PUBKEY)
         || memcmp(bytes, PRIVATE_KEY_ONE_COMPRESSED_PUBKEY, sizeof(PRIVATE_KEY_ONE_COMPRESSED_PUBKEY)) != 0
         || flags != WALLY_SCRIPT_HASH160 || !bytes_out || len < sizeof(EXPECTED_BTC_P2WPKH_SCRIPTPUBKEY)
@@ -1180,7 +1316,13 @@ int wally_hash160(const unsigned char* bytes, size_t bytes_len, unsigned char* b
         && memcmp(bytes, EXPECTED_BTC_P2WPKH_SCRIPTPUBKEY, sizeof(EXPECTED_BTC_P2WPKH_SCRIPTPUBKEY)) == 0) {
         memcpy(bytes_out, EXPECTED_BTC_P2SH_P2WPKH_HASH160, sizeof(EXPECTED_BTC_P2SH_P2WPKH_HASH160));
     } else {
-        return WALLY_EINVAL;
+        memset(bytes_out, 0, len);
+        for (size_t i = 0; i < bytes_len; ++i) {
+            bytes_out[i % len] ^= bytes[i];
+            bytes_out[(i * 5 + 1) % len] = (uint8_t)(bytes_out[(i * 5 + 1) % len] + bytes[i] + (uint8_t)i);
+        }
+        bytes_out[0] ^= (uint8_t)bytes_len;
+        bytes_out[1] ^= (uint8_t)(bytes_len >> 8);
     }
     return WALLY_OK;
 }
@@ -1846,6 +1988,54 @@ static int run_trezor_wire_script(const int request_count, char** const request_
     return 0;
 }
 
+static int run_trezor_multisig_normalizer(
+    const char* const multisig_hex, const char* const script_type_str, const char* const expected_script_hex)
+{
+    uint8_t multisig_payload[2048];
+    size_t multisig_payload_len = 0;
+    uint8_t expected_script[TREZOR_BITCOIN_PREV_SCRIPT_MAX_LEN];
+    size_t expected_script_len = 0;
+    uint32_t script_type = 0;
+    unsigned int parsed_script_type = 0;
+    trezor_bitcoin_multisig_t multisig;
+    trezor_bitcoin_multisig_policy_t policy;
+    wally_bzero(&multisig, sizeof(multisig));
+    wally_bzero(&policy, sizeof(policy));
+
+    if (!multisig_hex || !script_type_str || !expected_script_hex
+        || !parse_hex_bytes(multisig_hex, multisig_payload, sizeof(multisig_payload), &multisig_payload_len)
+        || !parse_hex_bytes(expected_script_hex, expected_script, sizeof(expected_script), &expected_script_len)
+        || sscanf(script_type_str, "%u", &parsed_script_type) != 1 || parsed_script_type > UINT32_MAX) {
+        return 1;
+    }
+    script_type = (uint32_t)parsed_script_type;
+
+    const bool decoded = trezor_bitcoin_multisig_decode(multisig_payload, multisig_payload_len, &multisig);
+    const bool normalized = decoded && trezor_bitcoin_multisig_normalize(&multisig, script_type, &policy);
+    const bool matched = normalized
+        && trezor_bitcoin_multisig_script_pubkey_matches(&policy, expected_script, expected_script_len);
+
+    printf("decoded=%u\n", decoded ? 1U : 0U);
+    printf("normalized=%u\n", normalized ? 1U : 0U);
+    printf("matched=%u\n", matched ? 1U : 0U);
+    printf("variant=%u\n", normalized ? (unsigned int)policy.variant : 0U);
+    printf("threshold=%u\n", normalized ? (unsigned int)policy.threshold : 0U);
+    printf("num_pubkeys=%u\n", normalized ? (unsigned int)policy.num_pubkeys : 0U);
+    printf("sorted=%u\n", normalized && policy.sorted ? 1U : 0U);
+    printf("redeem_script_len=%u\n", normalized ? (unsigned int)policy.redeem_script_len : 0U);
+    printf("script_pubkey_len=%u\n", normalized ? (unsigned int)policy.script_pubkey_len : 0U);
+    if (normalized) {
+        print_hex_value("redeem_script", policy.redeem_script, policy.redeem_script_len);
+        print_hex_value("script_pubkey", policy.script_pubkey, policy.script_pubkey_len);
+    }
+
+    wally_bzero(multisig_payload, sizeof(multisig_payload));
+    wally_bzero(expected_script, sizeof(expected_script));
+    wally_bzero(&multisig, sizeof(multisig));
+    wally_bzero(&policy, sizeof(policy));
+    return matched ? 0 : 2;
+}
+
 static int dump_oracle_vectors(void)
 {
     uint8_t eth_address[ETHEREUM_ADDRESS_LEN];
@@ -1981,6 +2171,9 @@ int main(int argc, char** argv)
     }
     if (argc >= 3 && argv && argv[1] && strcmp(argv[1], "--trezor-wire-script") == 0) {
         return run_trezor_wire_script(argc - 2, &argv[2]);
+    }
+    if (argc == 5 && argv && argv[1] && strcmp(argv[1], "--trezor-multisig-normalizer") == 0) {
+        return run_trezor_multisig_normalizer(argv[2], argv[3], argv[4]);
     }
 
     CHECK(PRIVATE_KEY_ONE[EC_PRIVATE_KEY_LEN - 1] == 1);
