@@ -2169,6 +2169,12 @@ def check_trezorlib_protocol_oracle(gate: Path, local_vectors: dict[str, str]) -
     if response_type != messages.MessageType.Features:
         raise AssertionError(f"Initialize response type mismatch: {response_type}")
     features = protobuf.load_message(io.BytesIO(payload), messages.Features)
+    if features.major_version not in (1, 2):
+        raise AssertionError(f"Connect-incompatible Features.major_version: {features.major_version}")
+    if features.firmware_present is not False and features.bootloader_mode is not None and features.bootloader_mode is not True:
+        raise AssertionError(
+            "Connect-incompatible Features shape: normal firmware mode must omit bootloader_mode=false"
+        )
     if not features.initialized or not features.pin_protection or features.passphrase_protection:
         raise AssertionError(f"unexpected Features state: {features}")
     if messages.Capability.Ethereum not in features.capabilities:

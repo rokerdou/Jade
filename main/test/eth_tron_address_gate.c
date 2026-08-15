@@ -3708,7 +3708,7 @@ int main(int argc, char** argv)
         } else if (field_number == 5) {
             uint64_t bool_value = 1;
             CHECK(trezor_protobuf_read_varint_value(value, value_len, &bool_value));
-            saw_bootloader_mode = bool_value == 0;
+            saw_bootloader_mode = true;
         } else if (field_number == 7) {
             uint64_t bool_value = 0;
             CHECK(trezor_protobuf_read_varint_value(value, value_len, &bool_value));
@@ -3795,7 +3795,7 @@ int main(int argc, char** argv)
     CHECK(saw_minor_version);
     CHECK(saw_patch_version);
     CHECK(saw_model);
-    CHECK(saw_bootloader_mode);
+    CHECK(!saw_bootloader_mode);
     CHECK(saw_pin_protection);
     CHECK(saw_passphrase_protection);
     CHECK(saw_initialized);

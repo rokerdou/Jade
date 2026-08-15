@@ -23,8 +23,7 @@ bool trezor_features_encode(
         ok = trezor_protobuf_write_string_field(&writer, 6, features->device_id);
     }
 
-    ok = ok && trezor_protobuf_write_bool_field(&writer, 5, false)
-        && trezor_protobuf_write_bool_field(&writer, 7, features->pin_protection);
+    ok = ok && trezor_protobuf_write_bool_field(&writer, 7, features->pin_protection);
 
     if (ok && features->expose_private_fields) {
         ok = trezor_protobuf_write_bool_field(&writer, 8, features->passphrase_protection);
