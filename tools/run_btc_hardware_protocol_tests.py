@@ -136,14 +136,19 @@ def assert_address(session: Any, *, coin_name: str, path: list[int], expected_pr
 
 def account_xpub(
     session: Any, *, coin_name: str, testnet: bool, script_type: messages.InputScriptType = P2WPKH_SCRIPT_TYPE,
-    account: int = 0, expected_prefix: str | None = None
+    account: int = 0, expected_prefix: str | None = None, omit_script_type: bool = False,
+    request_script_type: messages.InputScriptType | None = None
 ) -> str:
+    request_kwargs: dict[str, Any] = {
+        "show_display": False,
+        "coin_name": coin_name,
+    }
+    if not omit_script_type:
+        request_kwargs["script_type"] = request_script_type if request_script_type is not None else script_type
     response = btc.get_public_node(
         session,
         account_path_for_script(script_type, testnet=testnet, account=account),
-        show_display=False,
-        coin_name=coin_name,
-        script_type=script_type,
+        **request_kwargs,
     )
     xpub = getattr(response, "xpub", None)
     if not xpub:
@@ -196,7 +201,7 @@ def expected_account_xpub_prefix(*, testnet: bool, script_type: messages.InputSc
 
 
 def test_account_xpubs(session: Any) -> None:
-    print("RUN BTC account xpubs testnet/mainnet", flush=True)
+    print("RUN BTC account xpubs testnet/mainnet explicit, omitted and Sparrow/lark default script type", flush=True)
     cases = [
         ("Testnet", True, P2PKH_SCRIPT_TYPE),
         ("Testnet", True, P2SH_P2WPKH_SCRIPT_TYPE),
@@ -207,14 +212,23 @@ def test_account_xpubs(session: Any) -> None:
     ]
     for coin_name, testnet, script_type in cases:
         prefix = expected_account_xpub_prefix(testnet=testnet, script_type=script_type)
-        xpub = account_xpub(
-            session,
-            coin_name=coin_name,
-            testnet=testnet,
-            script_type=script_type,
-            expected_prefix=prefix,
-        )
-        print(f"  PASS {coin_name}/{enum_name(script_type)} account xpub={xpub[:8]}...", flush=True)
+        request_modes: list[tuple[str, bool, messages.InputScriptType | None]] = [
+            ("explicit", False, script_type),
+            ("omitted", True, None),
+        ]
+        if script_type != P2PKH_SCRIPT_TYPE:
+            request_modes.append(("sparrow-lark-default", False, P2PKH_SCRIPT_TYPE))
+        for mode, omit_script_type, request_script_type in request_modes:
+            xpub = account_xpub(
+                session,
+                coin_name=coin_name,
+                testnet=testnet,
+                script_type=script_type,
+                expected_prefix=prefix,
+                omit_script_type=omit_script_type,
+                request_script_type=request_script_type,
+            )
+            print(f"  PASS {coin_name}/{enum_name(script_type)} {mode} account xpub={xpub[:8]}...", flush=True)
 
 
 def assert_signed_tx(

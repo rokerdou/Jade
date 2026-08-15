@@ -1992,37 +1992,87 @@ def check_trezorlib_protocol_oracle(gate: Path, local_vectors: dict[str, str]) -
 
     btc_public_key_cases = [
         (
+            "explicit",
             messages.InputScriptType.SPENDADDRESS,
             [0x8000002C, 0x80000001, 0x80000000],
             "Testnet",
+            "tpub",
+            bytes.fromhex("043587cf"),
         ),
         (
+            "explicit",
             messages.InputScriptType.SPENDWITNESS,
             [0x80000054, 0x80000001, 0x80000000],
             "Testnet",
+            "vpub",
+            bytes.fromhex("045f1cf6"),
         ),
         (
+            "sparrow-lark-default",
+            messages.InputScriptType.SPENDADDRESS,
+            [0x80000054, 0x80000001, 0x80000000],
+            "Testnet",
+            "vpub",
+            bytes.fromhex("045f1cf6"),
+        ),
+        (
+            "explicit",
             messages.InputScriptType.SPENDP2SHWITNESS,
             [0x80000031, 0x80000001, 0x80000000],
             "Testnet",
+            "upub",
+            bytes.fromhex("044a5262"),
         ),
         (
+            "sparrow-lark-default",
+            messages.InputScriptType.SPENDADDRESS,
+            [0x80000031, 0x80000001, 0x80000000],
+            "Testnet",
+            "upub",
+            bytes.fromhex("044a5262"),
+        ),
+        (
+            "explicit",
             messages.InputScriptType.SPENDADDRESS,
             [0x8000002C, 0x80000000, 0x80000000],
             "Bitcoin",
+            "xpub",
+            bytes.fromhex("0488b21e"),
         ),
         (
+            "explicit",
             messages.InputScriptType.SPENDWITNESS,
             [0x80000054, 0x80000000, 0x80000000],
             "Bitcoin",
+            "zpub",
+            bytes.fromhex("04b24746"),
         ),
         (
+            "sparrow-lark-default",
+            messages.InputScriptType.SPENDADDRESS,
+            [0x80000054, 0x80000000, 0x80000000],
+            "Bitcoin",
+            "zpub",
+            bytes.fromhex("04b24746"),
+        ),
+        (
+            "explicit",
             messages.InputScriptType.SPENDP2SHWITNESS,
             [0x80000031, 0x80000000, 0x80000000],
             "Bitcoin",
+            "ypub",
+            bytes.fromhex("049d7cb2"),
+        ),
+        (
+            "sparrow-lark-default",
+            messages.InputScriptType.SPENDADDRESS,
+            [0x80000031, 0x80000000, 0x80000000],
+            "Bitcoin",
+            "ypub",
+            bytes.fromhex("049d7cb2"),
         ),
     ]
-    for script_type, address_n, coin_name in btc_public_key_cases:
+    for mode, script_type, address_n, coin_name, expected_prefix, expected_version in btc_public_key_cases:
         response_type, payload = run_local_wire_oracle(
             gate,
             messages.MessageType.GetPublicKey,
@@ -2041,6 +2091,17 @@ def check_trezorlib_protocol_oracle(gate: Path, local_vectors: dict[str, str]) -
             raise AssertionError("PublicKey response unexpectedly contains private_key")
         if not public_key.xpub:
             raise AssertionError("PublicKey response missing xpub")
+        if not public_key.xpub.startswith(expected_prefix):
+            raise AssertionError(
+                f"GetPublicKey {mode} {coin_name}/{script_type} xpub prefix mismatch: "
+                f"expected {expected_prefix}, got {public_key.xpub[:4]}"
+            )
+        decoded_xpub = base58.b58decode_check(public_key.xpub)
+        if len(decoded_xpub) != 78 or decoded_xpub[:4] != expected_version:
+            raise AssertionError(
+                f"GetPublicKey {mode} {coin_name}/{script_type} xpub version mismatch: "
+                f"expected {expected_version.hex()}, got {decoded_xpub[:4].hex()}"
+            )
 
     response_type, payload = run_local_wire_oracle(
         gate,

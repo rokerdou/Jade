@@ -144,6 +144,7 @@ void __wrap_abort(void);
 #include "./protocols/trezor/bitcoin/messages.c"
 #include "./protocols/trezor/bitcoin/protocol.c"
 #include "./protocols/trezor/bitcoin/policy.c"
+#include "./protocols/trezor/bitcoin/public_node.c"
 #include "./protocols/trezor/bitcoin/requests.c"
 #include "./protocols/trezor/bitcoin/script_policy.c"
 #include "./protocols/trezor/bitcoin/signing_state.c"

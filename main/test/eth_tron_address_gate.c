@@ -21,6 +21,7 @@
 #include "protocols/trezor/bitcoin/messages.h"
 #include "protocols/trezor/bitcoin/prev_tx_verifier.h"
 #include "protocols/trezor/bitcoin/protocol.h"
+#include "protocols/trezor/bitcoin/public_node.h"
 #include "protocols/trezor/bitcoin/requests.h"
 #include "protocols/trezor/bitcoin/script_policy.h"
 #include "protocols/trezor/bitcoin/signing_state.h"
@@ -41,6 +42,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <wally_address.h>
+#include <wally_bip32.h>
 #include <wally_core.h>
 #include <wally_crypto.h>
 #include <wally_map.h>
@@ -140,6 +142,7 @@ static bool g_trezor_eth_sign_ok = true;
 static size_t g_trezor_eth_sign_calls = 0;
 static size_t g_trezor_btc_confirm_calls = 0;
 static size_t g_trezor_btc_sign_calls = 0;
+static void write_u32_be(uint8_t output[4], uint32_t value);
 static bitcoin_confirm_request_t g_last_trezor_btc_confirm_request;
 static ethereum_tx_preflight_request_t g_last_trezor_eth_sign_request;
 static uint32_t g_last_trezor_eth_sign_path[WALLET_CORE_MAX_PATH_LEN];
@@ -483,7 +486,40 @@ static bool trezor_test_get_public_key(
     for (size_t i = 1; i < sizeof(response->public_key); ++i) {
         response->public_key[i] = (uint8_t)(0x80 + i);
     }
-    memcpy(response->xpub, "xpub-test-only", sizeof("xpub-test-only"));
+
+    uint32_t public_version = BIP32_VER_MAIN_PUBLIC;
+    if (!trezor_bitcoin_public_node_version(request, &public_version)) {
+        public_version = BIP32_VER_MAIN_PUBLIC;
+    }
+
+    uint8_t serialized[BIP32_SERIALIZED_LEN];
+    size_t offset = 0;
+    write_u32_be(serialized + offset, public_version);
+    offset += sizeof(uint32_t);
+    serialized[offset++] = response->depth;
+    write_u32_be(serialized + offset, response->fingerprint);
+    offset += sizeof(uint32_t);
+    write_u32_be(serialized + offset, response->child_num);
+    offset += sizeof(uint32_t);
+    memcpy(serialized + offset, response->chain_code, sizeof(response->chain_code));
+    offset += sizeof(response->chain_code);
+    memcpy(serialized + offset, response->public_key, sizeof(response->public_key));
+    offset += sizeof(response->public_key);
+
+    char* xpub = NULL;
+    const bool xpub_ok = offset == sizeof(serialized)
+        && wally_base58_from_bytes(serialized, sizeof(serialized), BASE58_FLAG_CHECKSUM, &xpub) == WALLY_OK && xpub
+        && strlen(xpub) < sizeof(response->xpub);
+    if (xpub_ok) {
+        memcpy(response->xpub, xpub, strlen(xpub) + 1);
+    }
+    if (xpub) {
+        wally_free_string(xpub);
+    }
+    wally_bzero(serialized, sizeof(serialized));
+    if (!xpub_ok) {
+        return false;
+    }
     return true;
 }
 
@@ -837,6 +873,14 @@ static void write_u32_le(uint8_t output[4], const uint32_t value)
     output[3] = (uint8_t)(value >> 24);
 }
 
+static void write_u32_be(uint8_t output[4], const uint32_t value)
+{
+    output[0] = (uint8_t)(value >> 24);
+    output[1] = (uint8_t)(value >> 16);
+    output[2] = (uint8_t)(value >> 8);
+    output[3] = (uint8_t)value;
+}
+
 static bool make_signed_eth_token_definition(const uint8_t address[ETHEREUM_ADDRESS_LEN], const uint64_t chain_id,
     const char* const symbol, const uint32_t decimals, const char* const name, const bool valid_signature,
     uint8_t* const output, const size_t output_len, size_t* const written)
@@ -988,6 +1032,26 @@ int wally_base58_from_bytes(const unsigned char* bytes, size_t bytes_len, uint32
                sizeof(EXPECTED_BTC_P2SH_P2WPKH_MAINNET_ADDRESS_BYTES))
             == 0) {
         expected = "3JvL6Ymt8MVWiCNHC7oWU6nLeHNJKLZGLN";
+        expected_len = strlen(expected) + 1;
+    } else if (bytes_len == BIP32_SERIALIZED_LEN) {
+        const uint32_t public_version = ((uint32_t)bytes[0] << 24) | ((uint32_t)bytes[1] << 16)
+            | ((uint32_t)bytes[2] << 8) | (uint32_t)bytes[3];
+        if (public_version == BIP32_VER_MAIN_PUBLIC) {
+            expected = "xpub6DfD3wCmNAGmk7FfeunsNRvzrikag12f6usX8wDy91889E87nqMW26t83q3FBu5KWWikMJRys2RgavhDet2whTtys3VVYrCf5rU8VUGtdw1";
+        } else if (public_version == BIP32_VER_TEST_PUBLIC) {
+            expected = "tpubDE2qaB2T5SEE1uSX76mxaMGNBqrEfPXieYTpVVH7Uut1tWnps4CbAYYxHs82iQ2ZJRFexswrQ8FjH7Bq3jtBauMGveEoENrtfp4YFS629sg";
+        } else if (public_version == 0x049D7CB2U) {
+            expected = "ypub6YVUMbsgWqpFbQSnVGaVaX2W2gu2cd2A22PjvL7rX1W1CKwM3VX4eAYG52zqBojEv9qZ6n2YKgnEUDJnNaSxVhaajPBv8m29MaXmsyQYM4n";
+        } else if (public_version == 0x044A5262U) {
+            expected = "upub5FAR8wC1v7eLCDgK9qRzkAeVLpKEr94AMaJrnkYJzyzUyvgS2rrp9uuhzDAVCB7ZHbNL6seJV3N2w4rXVnnuJkrBG2QDo7kCGgHCKhfWsK8";
+        } else if (public_version == 0x04B24746U) {
+            expected = "zpub6sKjfGYbfXMjShduKdN7nc81Cf3UZF1ew8uxhj1ju1stFRkaJ9gdGECQ6ExRBiPAKnxMrFd6nM8nMVvM6GryHwGBbitLifqddJbRGa32Jcz";
+        } else if (public_version == 0x045F1CF6U) {
+            expected = "vpub5ZzgSbrw4oBp3WsRzCDcxFjzWnTgnm3fGgq5a9SCNzNN32VfHX2NmyZr1R85C5mUhEV8rMErwhiapMU6DVCv6zXn8N6eP2ZgYQLqiFuYj8G";
+        }
+        if (!expected) {
+            return WALLY_EINVAL;
+        }
         expected_len = strlen(expected) + 1;
     } else {
         return WALLY_EINVAL;
@@ -2007,6 +2071,56 @@ int main(int argc, char** argv)
     CHECK(bitcoin_path_is_p2wpkh_signing(btc_signing_path_1, ARRAY_LEN(btc_signing_path_1), true));
     CHECK(bitcoin_path_is_p2wpkh_change(
         btc_change_path, ARRAY_LEN(btc_change_path), true, chain_path_harden(0)));
+
+    trezor_public_key_request_t btc_public_node_request;
+    uint32_t btc_public_node_version = 0;
+    wally_bzero(&btc_public_node_request, sizeof(btc_public_node_request));
+    btc_public_node_request.kind = TREZOR_PUBLIC_KEY_REQUEST_GENERIC;
+    btc_public_node_request.has_coin_name = true;
+    memcpy(btc_public_node_request.coin_name, "Bitcoin", sizeof("Bitcoin"));
+    btc_public_node_request.address_n_len = ARRAY_LEN(btc_mainnet_p2wpkh_account_path);
+    memcpy(btc_public_node_request.address_n, btc_mainnet_p2wpkh_account_path, sizeof(btc_mainnet_p2wpkh_account_path));
+    CHECK(trezor_bitcoin_public_node_version(&btc_public_node_request, &btc_public_node_version));
+    CHECK(btc_public_node_version == 0x04B24746U);
+    btc_public_node_request.has_ignore_xpub_magic = true;
+    btc_public_node_request.ignore_xpub_magic = true;
+    CHECK(trezor_bitcoin_public_node_version(&btc_public_node_request, &btc_public_node_version));
+    CHECK(btc_public_node_version == BIP32_VER_MAIN_PUBLIC);
+    btc_public_node_request.has_script_type = true;
+    btc_public_node_request.script_type = BITCOIN_P2PKH_SPENDADDRESS;
+    CHECK(trezor_bitcoin_public_node_version(&btc_public_node_request, &btc_public_node_version));
+    CHECK(btc_public_node_version == BIP32_VER_MAIN_PUBLIC);
+    btc_public_node_request.has_ignore_xpub_magic = false;
+    btc_public_node_request.ignore_xpub_magic = false;
+    CHECK(trezor_bitcoin_public_node_version(&btc_public_node_request, &btc_public_node_version));
+    CHECK(btc_public_node_version == 0x04B24746U);
+    btc_public_node_request.script_type = BITCOIN_P2SH_P2WPKH_SPENDP2SHWITNESS;
+    CHECK(!trezor_bitcoin_public_node_version(&btc_public_node_request, &btc_public_node_version));
+
+    wally_bzero(&btc_public_node_request, sizeof(btc_public_node_request));
+    btc_public_node_request.kind = TREZOR_PUBLIC_KEY_REQUEST_GENERIC;
+    btc_public_node_request.has_coin_name = true;
+    memcpy(btc_public_node_request.coin_name, "Testnet", sizeof("Testnet"));
+    btc_public_node_request.address_n_len = ARRAY_LEN(btc_p2wpkh_account_path);
+    memcpy(btc_public_node_request.address_n, btc_p2wpkh_account_path, sizeof(btc_p2wpkh_account_path));
+    CHECK(trezor_bitcoin_public_node_version(&btc_public_node_request, &btc_public_node_version));
+    CHECK(btc_public_node_version == 0x045F1CF6U);
+
+    wally_bzero(&btc_public_node_request, sizeof(btc_public_node_request));
+    btc_public_node_request.kind = TREZOR_PUBLIC_KEY_REQUEST_GENERIC;
+    btc_public_node_request.has_coin_name = true;
+    memcpy(btc_public_node_request.coin_name, "Bitcoin", sizeof("Bitcoin"));
+    btc_public_node_request.address_n_len = ARRAY_LEN(btc_mainnet_p2sh_p2wpkh_account_path);
+    memcpy(btc_public_node_request.address_n, btc_mainnet_p2sh_p2wpkh_account_path,
+        sizeof(btc_mainnet_p2sh_p2wpkh_account_path));
+    CHECK(trezor_bitcoin_public_node_version(&btc_public_node_request, &btc_public_node_version));
+    CHECK(btc_public_node_version == 0x049D7CB2U);
+    btc_public_node_request.has_script_type = true;
+    btc_public_node_request.script_type = BITCOIN_P2PKH_SPENDADDRESS;
+    CHECK(trezor_bitcoin_public_node_version(&btc_public_node_request, &btc_public_node_version));
+    CHECK(btc_public_node_version == 0x049D7CB2U);
+    btc_public_node_request.script_type = BITCOIN_P2WPKH_SPENDWITNESS;
+    CHECK(!trezor_bitcoin_public_node_version(&btc_public_node_request, &btc_public_node_version));
     CHECK(!bitcoin_path_is_testnet_p2wpkh_signing(btc_state_path, ARRAY_LEN(btc_state_path)));
     CHECK(!bitcoin_path_is_testnet_p2sh_p2wpkh_signing(btc_signing_path, ARRAY_LEN(btc_signing_path)));
 

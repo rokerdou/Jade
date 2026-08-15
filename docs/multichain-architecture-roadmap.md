@@ -171,6 +171,10 @@ main/
 - BTC `GetPublicKey` 已支持账户级 BIP44/P2PKH、BIP49/P2SH-P2WPKH、BIP84/P2WPKH，
   覆盖 Bitcoin/Testnet，并按 Trezor/OneKey 的 `script_type + ignore_xpub_magic` 规则选择
   `xpub/tpub/ypub/upub/zpub/vpub` 公钥版本字节。
+- Sparrow/lark 的 singlesig xpub 导入会用默认 `SPENDADDRESS` 调
+  `GetPublicKey(m/49'...)` / `GetPublicKey(m/84'...)`。固件现在只在账户级 public-node
+  导出路径把这个默认值视为客户端兼容占位，并按 BIP purpose 推断 ypub/zpub；
+  签名路径仍然要求 input `script_type` 与 prevout/script policy 严格匹配。
 
 继续要求：
 
@@ -243,6 +247,9 @@ main/
   导入和签名表现。
 - Sparrow/OneKey 完整导入兼容：`GetPublicKey`、`GetAddress`、`show_display`、
   `ignore_xpub_magic`、model/version/internal_model、firmware range 仍需真实客户端矩阵测试。
+- P2WSH/P2SH multisig 与 BIP48 暂不开放。它们不是简单 xpub 版本字节问题，还需要
+  descriptor/multisig/pubkey order/witnessScript/change policy/fee review 的完整门禁；
+  当前固件必须继续拒绝 `SPENDMULTISIG` 和未知 witness script 签名请求。
 
 4. P2SH-P2WPKH 已实验性开放。
    - P2SH-P2WPKH 继续使用 segwit v0/BIP143 sighash。

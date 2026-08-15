@@ -139,6 +139,7 @@ if(HOST_CC)
             ${COMPONENT_DIR}/protocols/trezor/bitcoin/messages.c
             ${COMPONENT_DIR}/protocols/trezor/bitcoin/protocol.c
             ${COMPONENT_DIR}/protocols/trezor/bitcoin/policy.c
+            ${COMPONENT_DIR}/protocols/trezor/bitcoin/public_node.c
             ${COMPONENT_DIR}/protocols/trezor/bitcoin/requests.c
             ${COMPONENT_DIR}/protocols/trezor/bitcoin/script_policy.c
             ${COMPONENT_DIR}/protocols/trezor/bitcoin/signing_state.c
@@ -206,6 +207,8 @@ if(HOST_CC)
             ${COMPONENT_DIR}/protocols/trezor/bitcoin/protocol.h
             ${COMPONENT_DIR}/protocols/trezor/bitcoin/policy.c
             ${COMPONENT_DIR}/protocols/trezor/bitcoin/policy.h
+            ${COMPONENT_DIR}/protocols/trezor/bitcoin/public_node.c
+            ${COMPONENT_DIR}/protocols/trezor/bitcoin/public_node.h
             ${COMPONENT_DIR}/protocols/trezor/bitcoin/requests.c
             ${COMPONENT_DIR}/protocols/trezor/bitcoin/requests.h
             ${COMPONENT_DIR}/protocols/trezor/bitcoin/script_policy.c
