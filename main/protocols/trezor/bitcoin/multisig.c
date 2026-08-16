@@ -503,6 +503,52 @@ bool trezor_bitcoin_multisig_script_pubkey_matches(const trezor_bitcoin_multisig
         && memcmp(policy->script_pubkey, script_pubkey, script_pubkey_len) == 0;
 }
 
+bool trezor_bitcoin_multisig_policy_contains_pubkey(
+    const trezor_bitcoin_multisig_policy_t* const policy, const uint8_t* const pubkey, const size_t pubkey_len)
+{
+    if (!policy || !pubkey || pubkey_len != EC_PUBLIC_KEY_LEN || policy->num_pubkeys == 0
+        || policy->num_pubkeys > TREZOR_BITCOIN_MULTISIG_MAX_SIGNERS) {
+        return false;
+    }
+    for (size_t i = 0; i < policy->num_pubkeys; ++i) {
+        const uint8_t* const candidate = policy->pubkeys + (i * EC_PUBLIC_KEY_LEN);
+        if (memcmp(candidate, pubkey, EC_PUBLIC_KEY_LEN) == 0) {
+            return true;
+        }
+    }
+    return false;
+}
+
+bool trezor_bitcoin_multisig_policy_to_descriptor(const trezor_bitcoin_multisig_policy_t* const policy,
+    const uint8_t* const local_pubkey, const size_t local_pubkey_len, trezor_bitcoin_multisig_descriptor_t* const output)
+{
+    if (!policy || !output || !is_multisig(policy->variant) || policy->threshold == 0
+        || policy->num_pubkeys == 0 || policy->threshold > policy->num_pubkeys
+        || policy->num_pubkeys > TREZOR_BITCOIN_MULTISIG_MAX_SIGNERS
+        || policy->num_pubkeys > UINT8_MAX || policy->redeem_script_len == 0
+        || policy->redeem_script_len > sizeof(policy->redeem_script) || policy->script_pubkey_len == 0
+        || policy->script_pubkey_len > sizeof(policy->script_pubkey)
+        || policy->address_n_len > WALLET_CORE_MAX_PATH_LEN
+        || (!!local_pubkey != !!local_pubkey_len) || (local_pubkey && local_pubkey_len != EC_PUBLIC_KEY_LEN)) {
+        return false;
+    }
+
+    wally_bzero(output, sizeof(*output));
+    output->variant = policy->variant;
+    output->threshold = policy->threshold;
+    output->num_pubkeys = (uint8_t)policy->num_pubkeys;
+    output->sorted = policy->sorted;
+    output->has_shared_path = policy->address_n_len > 0;
+    output->address_n_len = policy->address_n_len;
+    memcpy(output->address_n, policy->address_n, policy->address_n_len * sizeof(policy->address_n[0]));
+    output->has_local_pubkey
+        = local_pubkey && trezor_bitcoin_multisig_policy_contains_pubkey(policy, local_pubkey, local_pubkey_len);
+    memcpy(output->fingerprint, policy->fingerprint, sizeof(output->fingerprint));
+    output->redeem_script_len = policy->redeem_script_len;
+    output->script_pubkey_len = policy->script_pubkey_len;
+    return true;
+}
+
 static bool matcher_fingerprint_valid(const uint8_t* const fingerprint, const size_t fingerprint_len)
 {
     return fingerprint && fingerprint_len == SHA256_LEN;

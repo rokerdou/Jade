@@ -775,6 +775,25 @@ def run_multisig_normalizer_gate(
         )
     if bytes.fromhex(parsed["fingerprint"]) != c_gate_fake_multisig_fingerprint(multisig):
         raise AssertionError(f"multisig fingerprint mismatch: {parsed['fingerprint']}")
+    if parsed.get("descriptor_ok") != "1":
+        raise AssertionError(f"multisig descriptor normalization failed: {parsed}")
+    if parsed.get("descriptor_fingerprint") != parsed.get("fingerprint"):
+        raise AssertionError(f"multisig descriptor fingerprint mismatch: {parsed}")
+    if parsed.get("descriptor_threshold") != str(multisig.m):
+        raise AssertionError(f"multisig descriptor threshold mismatch: {parsed}")
+    signer_count = len(multisig.pubkeys) if multisig.pubkeys else len(multisig.nodes)
+    if parsed.get("descriptor_num_pubkeys") != str(signer_count):
+        raise AssertionError(f"multisig descriptor signer count mismatch: {parsed}")
+    if parsed.get("descriptor_sorted") != ("1" if multisig.pubkeys_order == messages.MultisigPubkeysOrder.LEXICOGRAPHIC else "0"):
+        raise AssertionError(f"multisig descriptor sorted flag mismatch: {parsed}")
+    if parsed.get("descriptor_has_shared_path") != ("1" if multisig.address_n else "0"):
+        raise AssertionError(f"multisig descriptor shared path flag mismatch: {parsed}")
+    if parsed.get("descriptor_has_local_pubkey") != "1":
+        raise AssertionError(f"multisig descriptor lost local signer membership: {parsed}")
+    if parsed.get("descriptor_redeem_script_len") != str(len(expected_redeem_script)):
+        raise AssertionError(f"multisig descriptor redeem script length mismatch: {parsed}")
+    if parsed.get("descriptor_script_pubkey_len") != str(len(expected_script_pubkey)):
+        raise AssertionError(f"multisig descriptor scriptPubKey length mismatch: {parsed}")
     return parsed
 
 

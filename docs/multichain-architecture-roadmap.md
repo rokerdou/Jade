@@ -194,6 +194,11 @@ main/
   `TxAck` 解码器现在可以通过旁路结构返回 input/output 的 multisig fingerprint，
   `signing_state` 会保存这些 32 字节摘要；它不保存完整 multisig policy、xpub
   或 redeem script，避免扩大长期状态里的攻击面。
+- BTC `MultisigRedeemScriptType` 现在可以归一化为内部 descriptor 摘要：variant、
+  threshold、signer count、排序模式、shared path、policy fingerprint、redeem/scriptPubKey
+  长度，以及“本机派生公钥是否属于该 policy”。该 descriptor 不保存 xpub、完整
+  redeem script、signature 或私钥材料；host oracle 用 embit 构造脚本并校验这些
+  字段，作为后续 UI/签名前的 policy 绑定门禁。
 - BTC 策略层已有 `trezor_bitcoin_policy_multisig_output_matches_inputs()` 原语，
   用保存的 fingerprint 判断某个 multisig output 是否与所有 multisig inputs
   属于同一 policy。当前实现故意保守：混合 singlesig/multisig、缺 fingerprint、

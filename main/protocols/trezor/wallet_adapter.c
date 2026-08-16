@@ -4,6 +4,7 @@
 #ifdef CONFIG_TREZOR_USB_HID
 
 #include "auth_bridge.h"
+#include "bitcoin/multisig.h"
 #include "bitcoin/public_node.h"
 #include "public_key.h"
 #include "trace.h"
@@ -105,14 +106,8 @@ static bool trezor_wallet_bitcoin_multisig_contains_local_pubkey(const trezor_bi
         return false;
     }
 
-    bool found = false;
-    for (size_t i = 0; i < request->multisig_policy.num_pubkeys; ++i) {
-        const uint8_t* const candidate = request->multisig_policy.pubkeys + (i * EC_PUBLIC_KEY_LEN);
-        if (memcmp(candidate, local_pubkey, sizeof(local_pubkey)) == 0) {
-            found = true;
-            break;
-        }
-    }
+    const bool found = trezor_bitcoin_multisig_policy_contains_pubkey(
+        &request->multisig_policy, local_pubkey, sizeof(local_pubkey));
     wally_bzero(local_pubkey, sizeof(local_pubkey));
     return found;
 }

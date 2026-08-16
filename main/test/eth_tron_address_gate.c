@@ -2498,8 +2498,10 @@ static int run_trezor_multisig_normalizer(
     unsigned int parsed_script_type = 0;
     trezor_bitcoin_multisig_t multisig;
     trezor_bitcoin_multisig_policy_t policy;
+    trezor_bitcoin_multisig_descriptor_t descriptor;
     wally_bzero(&multisig, sizeof(multisig));
     wally_bzero(&policy, sizeof(policy));
+    wally_bzero(&descriptor, sizeof(descriptor));
 
     if (!multisig_hex || !script_type_str || !expected_script_hex
         || !parse_hex_bytes(multisig_hex, multisig_payload, sizeof(multisig_payload), &multisig_payload_len)
@@ -2513,6 +2515,9 @@ static int run_trezor_multisig_normalizer(
     const bool normalized = decoded && trezor_bitcoin_multisig_normalize(&multisig, script_type, &policy);
     const bool matched = normalized
         && trezor_bitcoin_multisig_script_pubkey_matches(&policy, expected_script, expected_script_len);
+    const bool descriptor_ok = normalized
+        && trezor_bitcoin_multisig_policy_to_descriptor(&policy, PRIVATE_KEY_ONE_COMPRESSED_PUBKEY,
+            sizeof(PRIVATE_KEY_ONE_COMPRESSED_PUBKEY), &descriptor);
 
     printf("decoded=%u\n", decoded ? 1U : 0U);
     printf("normalized=%u\n", normalized ? 1U : 0U);
@@ -2523,16 +2528,29 @@ static int run_trezor_multisig_normalizer(
     printf("sorted=%u\n", normalized && policy.sorted ? 1U : 0U);
     printf("redeem_script_len=%u\n", normalized ? (unsigned int)policy.redeem_script_len : 0U);
     printf("script_pubkey_len=%u\n", normalized ? (unsigned int)policy.script_pubkey_len : 0U);
+    printf("descriptor_ok=%u\n", descriptor_ok ? 1U : 0U);
+    printf("descriptor_variant=%u\n", descriptor_ok ? (unsigned int)descriptor.variant : 0U);
+    printf("descriptor_threshold=%u\n", descriptor_ok ? (unsigned int)descriptor.threshold : 0U);
+    printf("descriptor_num_pubkeys=%u\n", descriptor_ok ? (unsigned int)descriptor.num_pubkeys : 0U);
+    printf("descriptor_sorted=%u\n", descriptor_ok && descriptor.sorted ? 1U : 0U);
+    printf("descriptor_has_shared_path=%u\n", descriptor_ok && descriptor.has_shared_path ? 1U : 0U);
+    printf("descriptor_has_local_pubkey=%u\n", descriptor_ok && descriptor.has_local_pubkey ? 1U : 0U);
+    printf("descriptor_redeem_script_len=%u\n", descriptor_ok ? (unsigned int)descriptor.redeem_script_len : 0U);
+    printf("descriptor_script_pubkey_len=%u\n", descriptor_ok ? (unsigned int)descriptor.script_pubkey_len : 0U);
     if (normalized) {
         print_hex_value("fingerprint", policy.fingerprint, sizeof(policy.fingerprint));
         print_hex_value("redeem_script", policy.redeem_script, policy.redeem_script_len);
         print_hex_value("script_pubkey", policy.script_pubkey, policy.script_pubkey_len);
+    }
+    if (descriptor_ok) {
+        print_hex_value("descriptor_fingerprint", descriptor.fingerprint, sizeof(descriptor.fingerprint));
     }
 
     wally_bzero(multisig_payload, sizeof(multisig_payload));
     wally_bzero(expected_script, sizeof(expected_script));
     wally_bzero(&multisig, sizeof(multisig));
     wally_bzero(&policy, sizeof(policy));
+    wally_bzero(&descriptor, sizeof(descriptor));
     return matched ? 0 : 2;
 }
 

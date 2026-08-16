@@ -78,12 +78,30 @@ typedef struct {
     uint8_t fingerprint[SHA256_LEN];
 } trezor_bitcoin_multisig_matcher_t;
 
+typedef struct {
+    script_variant_t variant;
+    uint8_t threshold;
+    uint8_t num_pubkeys;
+    bool sorted;
+    bool has_shared_path;
+    uint32_t address_n[WALLET_CORE_MAX_PATH_LEN];
+    size_t address_n_len;
+    bool has_local_pubkey;
+    uint8_t fingerprint[SHA256_LEN];
+    size_t redeem_script_len;
+    size_t script_pubkey_len;
+} trezor_bitcoin_multisig_descriptor_t;
+
 bool trezor_bitcoin_multisig_decode(const uint8_t* payload, size_t payload_len, trezor_bitcoin_multisig_t* output);
 bool trezor_bitcoin_multisig_normalize(const trezor_bitcoin_multisig_t* multisig, uint32_t script_type,
     trezor_bitcoin_multisig_policy_t* output);
 bool trezor_bitcoin_multisig_fingerprint(const trezor_bitcoin_multisig_t* multisig, uint8_t fingerprint[SHA256_LEN]);
 bool trezor_bitcoin_multisig_script_pubkey_matches(const trezor_bitcoin_multisig_policy_t* policy,
     const uint8_t* script_pubkey, size_t script_pubkey_len);
+bool trezor_bitcoin_multisig_policy_contains_pubkey(
+    const trezor_bitcoin_multisig_policy_t* policy, const uint8_t* pubkey, size_t pubkey_len);
+bool trezor_bitcoin_multisig_policy_to_descriptor(const trezor_bitcoin_multisig_policy_t* policy,
+    const uint8_t* local_pubkey, size_t local_pubkey_len, trezor_bitcoin_multisig_descriptor_t* output);
 void trezor_bitcoin_multisig_matcher_reset(trezor_bitcoin_multisig_matcher_t* matcher);
 bool trezor_bitcoin_multisig_matcher_add(
     trezor_bitcoin_multisig_matcher_t* matcher, const uint8_t fingerprint[SHA256_LEN], size_t fingerprint_len);
