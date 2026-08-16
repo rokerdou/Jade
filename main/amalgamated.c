@@ -144,6 +144,7 @@ void __wrap_abort(void);
 #include "./protocols/trezor/dispatcher.c"
 #include "./protocols/trezor/bitcoin/messages.c"
 #include "./protocols/trezor/bitcoin/multisig.c"
+#include "./protocols/trezor/bitcoin/multisig_tx.c"
 #include "./protocols/trezor/bitcoin/normalizer.c"
 #include "./protocols/trezor/bitcoin/script_builder.c"
 #include "./protocols/trezor/bitcoin/protocol.c"

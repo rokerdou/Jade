@@ -116,6 +116,9 @@ typedef struct {
 typedef struct {
     bool input_has_multisig_fingerprint[TREZOR_BITCOIN_TX_INPUTS_MAX];
     uint8_t input_multisig_fingerprints[TREZOR_BITCOIN_TX_INPUTS_MAX][SHA256_LEN];
+    bool input_has_multisig_redeem_script[TREZOR_BITCOIN_TX_INPUTS_MAX];
+    uint8_t* input_multisig_redeem_scripts[TREZOR_BITCOIN_TX_INPUTS_MAX];
+    uint16_t input_multisig_redeem_script_lens[TREZOR_BITCOIN_TX_INPUTS_MAX];
     bool output_has_multisig_fingerprint[TREZOR_BITCOIN_TX_OUTPUTS_MAX];
     uint8_t output_multisig_fingerprints[TREZOR_BITCOIN_TX_OUTPUTS_MAX][SHA256_LEN];
 } trezor_bitcoin_tx_ack_multisig_fingerprints_t;
@@ -172,6 +175,9 @@ typedef struct {
     trezor_bitcoin_tx_output_t outputs[TREZOR_BITCOIN_TX_OUTPUTS_MAX];
     bool input_has_multisig_fingerprint[TREZOR_BITCOIN_TX_INPUTS_MAX];
     uint8_t input_multisig_fingerprints[TREZOR_BITCOIN_TX_INPUTS_MAX][SHA256_LEN];
+    bool input_has_multisig_redeem_script[TREZOR_BITCOIN_TX_INPUTS_MAX];
+    uint8_t* input_multisig_redeem_scripts[TREZOR_BITCOIN_TX_INPUTS_MAX];
+    uint16_t input_multisig_redeem_script_lens[TREZOR_BITCOIN_TX_INPUTS_MAX];
     bool output_has_multisig_fingerprint[TREZOR_BITCOIN_TX_OUTPUTS_MAX];
     uint8_t output_multisig_fingerprints[TREZOR_BITCOIN_TX_OUTPUTS_MAX][SHA256_LEN];
     size_t inputs_len;

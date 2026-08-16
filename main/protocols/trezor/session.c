@@ -2,6 +2,7 @@
 #include "session.h"
 
 #include "bitcoin/messages.h"
+#include "bitcoin/multisig_tx.h"
 #include "bitcoin/normalizer.h"
 #include "bitcoin/policy.h"
 #include "bitcoin/protocol.h"
@@ -340,17 +341,74 @@ static bool trezor_session_btc_signing_continue(const trezor_session_t* const se
             const bool multisig_confirmed = session->confirm_btc_tx
                 && session->confirm_btc_tx(session->confirm_btc_tx_ctx, &multisig_confirm_request);
             wally_bzero(&multisig_confirm_request, sizeof(multisig_confirm_request));
-            trezor_bitcoin_signing_reset(&session->state->pending_btc_signing);
-            session->state->has_pending_btc_signing = false;
             if (!multisig_confirmed) {
                 trezor_trace_set_stage("btcsign:multisig_cancel");
+                trezor_bitcoin_signing_reset(&session->state->pending_btc_signing);
+                session->state->has_pending_btc_signing = false;
                 return trezor_session_failure_payload(TREZOR_FAILURE_ACTION_CANCELLED,
                     "Bitcoin multisig transaction rejected", response_type, response_payload, response_payload_len,
                     response_payload_written);
             }
-            trezor_trace_set_stage("btcsign:multisig_disabled");
-            return trezor_session_failure_payload(TREZOR_FAILURE_DATA_ERROR, "Bitcoin multisig signing disabled",
-                response_type, response_payload, response_payload_len, response_payload_written);
+
+            trezor_bitcoin_signed_tx_t signed_tx;
+            uint8_t digest[SHA256_LEN];
+            uint8_t compact_signature[EC_SIGNATURE_RECOVERABLE_LEN];
+            wally_bzero(&signed_tx, sizeof(signed_tx));
+            wally_bzero(digest, sizeof(digest));
+            wally_bzero(compact_signature, sizeof(compact_signature));
+
+            bool ok = session->sign_btc_digest && session->state->pending_btc_signing.inputs_len > 0
+                && session->state->pending_btc_signing.inputs_len <= TREZOR_BITCOIN_TX_INPUTS_MAX;
+            signed_tx.signatures_len = ok ? session->state->pending_btc_signing.inputs_len : 0;
+            for (size_t i = 0; ok && i < signed_tx.signatures_len; ++i) {
+                wallet_core_path_t signing_path;
+                size_t local_slot = 0;
+                wally_bzero(&signing_path, sizeof(signing_path));
+                ok = session->state->pending_btc_signing.input_has_multisig_redeem_script[i]
+                    && trezor_bitcoin_multisig_build_hash_from_redeem_script(&session->state->pending_btc_signing, i,
+                        session->state->pending_btc_signing.input_multisig_redeem_scripts[i],
+                        session->state->pending_btc_signing.input_multisig_redeem_script_lens[i], &signing_path,
+                        digest, sizeof(digest), &local_slot);
+                trezor_trace_set_stage(ok ? "btcsign:multi_digest_ok" : "btcsign:multi_digest_fail");
+                ok = ok
+                    && session->sign_btc_digest(session->sign_btc_digest_ctx, &signing_path, digest, sizeof(digest),
+                        compact_signature, sizeof(compact_signature));
+                trezor_trace_set_stage(ok ? "btcsign:multi_sign_ok" : "btcsign:multi_sign_fail");
+                ok = ok
+                    && wally_ec_sig_to_der(compact_signature + 1, EC_SIGNATURE_LEN, signed_tx.signatures[i].bytes,
+                           EC_SIGNATURE_DER_MAX_LEN, &signed_tx.signatures[i].len)
+                        == WALLY_OK
+                    && signed_tx.signatures[i].len > 0
+                    && signed_tx.signatures[i].len <= EC_SIGNATURE_DER_MAX_LEN;
+                trezor_trace_set_note("btc multisig input=%lu slot=%lu", (unsigned long)i, (unsigned long)local_slot);
+                trezor_trace_set_stage(ok ? "btcsign:multi_der_ok" : "btcsign:multi_der_fail");
+                wally_bzero(&signing_path, sizeof(signing_path));
+                wally_bzero(digest, sizeof(digest));
+                wally_bzero(compact_signature, sizeof(compact_signature));
+            }
+
+            *response_type = TREZOR_MSG_TX_REQUEST;
+            ok = ok && trezor_bitcoin_signed_tx_encode_next(&signed_tx, response_payload, response_payload_len,
+                           response_payload_written);
+            const bool final_signed_response = ok && signed_tx.next_signature_index >= signed_tx.signatures_len;
+            trezor_trace_set_stage(ok ? "btcsign:multi_encoded" : "btcsign:multi_encode_fail");
+
+            trezor_bitcoin_signing_reset(&session->state->pending_btc_signing);
+            session->state->has_pending_btc_signing = false;
+            if (!ok) {
+                wally_bzero(&signed_tx, sizeof(signed_tx));
+                return trezor_session_failure_payload(TREZOR_FAILURE_DATA_ERROR, "Bitcoin multisig signing unsupported",
+                    response_type, response_payload, response_payload_len, response_payload_written);
+            }
+            if (signed_tx.next_signature_index < signed_tx.signatures_len) {
+                session->state->pending_btc_signed_tx = signed_tx;
+                session->state->has_pending_btc_signed_tx = true;
+            }
+            if (final_signed_response && response_event) {
+                *response_event = TREZOR_SESSION_RESPONSE_EVENT_SIGNED_RESULT;
+            }
+            wally_bzero(&signed_tx, sizeof(signed_tx));
+            return true;
         }
 
         bitcoin_confirm_request_t confirm_request;

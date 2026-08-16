@@ -233,17 +233,19 @@ main/
   multisig 找零、fee、完整 signer path 和 UI summary。BIP45 legacy 与主网/测试网 BIP48
   P2SH/P2WSH/P2SH-P2WSH 都有正向门禁；错误 prevout、错误 witness program、签名数量不足、
   外部分支冒充找零、账户/coin/script-purpose 不匹配、索引越界都有拒绝门禁。
-  fake signatures 只用于结构测试；slot-aware partial gate 也只验证公开签名槽规则，
-  不代表 USB session 的 multisig 真签名已开放。
+  fake signatures 只用于 raw-tx 结构测试；slot-aware partial gate 验证公开签名槽规则。
+- BTC Trezor-compatible USB session 已开放受限 multisig partial signing：pending `SignTx`
+  包含 multisig input/output 时，会先走受限 preview/confirm，然后用保存的公开 redeem script
+  重新校验本机 signer path、公钥 slot、prevout script hash、金额、fee 和找零 policy，再调用
+  统一 `wallet_core_sign_digest_ecdsa_recoverable()` 签 digest，返回 `TxRequest.serialized.signature`
+  和 input-level `signature_index` 给 Sparrow/协调器组合。session 不保存完整 xpub policy，不读取私钥，
+  redeem script 通过堆按需保存并在 reset/失败路径释放。
+- BTC multisig USB session 仍不是完整 PSBT/协调器实现：当前返回本机 partial signature，
+  不在设备端组合多方签名，不生成完整 multisig raw tx 给主机。
 - BTC fee-rate 估算已补保守 multisig 估算：只使用 threshold、signer count 和
   P2SH/P2WSH/P2SH-P2WSH variant，不读取 redeem script、xpub、signature 或私钥材料。
-- BTC `SignTx.multisig` 仍保持关闭，并有 host gate 明确覆盖：现有 singlesig
-  basic signing policy 必须拒绝 `has_multisig` 的 input/output，避免多签地址/xpub
-  兼容工作误把多签签名路径打开。
-- BTC session ready 分支已补显式 multisig gate：一旦 pending `SignTx`
-  状态包含 multisig input/output，会先走受限 preview/confirm，然后返回
-  `Bitcoin multisig signing disabled`。session 尚未连接 `multisig_tx` digest/raw-tx
-  builder，不调用 `wallet_core` 签名，因此本轮新增结构模块不会意外开放真签名。
+- BTC `SignTx` 的 singlesig basic policy 仍必须拒绝 `has_multisig` 的 input/output；
+  multisig 只走专门 preview/confirm/digest 分支，避免单签 raw-tx builder 被多签输入绕过。
 - Sparrow/lark 的 singlesig xpub 导入会用默认 `SPENDADDRESS` 调
   `GetPublicKey(m/49'...)` / `GetPublicKey(m/84'...)`。固件现在只在账户级 public-node
   导出路径把这个默认值视为客户端兼容占位，并按 BIP purpose 推断 ypub/zpub；

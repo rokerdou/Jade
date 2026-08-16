@@ -125,6 +125,82 @@ static bool policy_pubkey_slot(const trezor_bitcoin_multisig_policy_t* const pol
     return false;
 }
 
+static bool redeem_script_pubkey_slot(const uint8_t* const redeem_script, const size_t redeem_script_len,
+    const uint8_t* const pubkey, const size_t pubkey_len, size_t* const slot, size_t* const threshold,
+    size_t* const num_pubkeys)
+{
+    if (!redeem_script || redeem_script_len < 1U + 1U + EC_PUBLIC_KEY_LEN + 1U + 1U || !pubkey
+        || pubkey_len != EC_PUBLIC_KEY_LEN || !slot || !threshold || !num_pubkeys || redeem_script[0] < 0x51
+        || redeem_script[0] > 0x60 || redeem_script[redeem_script_len - 2U] < 0x51
+        || redeem_script[redeem_script_len - 2U] > 0x60 || redeem_script[redeem_script_len - 1U] != 0xae) {
+        return false;
+    }
+
+    *threshold = (size_t)(redeem_script[0] - 0x50U);
+    *num_pubkeys = (size_t)(redeem_script[redeem_script_len - 2U] - 0x50U);
+    if (*threshold == 0 || *num_pubkeys == 0 || *threshold > *num_pubkeys
+        || *num_pubkeys > TREZOR_BITCOIN_MULTISIG_MAX_SIGNERS
+        || redeem_script_len != 1U + (*num_pubkeys * (1U + EC_PUBLIC_KEY_LEN)) + 1U + 1U) {
+        return false;
+    }
+
+    bool found = false;
+    for (size_t i = 0; i < *num_pubkeys; ++i) {
+        const size_t offset = 1U + (i * (1U + EC_PUBLIC_KEY_LEN));
+        if (redeem_script[offset] != EC_PUBLIC_KEY_LEN) {
+            return false;
+        }
+        if (memcmp(redeem_script + offset + 1U, pubkey, EC_PUBLIC_KEY_LEN) == 0) {
+            *slot = i;
+            found = true;
+        }
+    }
+    return found;
+}
+
+static bool script_hashes_match_redeem_script(const trezor_bitcoin_tx_input_t* const input,
+    const uint8_t* const redeem_script, const size_t redeem_script_len)
+{
+    uint8_t expected_script[TREZOR_BITCOIN_MULTISIG_STANDARD_SCRIPT_PUBKEY_MAX_LEN];
+    uint8_t witness_program[WALLY_SCRIPTPUBKEY_P2WSH_LEN];
+    size_t expected_script_len = 0;
+    size_t witness_program_len = 0;
+    wally_bzero(expected_script, sizeof(expected_script));
+    wally_bzero(witness_program, sizeof(witness_program));
+
+    bool ok = input && input->has_multisig && input->has_verified_prevout_script && redeem_script
+        && redeem_script_len > 0 && input->multisig.script_pubkey_len > 0
+        && input->multisig.script_pubkey_len <= sizeof(input->multisig.script_pubkey)
+        && input->verified_prevout_script_len == input->multisig.script_pubkey_len;
+    if (ok && input->multisig.variant == MULTI_P2SH) {
+        ok = wally_scriptpubkey_p2sh_from_bytes(redeem_script, redeem_script_len, WALLY_SCRIPT_HASH160,
+                 expected_script, sizeof(expected_script), &expected_script_len)
+            == WALLY_OK;
+    } else if (ok && (input->multisig.variant == MULTI_P2WSH || input->multisig.variant == MULTI_P2WSH_P2SH)) {
+        ok = wally_witness_program_from_bytes(redeem_script, redeem_script_len, WALLY_SCRIPT_SHA256, witness_program,
+                 sizeof(witness_program), &witness_program_len)
+                == WALLY_OK
+            && witness_program_len == sizeof(witness_program);
+        if (ok && input->multisig.variant == MULTI_P2WSH) {
+            memcpy(expected_script, witness_program, witness_program_len);
+            expected_script_len = witness_program_len;
+        } else if (ok) {
+            ok = wally_scriptpubkey_p2sh_from_bytes(witness_program, witness_program_len, WALLY_SCRIPT_HASH160,
+                     expected_script, sizeof(expected_script), &expected_script_len)
+                == WALLY_OK;
+        }
+    } else {
+        ok = false;
+    }
+
+    ok = ok && expected_script_len == input->multisig.script_pubkey_len
+        && memcmp(expected_script, input->multisig.script_pubkey, expected_script_len) == 0
+        && memcmp(expected_script, input->verified_prevout_script, expected_script_len) == 0;
+    wally_bzero(expected_script, sizeof(expected_script));
+    wally_bzero(witness_program, sizeof(witness_program));
+    return ok;
+}
+
 bool trezor_bitcoin_multisig_partial_prepare(const trezor_bitcoin_multisig_t* const multisig,
     const uint32_t script_type, const uint8_t* const local_pubkey, const size_t local_pubkey_len,
     trezor_bitcoin_multisig_partial_t* const output)
@@ -353,6 +429,74 @@ bool trezor_bitcoin_multisig_build_hash(const trezor_bitcoin_signing_state_t* co
     wally_bzero(local_pubkey, sizeof(local_pubkey));
     if (!ok) {
         wally_bzero(digest, digest_len);
+    }
+    return ok;
+}
+
+bool trezor_bitcoin_multisig_build_hash_from_redeem_script(const trezor_bitcoin_signing_state_t* const state,
+    const size_t input_index, const uint8_t* const redeem_script, const size_t redeem_script_len,
+    wallet_core_path_t* const path, uint8_t* const digest, const size_t digest_len, size_t* const local_slot)
+{
+    if (!state || input_index >= state->inputs_len || !redeem_script || !path || !digest || digest_len != SHA256_LEN
+        || !local_slot || !trezor_bitcoin_signing_ready(state)) {
+        return false;
+    }
+
+    bool ok = false;
+    struct wally_tx* tx = NULL;
+    struct wally_map values;
+    wallet_core_path_t local_path;
+    uint8_t local_pubkey[EC_PUBLIC_KEY_LEN];
+    size_t threshold = 0;
+    size_t num_pubkeys = 0;
+    trezor_bitcoin_coin_t coin = TREZOR_BITCOIN_COIN_MAINNET;
+    const trezor_bitcoin_tx_input_t* const input = &state->inputs[input_index];
+    wally_bzero(&values, sizeof(values));
+    wally_bzero(&local_path, sizeof(local_path));
+    wally_bzero(local_pubkey, sizeof(local_pubkey));
+    wally_bzero(digest, digest_len);
+
+    ok = input->has_multisig && state->input_has_multisig_fingerprint[input_index]
+        && state->input_has_multisig_redeem_script[input_index]
+        && redeem_script_len == state->input_multisig_redeem_script_lens[input_index]
+        && redeem_script_len <= TREZOR_BITCOIN_MULTISIG_REDEEM_SCRIPT_MAX_LEN
+        && memcmp(redeem_script, state->input_multisig_redeem_scripts[input_index], redeem_script_len) == 0
+        && script_hashes_match_redeem_script(input, redeem_script, redeem_script_len)
+        && path_from_input(input, &local_path)
+        && wallet_core_get_public_key(&local_path, WALLET_CORE_PUBKEY_COMPRESSED, local_pubkey, sizeof(local_pubkey))
+        && redeem_script_pubkey_slot(
+            redeem_script, redeem_script_len, local_pubkey, sizeof(local_pubkey), local_slot, &threshold, &num_pubkeys)
+        && threshold == input->multisig.threshold && num_pubkeys == input->multisig.num_pubkeys
+        && trezor_bitcoin_policy_signing_coin(state, &coin)
+        && wally_tx_init_alloc(state->request.version, state->request.lock_time, state->inputs_len, state->outputs_len,
+               &tx)
+            == WALLY_OK
+        && tx && add_unsigned_inputs(tx, state) && add_outputs(tx, state, coin)
+        && wally_map_init(state->inputs_len, NULL, &values) == WALLY_OK;
+    for (size_t i = 0; ok && i < state->inputs_len; ++i) {
+        ok = wally_map_add_integer(
+                 &values, (uint32_t)i, (const uint8_t*)&state->inputs[i].amount, sizeof(state->inputs[i].amount))
+            == WALLY_OK;
+    }
+    const uint32_t signature_type = input->multisig.variant == MULTI_P2SH ? WALLY_SIGTYPE_PRE_SW : WALLY_SIGTYPE_SW_V0;
+    ok = ok
+        && wally_tx_get_input_signature_hash(tx, input_index, NULL, NULL, &values, redeem_script, redeem_script_len, 0,
+               WALLY_NO_CODESEPARATOR, NULL, 0, NULL, 0, TREZOR_BITCOIN_SIGHASH_ALL, signature_type, NULL, digest,
+               digest_len)
+            == WALLY_OK;
+    if (ok) {
+        *path = local_path;
+    }
+
+    if (tx) {
+        wally_tx_free(tx);
+    }
+    wally_map_clear(&values);
+    wally_bzero(&local_path, sizeof(local_path));
+    wally_bzero(local_pubkey, sizeof(local_pubkey));
+    if (!ok) {
+        wally_bzero(digest, digest_len);
+        *local_slot = 0;
     }
     return ok;
 }

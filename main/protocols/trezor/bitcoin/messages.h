@@ -13,6 +13,7 @@ bool trezor_bitcoin_sign_tx_decode(const uint8_t* payload, size_t payload_len, t
 bool trezor_bitcoin_tx_ack_decode(const uint8_t* payload, size_t payload_len, trezor_bitcoin_transaction_t* output);
 bool trezor_bitcoin_tx_ack_decode_with_multisig_fingerprints(const uint8_t* payload, size_t payload_len,
     trezor_bitcoin_transaction_t* output, trezor_bitcoin_tx_ack_multisig_fingerprints_t* fingerprints);
+void trezor_bitcoin_tx_ack_multisig_fingerprints_clear(trezor_bitcoin_tx_ack_multisig_fingerprints_t* fingerprints);
 bool trezor_bitcoin_tx_ack_prev_input_decode(
     const uint8_t* payload, size_t payload_len, trezor_bitcoin_prev_input_t* output);
 bool trezor_bitcoin_tx_ack_prev_output_decode(

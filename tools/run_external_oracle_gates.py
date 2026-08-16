@@ -1398,17 +1398,21 @@ def assert_btc_failure(
         raise AssertionError(f"{case_name} failure message mismatch: {failure.message}")
 
 
-def assert_btc_verified_multisig_signing_disabled(
-    gate: Path,
+def btc_verified_multisig_signing_calls(
     multisig: messages.MultisigRedeemScriptType,
     redeem_script: bytes,
     script_type: messages.InputScriptType,
     *,
     include_mismatched_change: bool = False,
-) -> None:
+) -> list[tuple[int, object]]:
     prevout_script = c_gate_fake_multisig_script_pubkey(script_type, redeem_script)
     prev_hash = btc_prev_txid_for_single_input_two_outputs(prevout0_script_pubkey=prevout_script)
-    path = [0x80000030, 0x80000001, 0x80000000, 0x80000002, 0, 0]
+    if script_type == messages.InputScriptType.SPENDMULTISIG:
+        path = [0x8000002D, 0, 0, 0]
+    elif script_type == messages.InputScriptType.SPENDP2SHWITNESS:
+        path = [0x80000030, 0x80000001, 0x80000000, 0x80000001, 0, 0]
+    else:
+        path = [0x80000030, 0x80000001, 0x80000000, 0x80000002, 0, 0]
     outputs_count = 2 if include_mismatched_change else 1
     calls: list[tuple[int, object]] = [
         (
@@ -1451,27 +1455,49 @@ def assert_btc_verified_multisig_signing_disabled(
             (messages.MessageType.TxAck, btc_tx_ack_prev_output(1_000, btc_p2wpkh_script_pubkey())),
         ]
     )
-    responses = run_local_wire_script(gate, calls)
+    return calls
+
+
+def assert_btc_verified_multisig_signs(
+    gate: Path,
+    multisig: messages.MultisigRedeemScriptType,
+    redeem_script: bytes,
+    script_type: messages.InputScriptType,
+) -> None:
+    prevout_script = c_gate_fake_multisig_script_pubkey(script_type, redeem_script)
+    prev_hash = btc_prev_txid_for_single_input_two_outputs(prevout0_script_pubkey=prevout_script)
+    responses = run_local_wire_script(gate, btc_verified_multisig_signing_calls(multisig, redeem_script, script_type))
     assert_btc_tx_request(responses[0], messages.RequestType.TXMETA)
     assert_btc_tx_request(responses[1], messages.RequestType.TXINPUT, request_index=0)
     assert_btc_tx_request(responses[2], messages.RequestType.TXOUTPUT, request_index=0)
-    next_index = 3
-    if include_mismatched_change:
-        assert_btc_tx_request(responses[next_index], messages.RequestType.TXOUTPUT, request_index=1)
-        next_index += 1
-    assert_btc_tx_request(responses[next_index], messages.RequestType.TXMETA, tx_hash=prev_hash)
-    assert_btc_tx_request(responses[next_index + 1], messages.RequestType.TXORIGINPUT, request_index=0, tx_hash=prev_hash)
-    assert_btc_tx_request(
-        responses[next_index + 2], messages.RequestType.TXORIGOUTPUT, request_index=0, tx_hash=prev_hash
+    assert_btc_tx_request(responses[3], messages.RequestType.TXMETA, tx_hash=prev_hash)
+    assert_btc_tx_request(responses[4], messages.RequestType.TXORIGINPUT, request_index=0, tx_hash=prev_hash)
+    assert_btc_tx_request(responses[5], messages.RequestType.TXORIGOUTPUT, request_index=0, tx_hash=prev_hash)
+    assert_btc_tx_request(responses[6], messages.RequestType.TXORIGOUTPUT, request_index=1, tx_hash=prev_hash)
+    tx_request = assert_btc_tx_request(
+        responses[-1], messages.RequestType.TXFINISHED, signature_index=0, expect_serialized_tx=False
     )
-    assert_btc_tx_request(
-        responses[next_index + 3], messages.RequestType.TXORIGOUTPUT, request_index=1, tx_hash=prev_hash
+    signature = tx_request.serialized.signature if tx_request.serialized else None
+    if not signature or signature[0] != 0x30:
+        raise AssertionError("BTC multisig partial signature is not DER encoded")
+
+
+def assert_btc_verified_multisig_rejects_mismatched_change(
+    gate: Path,
+    multisig: messages.MultisigRedeemScriptType,
+    redeem_script: bytes,
+    script_type: messages.InputScriptType,
+) -> None:
+    responses = run_local_wire_script(
+        gate,
+        btc_verified_multisig_signing_calls(
+            multisig, redeem_script, script_type, include_mismatched_change=True
+        ),
     )
     assert_btc_failure(
         responses[-1],
         messages.FailureType.DataError,
-        "BTC verified multisig signing remains disabled",
-        "Bitcoin multisig signing disabled" if not include_mismatched_change else None,
+        "BTC verified multisig mismatched change",
     )
 
 
@@ -2546,19 +2572,18 @@ def check_local_btc_signtx_wire_script_oracle(gate: Path) -> None:
         messages.InputScriptType.SPENDWITNESS,
         messages.InputScriptType.SPENDP2SHWITNESS,
     ):
-        assert_btc_verified_multisig_signing_disabled(
+        assert_btc_verified_multisig_signs(
             gate, multisig, preserved_redeem, multisig_script_type
         )
 
     assert_btc_multisig_prevout_mismatch_rejects(
         gate, multisig, preserved_redeem, messages.InputScriptType.SPENDWITNESS
     )
-    assert_btc_verified_multisig_signing_disabled(
+    assert_btc_verified_multisig_rejects_mismatched_change(
         gate,
         multisig,
         preserved_redeem,
         messages.InputScriptType.SPENDWITNESS,
-        include_mismatched_change=True,
     )
 
     get_taproot_address_res = run_local_wire_oracle(

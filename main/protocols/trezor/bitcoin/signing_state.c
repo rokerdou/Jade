@@ -9,8 +9,25 @@
 
 #include "../../../chains/bitcoin/path.h"
 
+#include <stdlib.h>
 #include <string.h>
 #include <wally_crypto.h>
+
+static void trezor_bitcoin_signing_clear_multisig_redeem_scripts(trezor_bitcoin_signing_state_t* const state)
+{
+    if (!state) {
+        return;
+    }
+    for (size_t i = 0; i < TREZOR_BITCOIN_TX_INPUTS_MAX; ++i) {
+        if (state->input_multisig_redeem_scripts[i]) {
+            wally_bzero(state->input_multisig_redeem_scripts[i], state->input_multisig_redeem_script_lens[i]);
+            free(state->input_multisig_redeem_scripts[i]);
+            state->input_multisig_redeem_scripts[i] = NULL;
+        }
+        state->input_has_multisig_redeem_script[i] = false;
+        state->input_multisig_redeem_script_lens[i] = 0;
+    }
+}
 
 void trezor_bitcoin_signing_reset(trezor_bitcoin_signing_state_t* const state)
 {
@@ -18,6 +35,7 @@ void trezor_bitcoin_signing_reset(trezor_bitcoin_signing_state_t* const state)
         return;
     }
     trezor_bitcoin_prev_tx_verifier_reset(&state->prev_tx_verifier);
+    trezor_bitcoin_signing_clear_multisig_redeem_scripts(state);
     wally_bzero(state, sizeof(*state));
 }
 
@@ -115,7 +133,21 @@ bool trezor_bitcoin_signing_apply_tx_ack(
             memcpy(state->input_multisig_fingerprints[input_index], fingerprints.input_multisig_fingerprints[0],
                 sizeof(state->input_multisig_fingerprints[input_index]));
         }
-        wally_bzero(&fingerprints, sizeof(fingerprints));
+        state->input_has_multisig_redeem_script[input_index] = fingerprints.input_has_multisig_redeem_script[0];
+        if (fingerprints.input_has_multisig_redeem_script[0]) {
+            if (fingerprints.input_multisig_redeem_script_lens[0] == 0
+                || !fingerprints.input_multisig_redeem_scripts[0]) {
+                trezor_bitcoin_tx_ack_multisig_fingerprints_clear(&fingerprints);
+                return false;
+            }
+            state->input_multisig_redeem_scripts[input_index] = fingerprints.input_multisig_redeem_scripts[0];
+            state->input_multisig_redeem_script_lens[input_index]
+                = fingerprints.input_multisig_redeem_script_lens[0];
+            fingerprints.input_multisig_redeem_scripts[0] = NULL;
+            fingerprints.input_has_multisig_redeem_script[0] = false;
+            fingerprints.input_multisig_redeem_script_lens[0] = 0;
+        }
+        trezor_bitcoin_tx_ack_multisig_fingerprints_clear(&fingerprints);
         if (state->inputs_len < state->request.inputs_count) {
             return true;
         }

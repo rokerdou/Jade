@@ -6,7 +6,24 @@
 #include "../../../chains/bitcoin/path.h"
 
 #include <string.h>
+#include <stdlib.h>
 #include <wally_crypto.h>
+
+void trezor_bitcoin_tx_ack_multisig_fingerprints_clear(
+    trezor_bitcoin_tx_ack_multisig_fingerprints_t* const fingerprints)
+{
+    if (!fingerprints) {
+        return;
+    }
+    for (size_t i = 0; i < TREZOR_BITCOIN_TX_INPUTS_MAX; ++i) {
+        if (fingerprints->input_multisig_redeem_scripts[i]) {
+            wally_bzero(fingerprints->input_multisig_redeem_scripts[i],
+                fingerprints->input_multisig_redeem_script_lens[i]);
+            free(fingerprints->input_multisig_redeem_scripts[i]);
+        }
+    }
+    wally_bzero(fingerprints, sizeof(*fingerprints));
+}
 
 static bool trezor_bitcoin_bool_value(const uint8_t* const value, const size_t value_len, bool* const output)
 {
@@ -51,7 +68,8 @@ static bool trezor_bitcoin_read_coin_name(
 static bool trezor_bitcoin_normalize_multisig_payload_with_fingerprint(const uint8_t* const payload,
     const size_t payload_len, const bool has_multisig, const uint32_t script_type,
     trezor_bitcoin_multisig_summary_t* const summary, bool* const has_fingerprint,
-    uint8_t fingerprint[SHA256_LEN])
+    uint8_t fingerprint[SHA256_LEN], bool* const has_redeem_script, uint8_t** const redeem_script,
+    uint16_t* const redeem_script_written)
 {
     if (!summary) {
         return false;
@@ -62,11 +80,21 @@ static bool trezor_bitcoin_normalize_multisig_payload_with_fingerprint(const uin
     if (fingerprint) {
         wally_bzero(fingerprint, SHA256_LEN);
     }
+    if (has_redeem_script) {
+        *has_redeem_script = false;
+    }
+    if (redeem_script) {
+        *redeem_script = NULL;
+    }
+    if (redeem_script_written) {
+        *redeem_script_written = 0;
+    }
     wally_bzero(summary, sizeof(*summary));
     if (!has_multisig) {
         return true;
     }
-    if (!payload || payload_len == 0 || (!!has_fingerprint != !!fingerprint)) {
+    if (!payload || payload_len == 0 || (!!has_fingerprint != !!fingerprint)
+        || (!!has_redeem_script != (!!redeem_script && !!redeem_script_written))) {
         return false;
     }
 
@@ -74,9 +102,17 @@ static bool trezor_bitcoin_normalize_multisig_payload_with_fingerprint(const uin
     trezor_bitcoin_multisig_policy_t policy;
     wally_bzero(&multisig, sizeof(multisig));
     wally_bzero(&policy, sizeof(policy));
-    const bool ok = trezor_bitcoin_multisig_decode(payload, payload_len, &multisig)
+    bool ok = trezor_bitcoin_multisig_decode(payload, payload_len, &multisig)
         && trezor_bitcoin_multisig_normalize(&multisig, script_type, &policy)
         && policy.num_pubkeys <= UINT8_MAX && policy.script_pubkey_len <= sizeof(summary->script_pubkey);
+    if (ok && has_redeem_script) {
+        ok = policy.redeem_script_len > 0 && policy.redeem_script_len <= UINT16_MAX
+            && policy.redeem_script_len <= TREZOR_BITCOIN_MULTISIG_REDEEM_SCRIPT_MAX_LEN;
+        if (ok) {
+            *redeem_script = malloc(policy.redeem_script_len);
+            ok = *redeem_script != NULL;
+        }
+    }
     if (ok) {
         summary->variant = policy.variant;
         summary->threshold = policy.threshold;
@@ -88,6 +124,11 @@ static bool trezor_bitcoin_normalize_multisig_payload_with_fingerprint(const uin
             memcpy(fingerprint, policy.fingerprint, SHA256_LEN);
             *has_fingerprint = true;
         }
+        if (has_redeem_script) {
+            memcpy(*redeem_script, policy.redeem_script, policy.redeem_script_len);
+            *redeem_script_written = (uint16_t)policy.redeem_script_len;
+            *has_redeem_script = true;
+        }
     }
     wally_bzero(&multisig, sizeof(multisig));
     wally_bzero(&policy, sizeof(policy));
@@ -98,6 +139,17 @@ static bool trezor_bitcoin_normalize_multisig_payload_with_fingerprint(const uin
         }
         if (has_fingerprint) {
             *has_fingerprint = false;
+        }
+        if (has_redeem_script) {
+            *has_redeem_script = false;
+        }
+        if (redeem_script && *redeem_script) {
+            wally_bzero(*redeem_script, policy.redeem_script_len);
+            free(*redeem_script);
+            *redeem_script = NULL;
+        }
+        if (redeem_script_written) {
+            *redeem_script_written = 0;
         }
     }
     return ok;
@@ -336,7 +388,9 @@ bool trezor_bitcoin_sign_tx_decode(
 
 static bool trezor_bitcoin_tx_input_decode(
     const uint8_t* const payload, const size_t payload_len, trezor_bitcoin_tx_input_t* const output,
-    bool* const has_multisig_fingerprint, uint8_t multisig_fingerprint[SHA256_LEN])
+    bool* const has_multisig_fingerprint, uint8_t multisig_fingerprint[SHA256_LEN],
+    bool* const has_multisig_redeem_script, uint8_t** const multisig_redeem_script,
+    uint16_t* const multisig_redeem_script_written)
 {
     if (!payload || !output) {
         return false;
@@ -348,6 +402,15 @@ static bool trezor_bitcoin_tx_input_decode(
     }
     if (multisig_fingerprint) {
         wally_bzero(multisig_fingerprint, SHA256_LEN);
+    }
+    if (has_multisig_redeem_script) {
+        *has_multisig_redeem_script = false;
+    }
+    if (multisig_redeem_script) {
+        *multisig_redeem_script = NULL;
+    }
+    if (multisig_redeem_script_written) {
+        *multisig_redeem_script_written = 0;
     }
     output->sequence = UINT32_MAX;
     output->script_type = BITCOIN_P2PKH_SPENDADDRESS;
@@ -435,7 +498,8 @@ static bool trezor_bitcoin_tx_input_decode(
             || output->script_type == BITCOIN_P2SH_P2WPKH_SPENDP2SHWITNESS)
         && supported_script && trezor_bitcoin_normalize_multisig_payload_with_fingerprint(multisig_payload,
                                    multisig_payload_len, output->has_multisig, output->script_type, &output->multisig,
-                                   has_multisig_fingerprint, multisig_fingerprint);
+                                   has_multisig_fingerprint, multisig_fingerprint, has_multisig_redeem_script,
+                                   multisig_redeem_script, multisig_redeem_script_written);
 }
 
 static bool trezor_bitcoin_tx_output_decode(
@@ -516,7 +580,7 @@ static bool trezor_bitcoin_tx_output_decode(
     return output->has_amount && address_source_ok
         && trezor_bitcoin_normalize_multisig_payload_with_fingerprint(multisig_payload, multisig_payload_len,
             output->has_multisig, BITCOIN_MULTISIG_SPENDMULTISIG, &output->multisig, has_multisig_fingerprint,
-            multisig_fingerprint);
+            multisig_fingerprint, NULL, NULL, NULL);
 }
 
 bool trezor_bitcoin_prev_input_decode(
@@ -562,7 +626,10 @@ static bool trezor_bitcoin_transaction_decode(
             if (wire_type != TREZOR_PROTOBUF_WIRE_LEN || output->inputs_len >= TREZOR_BITCOIN_TX_INPUTS_MAX
                 || !trezor_bitcoin_tx_input_decode(value, value_len, &output->inputs[output->inputs_len],
                        fingerprints ? &fingerprints->input_has_multisig_fingerprint[output->inputs_len] : NULL,
-                       fingerprints ? fingerprints->input_multisig_fingerprints[output->inputs_len] : NULL)) {
+                       fingerprints ? fingerprints->input_multisig_fingerprints[output->inputs_len] : NULL,
+                       fingerprints ? &fingerprints->input_has_multisig_redeem_script[output->inputs_len] : NULL,
+                       fingerprints ? &fingerprints->input_multisig_redeem_scripts[output->inputs_len] : NULL,
+                       fingerprints ? &fingerprints->input_multisig_redeem_script_lens[output->inputs_len] : NULL)) {
                 return false;
             }
             ++output->inputs_len;
@@ -637,14 +704,19 @@ bool trezor_bitcoin_tx_ack_decode_with_multisig_fingerprints(const uint8_t* cons
         const uint8_t* value = NULL;
         size_t value_len = 0;
         if (!trezor_protobuf_reader_next(&reader, &field_number, &wire_type, &value, &value_len)) {
+            trezor_bitcoin_tx_ack_multisig_fingerprints_clear(fingerprints);
             return false;
         }
 
         if (field_number != 1 || wire_type != TREZOR_PROTOBUF_WIRE_LEN || has_tx
             || !trezor_bitcoin_transaction_decode(value, value_len, output, fingerprints)) {
+            trezor_bitcoin_tx_ack_multisig_fingerprints_clear(fingerprints);
             return false;
         }
         has_tx = true;
+    }
+    if (!has_tx) {
+        trezor_bitcoin_tx_ack_multisig_fingerprints_clear(fingerprints);
     }
     return has_tx;
 }

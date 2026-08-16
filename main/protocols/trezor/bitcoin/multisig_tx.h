@@ -30,6 +30,9 @@ bool trezor_bitcoin_multisig_partial_compact_signatures(const trezor_bitcoin_mul
 bool trezor_bitcoin_multisig_build_hash(const trezor_bitcoin_signing_state_t* state,
     const trezor_bitcoin_multisig_policy_t* const* policies, size_t policies_len, size_t input_index,
     wallet_core_path_t* path, uint8_t* digest, size_t digest_len);
+bool trezor_bitcoin_multisig_build_hash_from_redeem_script(const trezor_bitcoin_signing_state_t* state,
+    size_t input_index, const uint8_t* redeem_script, size_t redeem_script_len, wallet_core_path_t* path,
+    uint8_t* digest, size_t digest_len, size_t* local_slot);
 
 bool trezor_bitcoin_multisig_build_signed_tx(const trezor_bitcoin_signing_state_t* state,
     const trezor_bitcoin_multisig_unlock_t* unlocks, size_t unlocks_len, uint8_t* serialized_tx,
