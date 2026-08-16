@@ -21,6 +21,7 @@
 #include "crypto/keccak256.h"
 #include "protocols/trezor/bitcoin/messages.h"
 #include "protocols/trezor/bitcoin/multisig.h"
+#include "protocols/trezor/bitcoin/normalizer.h"
 #include "protocols/trezor/bitcoin/policy.h"
 #include "protocols/trezor/bitcoin/prev_tx_verifier.h"
 #include "protocols/trezor/bitcoin/protocol.h"

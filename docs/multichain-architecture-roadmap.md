@@ -420,12 +420,15 @@ trezorlib / Safe CLI 兼容路径：
   scriptPubKey、change scriptPubKey、legacy P2PKH scriptSig、P2SH-P2WPKH scriptSig
   和 signing scriptCode 构造。它只取公钥，不读取私钥，为后续 `normalizer.c/h`
   拆分和 raw tx oracle 对齐做准备。
+- `normalizer.c/h` 已开始落地，当前先承接 `signing_state -> bitcoin_confirm_request_t`
+  的转换，包括 singlesig basic 确认摘要和 multisig preview 确认摘要。session
+  现在显式依赖 normalizer；`protocol.c` 不再承担 UI review model 转换职责。
 
 下一步建议顺序：
 
-1. `bitcoin/normalizer.c/h`
-   - 把 Trezor signing state 转成内部 BTC review/sign request。
-   - 为 legacy/P2SH 后续开放做准备。
+1. 继续扩展 `bitcoin/normalizer.c/h`
+   - 把后续 BTC descriptor/policy、PSBT、multisig review model 继续放在 normalizer/approver
+     层，不回填到 USB session 或 raw tx serializer。
 
 2. `bitcoin/signing_state.c/h` 后续完善
    - 已有 prev_tx request/ack collect/verify host harness。

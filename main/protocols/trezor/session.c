@@ -2,6 +2,7 @@
 #include "session.h"
 
 #include "bitcoin/messages.h"
+#include "bitcoin/normalizer.h"
 #include "bitcoin/policy.h"
 #include "bitcoin/protocol.h"
 #include "bitcoin/requests.h"

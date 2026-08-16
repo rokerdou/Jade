@@ -198,10 +198,6 @@ typedef struct {
     size_t next_signature_index;
 } trezor_bitcoin_signed_tx_t;
 
-bool trezor_bitcoin_signing_to_confirm_request(
-    const trezor_bitcoin_signing_state_t* state, bitcoin_confirm_request_t* request);
-bool trezor_bitcoin_signing_to_multisig_confirm_request(
-    const trezor_bitcoin_signing_state_t* state, bitcoin_confirm_request_t* request);
 bool trezor_bitcoin_signing_build_hash(const trezor_bitcoin_signing_state_t* state, size_t input_index,
     wallet_core_path_t* path, uint8_t* digest, size_t digest_len);
 bool trezor_bitcoin_signing_build_p2wpkh_hash(const trezor_bitcoin_signing_state_t* state, size_t input_index,

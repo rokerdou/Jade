@@ -139,6 +139,7 @@ if(HOST_CC)
             ${COMPONENT_DIR}/chains/ethereum/wallet.c
             ${COMPONENT_DIR}/protocols/trezor/bitcoin/messages.c
             ${COMPONENT_DIR}/protocols/trezor/bitcoin/multisig.c
+            ${COMPONENT_DIR}/protocols/trezor/bitcoin/normalizer.c
             ${COMPONENT_DIR}/protocols/trezor/bitcoin/script_builder.c
             ${COMPONENT_DIR}/protocols/trezor/bitcoin/protocol.c
             ${COMPONENT_DIR}/protocols/trezor/bitcoin/policy.c
@@ -211,6 +212,8 @@ if(HOST_CC)
             ${COMPONENT_DIR}/protocols/trezor/bitcoin/messages.h
             ${COMPONENT_DIR}/protocols/trezor/bitcoin/multisig.c
             ${COMPONENT_DIR}/protocols/trezor/bitcoin/multisig.h
+            ${COMPONENT_DIR}/protocols/trezor/bitcoin/normalizer.c
+            ${COMPONENT_DIR}/protocols/trezor/bitcoin/normalizer.h
             ${COMPONENT_DIR}/protocols/trezor/bitcoin/script_builder.c
             ${COMPONENT_DIR}/protocols/trezor/bitcoin/script_builder.h
             ${COMPONENT_DIR}/protocols/trezor/bitcoin/protocol.c
