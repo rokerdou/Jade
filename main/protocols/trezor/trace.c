@@ -501,6 +501,10 @@ const char* trezor_trace_message_name(const uint16_t message_type)
         return "EthereumPublicKey";
     case TREZOR_MSG_ETHEREUM_SIGN_TX_EIP1559:
         return "EthereumSignTxEIP1559";
+    case TREZOR_MSG_ETHEREUM_TYPED_DATA_SIGNATURE:
+        return "EthereumTypedDataSignature";
+    case TREZOR_MSG_ETHEREUM_SIGN_TYPED_HASH:
+        return "EthereumSignTypedHash";
     case TREZOR_MSG_ONEKEY_SIGN_PSBT:
         return "OneKeySignPsbt";
     case TREZOR_MSG_ONEKEY_SIGNED_PSBT:
@@ -589,6 +593,10 @@ static const char* trezor_trace_message_short_name(const uint16_t message_type)
         return "EthPub";
     case TREZOR_MSG_ETHEREUM_SIGN_TX_EIP1559:
         return "Eth1559";
+    case TREZOR_MSG_ETHEREUM_TYPED_DATA_SIGNATURE:
+        return "EthTypedSig";
+    case TREZOR_MSG_ETHEREUM_SIGN_TYPED_HASH:
+        return "EthTyped?";
     default:
         return "Unknown";
     }

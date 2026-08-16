@@ -87,6 +87,73 @@ bool trezor_ethereum_address_encode(
     return true;
 }
 
+bool trezor_ethereum_sign_typed_hash_decode(
+    const uint8_t* const payload, const size_t payload_len, trezor_ethereum_sign_typed_hash_t* const output)
+{
+    if (!payload || !output) {
+        return false;
+    }
+
+    wally_bzero(output, sizeof(*output));
+    trezor_protobuf_reader_t reader;
+    trezor_protobuf_reader_init(&reader, payload, payload_len);
+    if (payload_len && reader.len == 0) {
+        return false;
+    }
+
+    while (reader.pos < reader.len) {
+        uint32_t field_number = 0;
+        uint8_t wire_type = 0;
+        const uint8_t* value = NULL;
+        size_t value_len = 0;
+        uint64_t raw = 0;
+        if (!trezor_protobuf_reader_next(&reader, &field_number, &wire_type, &value, &value_len)) {
+            wally_bzero(output, sizeof(*output));
+            return false;
+        }
+
+        if (field_number == 1) {
+            if (wire_type != TREZOR_PROTOBUF_WIRE_VARINT || output->address_n_len >= WALLET_CORE_MAX_PATH_LEN
+                || !trezor_protobuf_read_varint_value(value, value_len, &raw) || raw > UINT32_MAX) {
+                wally_bzero(output, sizeof(*output));
+                return false;
+            }
+            output->address_n[output->address_n_len++] = (uint32_t)raw;
+        } else if (field_number == 2) {
+            if (wire_type != TREZOR_PROTOBUF_WIRE_LEN || output->has_domain_separator_hash
+                || value_len != TREZOR_ETHEREUM_TYPED_HASH_LEN) {
+                wally_bzero(output, sizeof(*output));
+                return false;
+            }
+            memcpy(output->domain_separator_hash, value, TREZOR_ETHEREUM_TYPED_HASH_LEN);
+            output->has_domain_separator_hash = true;
+        } else if (field_number == 3) {
+            if (wire_type != TREZOR_PROTOBUF_WIRE_LEN || output->has_message_hash
+                || value_len != TREZOR_ETHEREUM_TYPED_HASH_LEN) {
+                wally_bzero(output, sizeof(*output));
+                return false;
+            }
+            memcpy(output->message_hash, value, TREZOR_ETHEREUM_TYPED_HASH_LEN);
+            output->has_message_hash = true;
+        } else if (field_number == 4) {
+            if (wire_type != TREZOR_PROTOBUF_WIRE_LEN || output->has_encoded_network) {
+                wally_bzero(output, sizeof(*output));
+                return false;
+            }
+            output->has_encoded_network = true;
+        } else {
+            wally_bzero(output, sizeof(*output));
+            return false;
+        }
+    }
+
+    if (output->address_n_len == 0 || !output->has_domain_separator_hash) {
+        wally_bzero(output, sizeof(*output));
+        return false;
+    }
+    return true;
+}
+
 static bool trezor_ethereum_u64_from_big_endian(
     const uint8_t* const bytes, const size_t bytes_len, uint64_t* const output)
 {

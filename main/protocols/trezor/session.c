@@ -608,6 +608,34 @@ static bool trezor_session_handle_payload_ex(const trezor_session_t* const sessi
         return ok;
     }
 
+    if (request_type == TREZOR_MSG_ETHEREUM_SIGN_TYPED_HASH) {
+        trezor_ethereum_sign_typed_hash_t request;
+        trezor_trace_set_stage("ethtyped:decode");
+        if (!trezor_ethereum_sign_typed_hash_decode(request_payload, request_payload_len, &request)) {
+            trezor_trace_set_stage("ethtyped:decode_fail");
+            return trezor_session_failure_payload(TREZOR_FAILURE_DATA_ERROR, "Invalid Ethereum typed hash request",
+                response_type, response_payload, response_payload_len, response_payload_written);
+        }
+
+        const bool has_message_hash = request.has_message_hash;
+        const bool has_encoded_network = request.has_encoded_network;
+        wally_bzero(&request, sizeof(request));
+        if (!has_message_hash) {
+            trezor_trace_set_stage("ethtyped:missing_msg");
+            return trezor_session_failure_payload(TREZOR_FAILURE_DATA_ERROR, "Typed hash missing message hash",
+                response_type, response_payload, response_payload_len, response_payload_written);
+        }
+        if (has_encoded_network) {
+            trezor_trace_set_stage("ethtyped:network_defs");
+            return trezor_session_failure_payload(TREZOR_FAILURE_DATA_ERROR, "Typed hash network definitions unsupported",
+                response_type, response_payload, response_payload_len, response_payload_written);
+        }
+
+        trezor_trace_set_stage("ethtyped:hash_only");
+        return trezor_session_failure_payload(TREZOR_FAILURE_DATA_ERROR, "SafeTx payload required for typed hash signing",
+            response_type, response_payload, response_payload_len, response_payload_written);
+    }
+
     if (request_type == TREZOR_MSG_ETHEREUM_SIGN_TX || request_type == TREZOR_MSG_ETHEREUM_SIGN_TX_EIP1559) {
         trezor_trace_set_stage("ethsign:init");
         if (!session->state || !session->sign_eth_tx) {

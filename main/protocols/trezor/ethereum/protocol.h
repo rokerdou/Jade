@@ -10,6 +10,7 @@
 #include <stdint.h>
 
 #define TREZOR_ETHEREUM_MAX_TX_CHUNK_LEN 1024
+#define TREZOR_ETHEREUM_TYPED_HASH_LEN 32
 
 typedef struct {
     uint32_t address_n[WALLET_CORE_MAX_PATH_LEN];
@@ -41,9 +42,21 @@ typedef struct {
     trezor_ethereum_definitions_t definitions;
 } trezor_ethereum_signing_state_t;
 
+typedef struct {
+    uint32_t address_n[WALLET_CORE_MAX_PATH_LEN];
+    size_t address_n_len;
+    uint8_t domain_separator_hash[TREZOR_ETHEREUM_TYPED_HASH_LEN];
+    bool has_domain_separator_hash;
+    uint8_t message_hash[TREZOR_ETHEREUM_TYPED_HASH_LEN];
+    bool has_message_hash;
+    bool has_encoded_network;
+} trezor_ethereum_sign_typed_hash_t;
+
 bool trezor_ethereum_get_address_decode(
     const uint8_t* payload, size_t payload_len, trezor_ethereum_get_address_t* output);
 bool trezor_ethereum_address_encode(const char* address, uint8_t* output, size_t output_len, size_t* written);
+bool trezor_ethereum_sign_typed_hash_decode(
+    const uint8_t* payload, size_t payload_len, trezor_ethereum_sign_typed_hash_t* output);
 bool trezor_ethereum_sign_tx_init(trezor_ethereum_signing_state_t* state, uint16_t message_type,
     const uint8_t* payload, size_t payload_len);
 bool trezor_ethereum_tx_ack_apply(

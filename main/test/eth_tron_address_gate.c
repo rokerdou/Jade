@@ -4892,6 +4892,31 @@ int main(int argc, char** argv)
     CHECK(session_response_type == TREZOR_MSG_FAILURE);
     CHECK(trezor_payload_has_varint(session_response_payload, session_response_payload_len, 1, TREZOR_FAILURE_DATA_ERROR));
 
+    const size_t trezor_eth_sign_calls_before_typed_hash = g_trezor_eth_sign_calls;
+    trezor_protobuf_writer_init(&trezor_sign_writer, trezor_sign_payload, sizeof(trezor_sign_payload));
+    for (size_t i = 0; i < ARRAY_LEN(eth_bip44); ++i) {
+        CHECK(trezor_protobuf_write_varint_field(&trezor_sign_writer, 1, eth_bip44[i]));
+    }
+    CHECK(trezor_protobuf_write_bytes_field(
+        &trezor_sign_writer, 2, EXPECTED_SAFE_DOMAIN_HASH, sizeof(EXPECTED_SAFE_DOMAIN_HASH)));
+    CHECK(trezor_protobuf_write_bytes_field(
+        &trezor_sign_writer, 3, EXPECTED_SAFE_MESSAGE_HASH, sizeof(EXPECTED_SAFE_MESSAGE_HASH)));
+    CHECK(trezor_wire_encode_message(TREZOR_MSG_ETHEREUM_SIGN_TYPED_HASH, trezor_sign_payload,
+        trezor_sign_writer.len, session_request_chunks, sizeof(session_request_chunks), &session_request_len));
+    session_response_event = TREZOR_SESSION_RESPONSE_EVENT_SIGNED_RESULT;
+    CHECK(trezor_session_handle_wire_ex(&trezor_session, session_request_chunks, session_request_len,
+        session_response_chunks, sizeof(session_response_chunks), &session_response_len, &session_response_event));
+    CHECK(session_response_event == TREZOR_SESSION_RESPONSE_EVENT_NONE);
+    CHECK(trezor_wire_decode_message(session_response_chunks, session_response_len, &session_response_type,
+        session_response_payload, sizeof(session_response_payload), &session_response_payload_len));
+    CHECK(session_response_type == TREZOR_MSG_FAILURE);
+    CHECK(trezor_payload_has_varint(session_response_payload, session_response_payload_len, 1, TREZOR_FAILURE_DATA_ERROR));
+    CHECK(!trezor_session_state.has_pending_eth_signing);
+    CHECK(g_trezor_eth_sign_calls == trezor_eth_sign_calls_before_typed_hash);
+    CHECK(trezor_trace_format_latest(trace_text, sizeof(trace_text)));
+    CHECK(strstr(trace_text, "EthereumSignTypedHash") != NULL);
+    CHECK(strstr(trace_text, "DataError") != NULL);
+
     CHECK(trezor_wire_encode_message(TREZOR_MSG_ETHEREUM_SIGN_TX, NULL, 0, session_request_chunks,
         sizeof(session_request_chunks), &session_request_len));
     CHECK(trezor_session_handle_wire(&trezor_session, session_request_chunks, session_request_len,
@@ -4974,6 +4999,56 @@ int main(int argc, char** argv)
     CHECK(trezor_protobuf_write_bytes_field(&trezor_writer, 3, (const uint8_t*)"net", 3));
     CHECK(!trezor_ethereum_get_address_decode(trezor_payload, trezor_writer.len, &trezor_get_address));
 
+    trezor_ethereum_sign_typed_hash_t trezor_typed_hash;
+    trezor_protobuf_writer_init(&trezor_writer, trezor_payload, sizeof(trezor_payload));
+    for (size_t i = 0; i < ARRAY_LEN(eth_bip44); ++i) {
+        CHECK(trezor_protobuf_write_varint_field(&trezor_writer, 1, eth_bip44[i]));
+    }
+    CHECK(trezor_protobuf_write_bytes_field(
+        &trezor_writer, 2, EXPECTED_SAFE_DOMAIN_HASH, sizeof(EXPECTED_SAFE_DOMAIN_HASH)));
+    CHECK(trezor_protobuf_write_bytes_field(
+        &trezor_writer, 3, EXPECTED_SAFE_MESSAGE_HASH, sizeof(EXPECTED_SAFE_MESSAGE_HASH)));
+    CHECK(trezor_ethereum_sign_typed_hash_decode(trezor_payload, trezor_writer.len, &trezor_typed_hash));
+    CHECK(trezor_typed_hash.address_n_len == ARRAY_LEN(eth_bip44));
+    CHECK(memcmp(trezor_typed_hash.address_n, eth_bip44, sizeof(eth_bip44)) == 0);
+    CHECK(trezor_typed_hash.has_domain_separator_hash);
+    CHECK(memcmp(trezor_typed_hash.domain_separator_hash, EXPECTED_SAFE_DOMAIN_HASH,
+              sizeof(EXPECTED_SAFE_DOMAIN_HASH))
+        == 0);
+    CHECK(trezor_typed_hash.has_message_hash);
+    CHECK(memcmp(trezor_typed_hash.message_hash, EXPECTED_SAFE_MESSAGE_HASH, sizeof(EXPECTED_SAFE_MESSAGE_HASH))
+        == 0);
+    CHECK(!trezor_typed_hash.has_encoded_network);
+
+    trezor_protobuf_writer_init(&trezor_writer, trezor_payload, sizeof(trezor_payload));
+    CHECK(trezor_protobuf_write_varint_field(&trezor_writer, 1, eth_bip44[0]));
+    CHECK(trezor_protobuf_write_bytes_field(
+        &trezor_writer, 2, EXPECTED_SAFE_DOMAIN_HASH, sizeof(EXPECTED_SAFE_DOMAIN_HASH) - 1U));
+    CHECK(!trezor_ethereum_sign_typed_hash_decode(trezor_payload, trezor_writer.len, &trezor_typed_hash));
+
+    trezor_protobuf_writer_init(&trezor_writer, trezor_payload, sizeof(trezor_payload));
+    CHECK(trezor_protobuf_write_varint_field(&trezor_writer, 1, eth_bip44[0]));
+    CHECK(trezor_protobuf_write_bytes_field(
+        &trezor_writer, 2, EXPECTED_SAFE_DOMAIN_HASH, sizeof(EXPECTED_SAFE_DOMAIN_HASH)));
+    CHECK(trezor_protobuf_write_bytes_field(
+        &trezor_writer, 3, EXPECTED_SAFE_MESSAGE_HASH, sizeof(EXPECTED_SAFE_MESSAGE_HASH) - 1U));
+    CHECK(!trezor_ethereum_sign_typed_hash_decode(trezor_payload, trezor_writer.len, &trezor_typed_hash));
+
+    trezor_protobuf_writer_init(&trezor_writer, trezor_payload, sizeof(trezor_payload));
+    CHECK(trezor_protobuf_write_varint_field(&trezor_writer, 1, eth_bip44[0]));
+    CHECK(trezor_protobuf_write_bytes_field(
+        &trezor_writer, 2, EXPECTED_SAFE_DOMAIN_HASH, sizeof(EXPECTED_SAFE_DOMAIN_HASH)));
+    CHECK(trezor_protobuf_write_bytes_field(&trezor_writer, 4, (const uint8_t*)"network", 7));
+    CHECK(trezor_ethereum_sign_typed_hash_decode(trezor_payload, trezor_writer.len, &trezor_typed_hash));
+    CHECK(trezor_typed_hash.has_encoded_network);
+
+    trezor_protobuf_writer_init(&trezor_writer, trezor_payload, sizeof(trezor_payload));
+    CHECK(trezor_protobuf_write_varint_field(&trezor_writer, 1, eth_bip44[0]));
+    CHECK(trezor_protobuf_write_bytes_field(
+        &trezor_writer, 2, EXPECTED_SAFE_DOMAIN_HASH, sizeof(EXPECTED_SAFE_DOMAIN_HASH)));
+    CHECK(trezor_protobuf_write_varint_field(&trezor_writer, 99, 1));
+    CHECK(!trezor_ethereum_sign_typed_hash_decode(trezor_payload, trezor_writer.len, &trezor_typed_hash));
+
     CHECK(trezor_dispatcher_message_allowed(TREZOR_MSG_INITIALIZE));
     CHECK(trezor_dispatcher_message_allowed(TREZOR_MSG_GET_FEATURES));
     CHECK(trezor_dispatcher_message_allowed(TREZOR_MSG_END_SESSION));
@@ -4985,6 +5060,7 @@ int main(int argc, char** argv)
     CHECK(trezor_dispatcher_message_allowed(TREZOR_MSG_ETHEREUM_GET_PUBLIC_KEY));
     CHECK(trezor_dispatcher_message_allowed(TREZOR_MSG_ETHEREUM_SIGN_TX));
     CHECK(trezor_dispatcher_message_allowed(TREZOR_MSG_ETHEREUM_SIGN_TX_EIP1559));
+    CHECK(trezor_dispatcher_message_allowed(TREZOR_MSG_ETHEREUM_SIGN_TYPED_HASH));
     CHECK(trezor_dispatcher_message_allowed(TREZOR_MSG_ETHEREUM_TX_ACK));
     CHECK(trezor_dispatcher_message_allowed(TREZOR_MSG_SIGN_TX));
     CHECK(trezor_dispatcher_message_allowed(TREZOR_MSG_TX_ACK));

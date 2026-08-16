@@ -2531,6 +2531,23 @@ def check_trezorlib_protocol_oracle(gate: Path, local_vectors: dict[str, str]) -
 
     response_type, payload = run_local_wire_oracle(
         gate,
+        messages.MessageType.EthereumSignTypedHash,
+        messages.EthereumSignTypedHash(
+            address_n=eth_path,
+            domain_separator_hash=bytes.fromhex(local_vectors["safe_domain_hash"]),
+            message_hash=bytes.fromhex(local_vectors["safe_message_hash"]),
+        ),
+    )
+    if response_type != messages.MessageType.Failure:
+        raise AssertionError(f"EthereumSignTypedHash hash-only request must fail, got {response_type}")
+    failure = protobuf.load_message(io.BytesIO(payload), messages.Failure)
+    if failure.code != messages.FailureType.DataError:
+        raise AssertionError(f"EthereumSignTypedHash failure code mismatch: {failure.code}")
+    if "SafeTx payload required" not in (failure.message or ""):
+        raise AssertionError(f"EthereumSignTypedHash failure message mismatch: {failure.message!r}")
+
+    response_type, payload = run_local_wire_oracle(
+        gate,
         messages.MessageType.EthereumSignTx,
         messages.EthereumSignTx(
             address_n=eth_path,

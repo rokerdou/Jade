@@ -10,7 +10,7 @@ bool trezor_dispatcher_message_allowed(const uint32_t message_type)
         || message_type == TREZOR_MSG_ETHEREUM_GET_ADDRESS || message_type == TREZOR_MSG_GET_PUBLIC_KEY
         || message_type == TREZOR_MSG_ETHEREUM_GET_PUBLIC_KEY || message_type == TREZOR_MSG_ETHEREUM_SIGN_TX
         || message_type == TREZOR_MSG_ETHEREUM_SIGN_TX_EIP1559 || message_type == TREZOR_MSG_ETHEREUM_TX_ACK
-        || message_type == TREZOR_MSG_ONEKEY_SIGN_PSBT;
+        || message_type == TREZOR_MSG_ETHEREUM_SIGN_TYPED_HASH || message_type == TREZOR_MSG_ONEKEY_SIGN_PSBT;
 }
 
 bool trezor_dispatcher_message_sensitive_or_unsupported(const uint32_t message_type)

@@ -318,6 +318,21 @@ trezorlib / Safe CLI 兼容路径：
 6. 再评估完整 `EthereumSignTypedData` struct/value request flow、Safe
    `execTransaction` raw transaction 解析、Safe message signing。
 
+当前进度：
+
+- `chains/ethereum/safe_tx.*` 已实现 SafeTx domain/message/final signing
+  hash、字段校验和 ERC20 transfer/approve 摘要，门禁用
+  `safe-cli` 底层 `safe-eth-py` 与 `eth_account.encode_typed_data` 双 oracle
+  交叉校验。
+- Trezor `EthereumSignTypedHash` message id 470 已接入 parser、dispatcher、
+  trace 和 trezorlib host harness。当前默认返回
+  `Failure(DataError, "SafeTx payload required...")`，不会触发本机解锁、UI、
+  私钥或签名路径。
+- 下一步必须补 SafeTx payload normalizer：host 提供结构化 SafeTx 字段，
+  固件重新计算 `domain_hash/message_hash` 并与 `EthereumSignTypedHash`
+  入参逐字节绑定，绑定通过后才允许进入 UI 和
+  `wallet_core_sign_digest_ecdsa_recoverable()`。
+
 ### Phase 1: 拆 BTC 协议层大文件
 
 目标：把 `main/protocols/trezor/bitcoin/protocol.c` 拆成 OneKey 风格的职责模块，但每一步只迁一类逻辑。
