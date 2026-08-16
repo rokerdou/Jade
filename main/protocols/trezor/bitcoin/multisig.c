@@ -33,6 +33,14 @@ static void write_be32(uint8_t* const output, const uint32_t value)
     output[3] = (uint8_t)value;
 }
 
+static void write_le32(uint8_t* const output, const uint32_t value)
+{
+    output[0] = (uint8_t)value;
+    output[1] = (uint8_t)(value >> 8);
+    output[2] = (uint8_t)(value >> 16);
+    output[3] = (uint8_t)(value >> 24);
+}
+
 static bool path_has_hardened(const uint32_t* const path, const size_t path_len)
 {
     if (!path) {
@@ -284,6 +292,98 @@ static bool derive_node_public_key(const trezor_bitcoin_hd_node_t* const node, c
     return ok;
 }
 
+static void sort_hd_nodes_by_public_key(trezor_bitcoin_hd_node_t* const nodes, const size_t nodes_len)
+{
+    if (!nodes || nodes_len == 0) {
+        return;
+    }
+    trezor_bitcoin_hd_node_t tmp;
+    for (size_t i = 0; i < nodes_len; ++i) {
+        for (size_t j = i + 1U; j < nodes_len; ++j) {
+            if (memcmp(nodes[i].public_key, nodes[j].public_key, sizeof(nodes[i].public_key)) > 0) {
+                memcpy(&tmp, &nodes[i], sizeof(tmp));
+                memcpy(&nodes[i], &nodes[j], sizeof(nodes[i]));
+                memcpy(&nodes[j], &tmp, sizeof(nodes[j]));
+            }
+        }
+    }
+    wally_bzero(&tmp, sizeof(tmp));
+}
+
+static bool copy_multisig_fingerprint_nodes(
+    const trezor_bitcoin_multisig_t* const multisig, trezor_bitcoin_hd_node_t* const nodes, size_t* const nodes_len)
+{
+    if (!multisig || !nodes || !nodes_len) {
+        return false;
+    }
+    *nodes_len = 0;
+    if (multisig->pubkeys_len > 0) {
+        if (multisig->pubkeys_len > TREZOR_BITCOIN_MULTISIG_MAX_SIGNERS) {
+            return false;
+        }
+        for (size_t i = 0; i < multisig->pubkeys_len; ++i) {
+            memcpy(&nodes[i], &multisig->pubkeys[i].node, sizeof(nodes[i]));
+        }
+        *nodes_len = multisig->pubkeys_len;
+        return true;
+    }
+    if (multisig->nodes_len > 0) {
+        if (multisig->nodes_len > TREZOR_BITCOIN_MULTISIG_MAX_SIGNERS) {
+            return false;
+        }
+        memcpy(nodes, multisig->nodes, multisig->nodes_len * sizeof(nodes[0]));
+        *nodes_len = multisig->nodes_len;
+        return true;
+    }
+    return false;
+}
+
+bool trezor_bitcoin_multisig_fingerprint(
+    const trezor_bitcoin_multisig_t* const multisig, uint8_t fingerprint[SHA256_LEN])
+{
+    if (!multisig || !fingerprint || multisig->threshold == 0) {
+        return false;
+    }
+
+    trezor_bitcoin_hd_node_t nodes[TREZOR_BITCOIN_MULTISIG_MAX_SIGNERS];
+    uint8_t serialized[8U + (TREZOR_BITCOIN_MULTISIG_MAX_SIGNERS * (4U + 4U + 4U + WALLY_BIP32_CHAIN_CODE_LEN
+                         + EC_PUBLIC_KEY_LEN))];
+    size_t nodes_len = 0;
+    size_t offset = 0;
+    wally_bzero(nodes, sizeof(nodes));
+    wally_bzero(serialized, sizeof(serialized));
+
+    bool ok = copy_multisig_fingerprint_nodes(multisig, nodes, &nodes_len) && nodes_len > 0
+        && nodes_len <= TREZOR_BITCOIN_MULTISIG_MAX_SIGNERS && multisig->threshold <= nodes_len;
+    if (ok) {
+        sort_hd_nodes_by_public_key(nodes, nodes_len);
+        write_le32(serialized + offset, multisig->threshold);
+        offset += sizeof(uint32_t);
+        write_le32(serialized + offset, (uint32_t)nodes_len);
+        offset += sizeof(uint32_t);
+        for (size_t i = 0; i < nodes_len; ++i) {
+            write_le32(serialized + offset, nodes[i].depth);
+            offset += sizeof(uint32_t);
+            write_le32(serialized + offset, nodes[i].fingerprint);
+            offset += sizeof(uint32_t);
+            write_le32(serialized + offset, nodes[i].child_num);
+            offset += sizeof(uint32_t);
+            memcpy(serialized + offset, nodes[i].chain_code, sizeof(nodes[i].chain_code));
+            offset += sizeof(nodes[i].chain_code);
+            memcpy(serialized + offset, nodes[i].public_key, sizeof(nodes[i].public_key));
+            offset += sizeof(nodes[i].public_key);
+        }
+        ok = offset <= sizeof(serialized) && wally_sha256(serialized, offset, fingerprint, SHA256_LEN) == WALLY_OK;
+    }
+
+    wally_bzero(nodes, sizeof(nodes));
+    wally_bzero(serialized, sizeof(serialized));
+    if (!ok) {
+        wally_bzero(fingerprint, SHA256_LEN);
+    }
+    return ok;
+}
+
 static bool script_variant_from_script_type(const uint32_t script_type, script_variant_t* const output)
 {
     if (!output) {
@@ -388,7 +488,8 @@ bool trezor_bitcoin_multisig_normalize(const trezor_bitcoin_multisig_t* const mu
         return false;
     }
 
-    if (!build_multisig_script_pubkey(output)) {
+    if (!build_multisig_script_pubkey(output)
+        || !trezor_bitcoin_multisig_fingerprint(multisig, output->fingerprint)) {
         wally_bzero(output, sizeof(*output));
         return false;
     }

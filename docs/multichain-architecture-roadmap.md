@@ -184,6 +184,9 @@ main/
   的轻量 summary scriptPubKey 与 prev_tx verifier 返回的 prevout scriptPubKey 是否一致，
   并检查 Trezor `script_type` 与内部 `MULTI_P2SH/MULTI_P2WSH/MULTI_P2WSH_P2SH`
   variant 是否匹配。该 gate 不开放签名，只为后续 descriptor/policy 绑定铺路。
+- BTC `MultisigRedeemScriptType` normalizer 已生成 OneKey/Trezor 风格 policy fingerprint
+  并有 host gate 覆盖。fingerprint 目前只存在完整 policy/normalizer 层，不进入
+  `TxInputType`/`TxOutputType` 的长期 summary，避免扩大 signing state 内存面。
 - Sparrow/lark 的 singlesig xpub 导入会用默认 `SPENDADDRESS` 调
   `GetPublicKey(m/49'...)` / `GetPublicKey(m/84'...)`。固件现在只在账户级 public-node
   导出路径把这个默认值视为客户端兼容占位，并按 BIP purpose 推断 ypub/zpub；
@@ -461,6 +464,10 @@ trezorlib / Safe CLI 兼容路径：
   P2SH、P2WSH、P2SH-P2WSH 都覆盖正向路径，且会拒绝 threshold 无效、script_type/variant
   错配、prevout script 不一致。这个能力仍停留在 policy gate，不会让 multisig input
   进入实际签名。
+- `multisig_policy_t` 已带 policy fingerprint，host gate 按 OneKey 的
+  `MultisigFingerprintChecker` material 规则验证 old-style/new-style 一致性、pubkey order
+  mode 不影响 fingerprint、threshold 变化会改变 fingerprint。该字段不写入 input/output
+  summary，避免破坏 `trezor_bitcoin_tx_output_t <= 256` 等 ESP32 状态尺寸门禁。
 
 4. P2SH-P2WPKH 已实验性开放。
    - P2SH-P2WPKH 继续使用 segwit v0/BIP143 sighash。
@@ -532,6 +539,10 @@ trezorlib / Safe CLI 兼容路径：
      `TxOutputType.multisig` 纳入解析。`GetAddress` 保留完整 policy 用于本机 signer
      membership 校验；input/output 只保留 scriptPubKey summary，完整 normalizer
      临时对象用完即清零，不进入长期 signing state。
+   - `multisig_policy_t` 已生成 OneKey/Trezor 风格 fingerprint；host gate 验证
+     old-style/new-style protobuf forms、BIP67 order mode 和 threshold 变化的 fingerprint
+     行为。fingerprint 暂不进入 input/output summary，后续如果要做 change-output policy
+     matcher，应设计专门的小型 policy object，而不是把完整 policy 塞进 signing state。
    - Host gate 使用 `trezorlib` 生成 `MultisigRedeemScriptType` payload，使用第三方
      `embit.script.multisig()` 生成期望 redeem script，覆盖 old-style/new-style、
      BIP67 lexicographic 排序、private_key 字段拒绝、hardened suffix 拒绝、`m > n` 拒绝。

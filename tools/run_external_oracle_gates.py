@@ -705,6 +705,37 @@ def c_gate_fake_multisig_script_pubkey(script_type: messages.InputScriptType, re
     raise AssertionError(f"unsupported multisig script type for host gate: {script_type}")
 
 
+def onekey_multisig_fingerprint_material(multisig: messages.MultisigRedeemScriptType) -> bytes:
+    if multisig.nodes:
+        nodes = list(multisig.nodes)
+    else:
+        nodes = [hd.node for hd in multisig.pubkeys]
+    if not nodes or not multisig.m or multisig.m > len(nodes):
+        raise AssertionError("invalid multisig fingerprint fixture")
+
+    def u32(value: int) -> bytes:
+        return int(value).to_bytes(4, "little")
+
+    material = bytearray()
+    material += u32(multisig.m)
+    material += u32(len(nodes))
+    for node in sorted(nodes, key=lambda item: bytes(item.public_key)):
+        material += u32(node.depth)
+        material += u32(node.fingerprint)
+        material += u32(node.child_num)
+        material += bytes(node.chain_code)
+        material += bytes(node.public_key)
+    return bytes(material)
+
+
+def c_gate_fake_multisig_fingerprint(multisig: messages.MultisigRedeemScriptType) -> bytes:
+    return c_gate_fake_sha256(onekey_multisig_fingerprint_material(multisig))
+
+
+def sha256_multisig_fingerprint(multisig: messages.MultisigRedeemScriptType) -> bytes:
+    return hashlib.sha256(onekey_multisig_fingerprint_material(multisig)).digest()
+
+
 def hdnode_type_from_xpub(xpub: str) -> messages.HDNodeType:
     raw = base58.b58decode_check(xpub)
     if len(raw) != 78:
@@ -742,6 +773,8 @@ def run_multisig_normalizer_gate(
         raise AssertionError(
             f"multisig redeem script mismatch: actual={parsed['redeem_script']} expected={expected_redeem_script.hex()}"
         )
+    if bytes.fromhex(parsed["fingerprint"]) != c_gate_fake_multisig_fingerprint(multisig):
+        raise AssertionError(f"multisig fingerprint mismatch: {parsed['fingerprint']}")
     return parsed
 
 
@@ -1557,6 +1590,7 @@ def check_trezor_multisig_normalizer_oracle(gate: Path) -> None:
     )
     if parsed.get("threshold") != "2" or parsed.get("num_pubkeys") != "3" or parsed.get("sorted") != "0":
         raise AssertionError(f"unexpected old-style multisig policy: {parsed}")
+    old_style_sha256_fingerprint = sha256_multisig_fingerprint(old_style)
 
     new_style_p2wsh = messages.MultisigRedeemScriptType(
         nodes=child_hd_nodes,
@@ -1570,6 +1604,8 @@ def check_trezor_multisig_normalizer_oracle(gate: Path) -> None:
     )
     if parsed.get("threshold") != "2" or parsed.get("num_pubkeys") != "3" or parsed.get("sorted") != "0":
         raise AssertionError(f"unexpected new-style P2WSH multisig policy: {parsed}")
+    if sha256_multisig_fingerprint(new_style_p2wsh) != old_style_sha256_fingerprint:
+        raise AssertionError("multisig fingerprint changed between old-style and new-style protobuf forms")
 
     new_style_p2sh_p2wsh_sorted = messages.MultisigRedeemScriptType(
         nodes=child_hd_nodes,
@@ -1583,6 +1619,18 @@ def check_trezor_multisig_normalizer_oracle(gate: Path) -> None:
     )
     if parsed.get("threshold") != "2" or parsed.get("num_pubkeys") != "3" or parsed.get("sorted") != "1":
         raise AssertionError(f"unexpected sorted P2SH-P2WSH multisig policy: {parsed}")
+    if sha256_multisig_fingerprint(new_style_p2sh_p2wsh_sorted) != old_style_sha256_fingerprint:
+        raise AssertionError("multisig fingerprint changed when pubkey order mode changed")
+
+    threshold_one = messages.MultisigRedeemScriptType(
+        nodes=child_hd_nodes,
+        address_n=[],
+        signatures=[b"", b"", b""],
+        m=1,
+        pubkeys_order=messages.MultisigPubkeysOrder.PRESERVED,
+    )
+    if sha256_multisig_fingerprint(threshold_one) == old_style_sha256_fingerprint:
+        raise AssertionError("multisig fingerprint did not change when threshold changed")
 
     private_key_node = messages.HDNodeType(
         depth=child_hd_nodes[0].depth,

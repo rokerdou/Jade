@@ -2314,6 +2314,7 @@ static int run_trezor_multisig_normalizer(
     printf("redeem_script_len=%u\n", normalized ? (unsigned int)policy.redeem_script_len : 0U);
     printf("script_pubkey_len=%u\n", normalized ? (unsigned int)policy.script_pubkey_len : 0U);
     if (normalized) {
+        print_hex_value("fingerprint", policy.fingerprint, sizeof(policy.fingerprint));
         print_hex_value("redeem_script", policy.redeem_script, policy.redeem_script_len);
         print_hex_value("script_pubkey", policy.script_pubkey, policy.script_pubkey_len);
     }

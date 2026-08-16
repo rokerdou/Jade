@@ -52,6 +52,7 @@ typedef struct {
     uint8_t threshold;
     size_t num_pubkeys;
     bool sorted;
+    uint8_t fingerprint[SHA256_LEN];
     uint32_t address_n[WALLET_CORE_MAX_PATH_LEN];
     size_t address_n_len;
     uint8_t pubkeys[TREZOR_BITCOIN_MULTISIG_MAX_SIGNERS * EC_PUBLIC_KEY_LEN];
@@ -73,6 +74,7 @@ typedef struct {
 bool trezor_bitcoin_multisig_decode(const uint8_t* payload, size_t payload_len, trezor_bitcoin_multisig_t* output);
 bool trezor_bitcoin_multisig_normalize(const trezor_bitcoin_multisig_t* multisig, uint32_t script_type,
     trezor_bitcoin_multisig_policy_t* output);
+bool trezor_bitcoin_multisig_fingerprint(const trezor_bitcoin_multisig_t* multisig, uint8_t fingerprint[SHA256_LEN]);
 bool trezor_bitcoin_multisig_script_pubkey_matches(const trezor_bitcoin_multisig_policy_t* policy,
     const uint8_t* script_pubkey, size_t script_pubkey_len);
 
