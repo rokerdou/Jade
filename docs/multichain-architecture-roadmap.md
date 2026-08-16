@@ -211,6 +211,12 @@ main/
   只有 prevout scriptPubKey 与 multisig policy 绑定通过后，才会生成 UI preview。
   UI 摘要会显示非敏感 `Policy` 文本，例如 `2-of-3 P2WSH`。用户确认后仍然返回
   `Bitcoin multisig signing disabled`，不会构造 digest，也不会调用 signer。
+- BTC 多签 SignTx host oracle 已覆盖 `SPENDMULTISIG`/P2SH、`SPENDWITNESS`/P2WSH、
+  `SPENDP2SHWITNESS`/P2SH-P2WSH 三种输入变体的完整 prev_tx 请求链。门禁还覆盖
+  prevout scriptPubKey 不匹配拒绝，以及 P2WSH input 搭配 P2SH multisig 找零时
+  不能被误识别为同 policy 找零。
+- BTC fee-rate 估算已补保守 multisig 估算：只使用 threshold、signer count 和
+  P2SH/P2WSH/P2SH-P2WSH variant，不读取 redeem script、xpub、signature 或私钥材料。
 - BTC `SignTx.multisig` 仍保持关闭，并有 host gate 明确覆盖：现有 singlesig
   basic signing policy 必须拒绝 `has_multisig` 的 input/output，避免多签地址/xpub
   兼容工作误把多签签名路径打开。

@@ -1397,6 +1397,128 @@ def assert_btc_failure(
         raise AssertionError(f"{case_name} failure message mismatch: {failure.message}")
 
 
+def assert_btc_verified_multisig_signing_disabled(
+    gate: Path,
+    multisig: messages.MultisigRedeemScriptType,
+    redeem_script: bytes,
+    script_type: messages.InputScriptType,
+    *,
+    include_mismatched_change: bool = False,
+) -> None:
+    prevout_script = c_gate_fake_multisig_script_pubkey(script_type, redeem_script)
+    prev_hash = btc_prev_txid_for_single_input_two_outputs(prevout0_script_pubkey=prevout_script)
+    path = [0x80000030, 0x80000001, 0x80000000, 0x80000002, 0, 0]
+    outputs_count = 2 if include_mismatched_change else 1
+    calls: list[tuple[int, object]] = [
+        (
+            messages.MessageType.SignTx,
+            messages.SignTx(coin_name="Testnet", inputs_count=1, outputs_count=outputs_count, version=2, lock_time=0),
+        ),
+        (messages.MessageType.TxAck, btc_tx_ack_meta(1, outputs_count)),
+        (
+            messages.MessageType.TxAck,
+            btc_tx_ack_input(
+                btc_tx_input(
+                    path=path,
+                    prev_hash=prev_hash,
+                    script_type=script_type,
+                    multisig=multisig,
+                )
+            ),
+        ),
+        (messages.MessageType.TxAck, btc_tx_ack_output(btc_tx_output_external(amount=90_000))),
+    ]
+    if include_mismatched_change:
+        calls.append(
+            (
+                messages.MessageType.TxAck,
+                btc_tx_ack_output(
+                    btc_tx_output_change(
+                        amount=5_000,
+                        path=path,
+                        script_type=messages.OutputScriptType.PAYTOMULTISIG,
+                        multisig=multisig,
+                    )
+                ),
+            )
+        )
+    calls.extend(
+        [
+            (messages.MessageType.TxAck, btc_tx_ack_meta(1, 2)),
+            (messages.MessageType.TxAck, btc_tx_ack_prev_input()),
+            (messages.MessageType.TxAck, btc_tx_ack_prev_output(100_000, prevout_script)),
+            (messages.MessageType.TxAck, btc_tx_ack_prev_output(1_000, btc_p2wpkh_script_pubkey())),
+        ]
+    )
+    responses = run_local_wire_script(gate, calls)
+    assert_btc_tx_request(responses[0], messages.RequestType.TXMETA)
+    assert_btc_tx_request(responses[1], messages.RequestType.TXINPUT, request_index=0)
+    assert_btc_tx_request(responses[2], messages.RequestType.TXOUTPUT, request_index=0)
+    next_index = 3
+    if include_mismatched_change:
+        assert_btc_tx_request(responses[next_index], messages.RequestType.TXOUTPUT, request_index=1)
+        next_index += 1
+    assert_btc_tx_request(responses[next_index], messages.RequestType.TXMETA, tx_hash=prev_hash)
+    assert_btc_tx_request(responses[next_index + 1], messages.RequestType.TXORIGINPUT, request_index=0, tx_hash=prev_hash)
+    assert_btc_tx_request(
+        responses[next_index + 2], messages.RequestType.TXORIGOUTPUT, request_index=0, tx_hash=prev_hash
+    )
+    assert_btc_tx_request(
+        responses[next_index + 3], messages.RequestType.TXORIGOUTPUT, request_index=1, tx_hash=prev_hash
+    )
+    assert_btc_failure(
+        responses[-1],
+        messages.FailureType.DataError,
+        "BTC verified multisig signing remains disabled",
+        "Bitcoin multisig signing disabled" if not include_mismatched_change else None,
+    )
+
+
+def assert_btc_multisig_prevout_mismatch_rejects(
+    gate: Path,
+    multisig: messages.MultisigRedeemScriptType,
+    redeem_script: bytes,
+    script_type: messages.InputScriptType,
+) -> None:
+    correct_prevout_script = c_gate_fake_multisig_script_pubkey(script_type, redeem_script)
+    prev_hash = btc_prev_txid_for_single_input_two_outputs(prevout0_script_pubkey=correct_prevout_script)
+    responses = run_local_wire_script(
+        gate,
+        [
+            (
+                messages.MessageType.SignTx,
+                messages.SignTx(coin_name="Testnet", inputs_count=1, outputs_count=1, version=2, lock_time=0),
+            ),
+            (messages.MessageType.TxAck, btc_tx_ack_meta(1, 1)),
+            (
+                messages.MessageType.TxAck,
+                btc_tx_ack_input(
+                    btc_tx_input(
+                        path=[0x80000030, 0x80000001, 0x80000000, 0x80000002, 0, 0],
+                        prev_hash=prev_hash,
+                        script_type=script_type,
+                        multisig=multisig,
+                    )
+                ),
+            ),
+            (messages.MessageType.TxAck, btc_tx_ack_output(btc_tx_output_external(amount=90_000))),
+            (messages.MessageType.TxAck, btc_tx_ack_meta(1, 2)),
+            (messages.MessageType.TxAck, btc_tx_ack_prev_input()),
+            (messages.MessageType.TxAck, btc_tx_ack_prev_output(100_000, btc_p2wpkh_script_pubkey())),
+            (messages.MessageType.TxAck, btc_tx_ack_prev_output(1_000, btc_p2wpkh_script_pubkey())),
+        ],
+    )
+    assert_btc_tx_request(responses[3], messages.RequestType.TXMETA, tx_hash=prev_hash)
+    assert_btc_tx_request(responses[4], messages.RequestType.TXORIGINPUT, request_index=0, tx_hash=prev_hash)
+    assert_btc_tx_request(responses[5], messages.RequestType.TXORIGOUTPUT, request_index=0, tx_hash=prev_hash)
+    assert_btc_tx_request(responses[6], messages.RequestType.TXORIGOUTPUT, request_index=1, tx_hash=prev_hash)
+    assert_btc_failure(
+        responses[-1],
+        messages.FailureType.DataError,
+        "BTC multisig prevout script mismatch",
+    )
+
+
 def check_embit_btc_signed_tx_oracle(
     raw_tx: bytes,
     *,
@@ -1989,61 +2111,24 @@ def check_local_btc_signtx_wire_script_oracle(gate: Path) -> None:
         "BTC multisig address without local signer",
     )
 
-    multisig_prevout_script = c_gate_fake_multisig_script_pubkey(
-        messages.InputScriptType.SPENDMULTISIG, preserved_redeem
+    for multisig_script_type in (
+        messages.InputScriptType.SPENDMULTISIG,
+        messages.InputScriptType.SPENDWITNESS,
+        messages.InputScriptType.SPENDP2SHWITNESS,
+    ):
+        assert_btc_verified_multisig_signing_disabled(
+            gate, multisig, preserved_redeem, multisig_script_type
+        )
+
+    assert_btc_multisig_prevout_mismatch_rejects(
+        gate, multisig, preserved_redeem, messages.InputScriptType.SPENDWITNESS
     )
-    multisig_prev_hash = btc_prev_txid_for_single_input_two_outputs(
-        prevout0_script_pubkey=multisig_prevout_script
-    )
-    valid_multisig_input_responses = run_local_wire_script(
+    assert_btc_verified_multisig_signing_disabled(
         gate,
-        [
-            (
-                messages.MessageType.SignTx,
-                messages.SignTx(coin_name="Testnet", inputs_count=1, outputs_count=1, version=2, lock_time=0),
-            ),
-            (messages.MessageType.TxAck, btc_tx_ack_meta(1, 1)),
-            (
-                messages.MessageType.TxAck,
-                btc_tx_ack_input(
-                    btc_tx_input(
-                        path=[0x80000030, 0x80000001, 0x80000000, 0x80000002, 0, 0],
-                        prev_hash=multisig_prev_hash,
-                        script_type=messages.InputScriptType.SPENDMULTISIG,
-                        multisig=multisig,
-                    )
-                ),
-            ),
-            (messages.MessageType.TxAck, btc_tx_ack_output(external_output)),
-            (messages.MessageType.TxAck, btc_tx_ack_meta(1, 2)),
-            (messages.MessageType.TxAck, btc_tx_ack_prev_input()),
-            (messages.MessageType.TxAck, btc_tx_ack_prev_output(100_000, multisig_prevout_script)),
-            (messages.MessageType.TxAck, btc_tx_ack_prev_output(1_000, btc_p2wpkh_script_pubkey())),
-        ],
-    )
-    assert_btc_tx_request(valid_multisig_input_responses[3], messages.RequestType.TXMETA, tx_hash=multisig_prev_hash)
-    assert_btc_tx_request(
-        valid_multisig_input_responses[4],
-        messages.RequestType.TXORIGINPUT,
-        request_index=0,
-        tx_hash=multisig_prev_hash,
-    )
-    assert_btc_tx_request(
-        valid_multisig_input_responses[5],
-        messages.RequestType.TXORIGOUTPUT,
-        request_index=0,
-        tx_hash=multisig_prev_hash,
-    )
-    assert_btc_tx_request(
-        valid_multisig_input_responses[6],
-        messages.RequestType.TXORIGOUTPUT,
-        request_index=1,
-        tx_hash=multisig_prev_hash,
-    )
-    assert_btc_failure(
-        valid_multisig_input_responses[-1],
-        messages.FailureType.DataError,
-        "BTC verified multisig input remains signing-disabled",
+        multisig,
+        preserved_redeem,
+        messages.InputScriptType.SPENDWITNESS,
+        include_mismatched_change=True,
     )
 
     get_taproot_address_res = run_local_wire_oracle(

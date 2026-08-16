@@ -18,6 +18,8 @@
 #define TREZOR_BITCOIN_P2WPKH_OUTPUT_VBYTES 31U
 #define TREZOR_BITCOIN_P2SH_P2WPKH_OUTPUT_VBYTES 32U
 #define TREZOR_BITCOIN_MAX_FEE_RATE_SATS_PER_VBYTE 1000U
+#define TREZOR_BITCOIN_MULTISIG_MAX_DER_SIGNATURE_LEN 73U
+#define TREZOR_BITCOIN_P2SH_SCRIPT_LEN 23U
 
 bool trezor_bitcoin_coin_from_name(const char* const name, trezor_bitcoin_coin_t* const coin)
 {
@@ -52,6 +54,96 @@ static bool trezor_bitcoin_policy_add_u64(uint64_t* const total, const uint64_t 
     }
     *total += value;
     return true;
+}
+
+static uint64_t trezor_bitcoin_policy_compact_size_len(const uint64_t value)
+{
+    if (value < 0xfdU) {
+        return 1U;
+    }
+    if (value <= UINT16_MAX) {
+        return 3U;
+    }
+    if (value <= UINT32_MAX) {
+        return 5U;
+    }
+    return 9U;
+}
+
+static bool trezor_bitcoin_policy_multisig_redeem_script_len(
+    const trezor_bitcoin_multisig_summary_t* const multisig, uint64_t* const redeem_script_len)
+{
+    if (!multisig || !redeem_script_len || multisig->threshold == 0 || multisig->num_pubkeys == 0
+        || multisig->threshold > multisig->num_pubkeys
+        || multisig->num_pubkeys > TREZOR_BITCOIN_MULTISIG_MAX_SIGNERS) {
+        return false;
+    }
+    *redeem_script_len = 1U + ((uint64_t)multisig->num_pubkeys * (1U + EC_PUBLIC_KEY_LEN)) + 1U + 1U;
+    return true;
+}
+
+static uint64_t trezor_bitcoin_policy_pushdata_len(const uint64_t payload_len)
+{
+    if (payload_len <= 75U) {
+        return 1U;
+    }
+    if (payload_len <= UINT8_MAX) {
+        return 2U;
+    }
+    if (payload_len <= UINT16_MAX) {
+        return 3U;
+    }
+    return 5U;
+}
+
+static bool trezor_bitcoin_policy_estimate_multisig_input_vbytes(
+    const trezor_bitcoin_tx_input_t* const input, uint64_t* const vbytes)
+{
+    if (!input || !vbytes || !input->has_multisig) {
+        return false;
+    }
+
+    uint64_t redeem_script_len = 0;
+    if (!trezor_bitcoin_policy_multisig_redeem_script_len(&input->multisig, &redeem_script_len)) {
+        return false;
+    }
+    const uint64_t signatures_len = (uint64_t)input->multisig.threshold * (1U + TREZOR_BITCOIN_MULTISIG_MAX_DER_SIGNATURE_LEN);
+    const uint64_t witness_stack_len = 1U + 1U + signatures_len + trezor_bitcoin_policy_pushdata_len(redeem_script_len)
+        + redeem_script_len;
+
+    if (input->multisig.variant == MULTI_P2SH) {
+        const uint64_t script_sig_len = witness_stack_len;
+        *vbytes = 32U + 4U + trezor_bitcoin_policy_compact_size_len(script_sig_len) + script_sig_len + 4U;
+        return true;
+    }
+    if (input->multisig.variant == MULTI_P2WSH) {
+        *vbytes = 32U + 4U + 1U + 4U + ((witness_stack_len + 3U) / 4U);
+        return true;
+    }
+    if (input->multisig.variant == MULTI_P2WSH_P2SH) {
+        const uint64_t nested_script_sig_len = 1U + WALLY_SCRIPTPUBKEY_P2WSH_LEN;
+        *vbytes = 32U + 4U + trezor_bitcoin_policy_compact_size_len(nested_script_sig_len) + nested_script_sig_len
+            + 4U + ((witness_stack_len + 3U) / 4U);
+        return true;
+    }
+    return false;
+}
+
+static bool trezor_bitcoin_policy_estimate_multisig_output_vbytes(
+    const trezor_bitcoin_tx_output_t* const output, uint64_t* const vbytes)
+{
+    if (!output || !vbytes || !output->has_multisig) {
+        return false;
+    }
+    if (output->multisig.variant == MULTI_P2WSH) {
+        *vbytes = 8U + 1U + WALLY_SCRIPTPUBKEY_P2WSH_LEN;
+        return true;
+    }
+    if (output->multisig.variant == MULTI_P2SH || output->multisig.variant == MULTI_P2WSH_P2SH) {
+        *vbytes = 8U + 1U + TREZOR_BITCOIN_P2SH_SCRIPT_LEN;
+        return true;
+    }
+    return false;
 }
 
 bool trezor_bitcoin_policy_calculate_totals(trezor_bitcoin_signing_state_t* const state)
@@ -111,13 +203,20 @@ bool trezor_bitcoin_policy_estimate_basic_fee_rate(trezor_bitcoin_signing_state_
     uint64_t vbytes = input_script_type == BITCOIN_P2PKH_SPENDADDRESS ? TREZOR_BITCOIN_P2PKH_TX_OVERHEAD_VBYTES
                                                                        : TREZOR_BITCOIN_P2WPKH_TX_OVERHEAD_VBYTES;
     for (size_t i = 0; i < state->inputs_len; ++i) {
-        const uint64_t input_vbytes = state->inputs[i].script_type == BITCOIN_P2PKH_SPENDADDRESS
-            ? TREZOR_BITCOIN_P2PKH_INPUT_VBYTES
-            : state->inputs[i].script_type == BITCOIN_P2WPKH_SPENDWITNESS
-            ? TREZOR_BITCOIN_P2WPKH_INPUT_VBYTES
-            : state->inputs[i].script_type == BITCOIN_P2SH_P2WPKH_SPENDP2SHWITNESS
-            ? TREZOR_BITCOIN_P2SH_P2WPKH_INPUT_VBYTES
-            : 0;
+        uint64_t input_vbytes = 0;
+        if (state->inputs[i].has_multisig) {
+            if (!trezor_bitcoin_policy_estimate_multisig_input_vbytes(&state->inputs[i], &input_vbytes)) {
+                return false;
+            }
+        } else {
+            input_vbytes = state->inputs[i].script_type == BITCOIN_P2PKH_SPENDADDRESS
+                ? TREZOR_BITCOIN_P2PKH_INPUT_VBYTES
+                : state->inputs[i].script_type == BITCOIN_P2WPKH_SPENDWITNESS
+                ? TREZOR_BITCOIN_P2WPKH_INPUT_VBYTES
+                : state->inputs[i].script_type == BITCOIN_P2SH_P2WPKH_SPENDP2SHWITNESS
+                ? TREZOR_BITCOIN_P2SH_P2WPKH_INPUT_VBYTES
+                : 0;
+        }
         if (input_vbytes == 0 || input_vbytes > UINT64_MAX - vbytes) {
             return false;
         }
@@ -132,6 +231,10 @@ bool trezor_bitcoin_policy_estimate_basic_fee_rate(trezor_bitcoin_signing_state_
     for (size_t i = 0; i < state->outputs_len; ++i) {
         uint64_t output_vbytes = state->outputs[i].has_address ? TREZOR_BITCOIN_P2PKH_OUTPUT_VBYTES
                                                                 : TREZOR_BITCOIN_P2WPKH_OUTPUT_VBYTES;
+        if (state->outputs[i].has_multisig
+            && !trezor_bitcoin_policy_estimate_multisig_output_vbytes(&state->outputs[i], &output_vbytes)) {
+            return false;
+        }
         if (!state->outputs[i].has_address) {
             if (input_script_type == BITCOIN_P2PKH_SPENDADDRESS
                 && bitcoin_path_is_p2pkh_change(
