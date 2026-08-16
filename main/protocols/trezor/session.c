@@ -325,9 +325,30 @@ static bool trezor_session_btc_signing_continue(const trezor_session_t* const se
 
     if (trezor_bitcoin_signing_ready(&session->state->pending_btc_signing)) {
         if (trezor_bitcoin_policy_has_multisig(&session->state->pending_btc_signing)) {
-            trezor_trace_set_stage("btcsign:multisig_disabled");
+            bitcoin_confirm_request_t multisig_confirm_request;
+            wally_bzero(&multisig_confirm_request, sizeof(multisig_confirm_request));
+            const bool multisig_confirm_request_ok = trezor_bitcoin_signing_to_multisig_confirm_request(
+                &session->state->pending_btc_signing, &multisig_confirm_request);
+            trezor_trace_set_stage(multisig_confirm_request_ok ? "btcsign:multisig_confirm"
+                                                               : "btcsign:multisig_req_fail");
+            if (!multisig_confirm_request_ok) {
+                trezor_bitcoin_signing_reset(&session->state->pending_btc_signing);
+                session->state->has_pending_btc_signing = false;
+                return trezor_session_failure_payload(TREZOR_FAILURE_DATA_ERROR, "Bitcoin multisig signing disabled",
+                    response_type, response_payload, response_payload_len, response_payload_written);
+            }
+            const bool multisig_confirmed = session->confirm_btc_tx
+                && session->confirm_btc_tx(session->confirm_btc_tx_ctx, &multisig_confirm_request);
+            wally_bzero(&multisig_confirm_request, sizeof(multisig_confirm_request));
             trezor_bitcoin_signing_reset(&session->state->pending_btc_signing);
             session->state->has_pending_btc_signing = false;
+            if (!multisig_confirmed) {
+                trezor_trace_set_stage("btcsign:multisig_cancel");
+                return trezor_session_failure_payload(TREZOR_FAILURE_ACTION_CANCELLED,
+                    "Bitcoin multisig transaction rejected", response_type, response_payload, response_payload_len,
+                    response_payload_written);
+            }
+            trezor_trace_set_stage("btcsign:multisig_disabled");
             return trezor_session_failure_payload(TREZOR_FAILURE_DATA_ERROR, "Bitcoin multisig signing disabled",
                 response_type, response_payload, response_payload_len, response_payload_written);
         }

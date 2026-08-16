@@ -44,6 +44,8 @@ static const char* field_name(const chain_confirm_field_kind_t kind)
     switch (kind) {
     case CHAIN_CONFIRM_FIELD_PATH:
         return "Path";
+    case CHAIN_CONFIRM_FIELD_POLICY:
+        return "Policy";
     case CHAIN_CONFIRM_FIELD_CHAIN_ID:
         return "Chain ID";
     case CHAIN_CONFIRM_FIELD_NONCE:
@@ -110,6 +112,8 @@ static const char* field_trace_stage(const chain_confirm_field_kind_t kind, cons
     switch (kind) {
     case CHAIN_CONFIRM_FIELD_PATH:
         return done ? "ui:path_ok" : "ui:path";
+    case CHAIN_CONFIRM_FIELD_POLICY:
+        return done ? "ui:policy_ok" : "ui:policy";
     case CHAIN_CONFIRM_FIELD_CHAIN_ID:
         return done ? "ui:chain_ok" : "ui:chain";
     case CHAIN_CONFIRM_FIELD_NONCE:

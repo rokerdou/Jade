@@ -23,7 +23,7 @@ void trezor_bitcoin_signing_reset(trezor_bitcoin_signing_state_t* const state)
 
 static bool trezor_bitcoin_signing_input_needs_prev_tx(const trezor_bitcoin_tx_input_t* const input)
 {
-    return input && (input->script_type == BITCOIN_P2PKH_SPENDADDRESS
+    return input && (input->has_multisig || input->script_type == BITCOIN_P2PKH_SPENDADDRESS
                         || input->script_type == BITCOIN_P2SH_P2WPKH_SPENDP2SHWITNESS);
 }
 

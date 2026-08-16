@@ -5,6 +5,7 @@
 #include "script_builder.h"
 
 #include <string.h>
+#include <stdio.h>
 #include <wally_address.h>
 #include <wally_crypto.h>
 
@@ -71,6 +72,33 @@ bool trezor_bitcoin_signing_to_confirm_request(
     return true;
 }
 
+static const char* trezor_bitcoin_multisig_policy_name(const script_variant_t variant)
+{
+    switch (variant) {
+    case MULTI_P2SH:
+        return "P2SH";
+    case MULTI_P2WSH:
+        return "P2WSH";
+    case MULTI_P2WSH_P2SH:
+        return "P2SH-P2WSH";
+    default:
+        return NULL;
+    }
+}
+
+static bool trezor_bitcoin_multisig_policy_text(
+    const trezor_bitcoin_multisig_summary_t* const multisig, char* const output, const size_t output_len)
+{
+    const char* const policy_name = multisig ? trezor_bitcoin_multisig_policy_name(multisig->variant) : NULL;
+    if (!multisig || !output || output_len == 0 || !policy_name || multisig->threshold == 0
+        || multisig->num_pubkeys == 0 || multisig->threshold > multisig->num_pubkeys) {
+        return false;
+    }
+    const int ret = snprintf(output, output_len, "%u-of-%u %s", (unsigned int)multisig->threshold,
+        (unsigned int)multisig->num_pubkeys, policy_name);
+    return ret > 0 && (size_t)ret < output_len;
+}
+
 bool trezor_bitcoin_signing_to_multisig_confirm_request(
     const trezor_bitcoin_signing_state_t* const state, bitcoin_confirm_request_t* const request)
 {
@@ -105,6 +133,11 @@ bool trezor_bitcoin_signing_to_multisig_confirm_request(
     wally_bzero(request, sizeof(*request));
     request->path_len = state->inputs[0].address_n_len;
     memcpy(request->path, state->inputs[0].address_n, request->path_len * sizeof(request->path[0]));
+    if (!trezor_bitcoin_multisig_policy_text(&state->inputs[0].multisig, request->policy, sizeof(request->policy))) {
+        wally_bzero(request, sizeof(*request));
+        wally_bzero(&preview, sizeof(preview));
+        return false;
+    }
     memcpy(request->to, external_output->address, strlen(external_output->address) + 1U);
     request->amount = preview.external_amount;
     request->change = preview.change_amount;

@@ -1709,7 +1709,7 @@ def check_local_btc_signtx_wire_script_oracle(gate: Path) -> None:
     external_output = btc_tx_output_external(amount=90_000)
     change_output = btc_tx_output_change(amount=45_000)
     common_meta = btc_tx_ack_meta(2, 2)
-    multisig_nodes, _, _, _ = trezor_multisig_fixture()
+    multisig_nodes, _, preserved_redeem, _ = trezor_multisig_fixture()
     multisig = messages.MultisigRedeemScriptType(
         nodes=multisig_nodes,
         address_n=[],
@@ -1989,6 +1989,12 @@ def check_local_btc_signtx_wire_script_oracle(gate: Path) -> None:
         "BTC multisig address without local signer",
     )
 
+    multisig_prevout_script = c_gate_fake_multisig_script_pubkey(
+        messages.InputScriptType.SPENDMULTISIG, preserved_redeem
+    )
+    multisig_prev_hash = btc_prev_txid_for_single_input_two_outputs(
+        prevout0_script_pubkey=multisig_prevout_script
+    )
     valid_multisig_input_responses = run_local_wire_script(
         gate,
         [
@@ -2002,18 +2008,42 @@ def check_local_btc_signtx_wire_script_oracle(gate: Path) -> None:
                 btc_tx_ack_input(
                     btc_tx_input(
                         path=[0x80000030, 0x80000001, 0x80000000, 0x80000002, 0, 0],
+                        prev_hash=multisig_prev_hash,
                         script_type=messages.InputScriptType.SPENDMULTISIG,
                         multisig=multisig,
                     )
                 ),
             ),
             (messages.MessageType.TxAck, btc_tx_ack_output(external_output)),
+            (messages.MessageType.TxAck, btc_tx_ack_meta(1, 2)),
+            (messages.MessageType.TxAck, btc_tx_ack_prev_input()),
+            (messages.MessageType.TxAck, btc_tx_ack_prev_output(100_000, multisig_prevout_script)),
+            (messages.MessageType.TxAck, btc_tx_ack_prev_output(1_000, btc_p2wpkh_script_pubkey())),
         ],
+    )
+    assert_btc_tx_request(valid_multisig_input_responses[3], messages.RequestType.TXMETA, tx_hash=multisig_prev_hash)
+    assert_btc_tx_request(
+        valid_multisig_input_responses[4],
+        messages.RequestType.TXORIGINPUT,
+        request_index=0,
+        tx_hash=multisig_prev_hash,
+    )
+    assert_btc_tx_request(
+        valid_multisig_input_responses[5],
+        messages.RequestType.TXORIGOUTPUT,
+        request_index=0,
+        tx_hash=multisig_prev_hash,
+    )
+    assert_btc_tx_request(
+        valid_multisig_input_responses[6],
+        messages.RequestType.TXORIGOUTPUT,
+        request_index=1,
+        tx_hash=multisig_prev_hash,
     )
     assert_btc_failure(
         valid_multisig_input_responses[-1],
         messages.FailureType.DataError,
-        "BTC valid multisig input remains policy-rejected",
+        "BTC verified multisig input remains signing-disabled",
     )
 
     get_taproot_address_res = run_local_wire_oracle(

@@ -8,9 +8,12 @@
 #include "../confirm_summary.h"
 #include "address.h"
 
+#define BITCOIN_CONFIRM_POLICY_MAX_LEN 32
+
 typedef struct {
     uint32_t path[CHAIN_CONFIRM_MAX_PATH_LEN];
     size_t path_len;
+    char policy[BITCOIN_CONFIRM_POLICY_MAX_LEN];
     char to[BITCOIN_ADDRESS_MAX_LEN];
     uint64_t amount;
     uint64_t change;

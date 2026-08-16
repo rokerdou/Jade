@@ -91,8 +91,11 @@ bool bitcoin_confirm_summary_from_request(const bitcoin_confirm_request_t* const
 
     chain_confirm_summary_init(
         summary, CHAIN_CONFIRM_CHAIN_BITCOIN, CHAIN_CONFIRM_OPERATION_NATIVE_TRANSFER, CHAIN_CONFIRM_FLAG_USER_CONFIRM);
-    return chain_confirm_summary_add_path(
-               summary, CHAIN_CONFIRM_FIELD_PATH, request->path, request->path_len)
+    bool ok = chain_confirm_summary_add_path(summary, CHAIN_CONFIRM_FIELD_PATH, request->path, request->path_len);
+    if (ok && request->policy[0] != '\0') {
+        ok = chain_confirm_summary_add_text(summary, CHAIN_CONFIRM_FIELD_POLICY, request->policy);
+    }
+    return ok
         && chain_confirm_summary_add_text(summary, CHAIN_CONFIRM_FIELD_TO, request->to)
         && chain_confirm_summary_add_text(summary, CHAIN_CONFIRM_FIELD_AMOUNT, amount)
         && chain_confirm_summary_add_text(summary, CHAIN_CONFIRM_FIELD_CHANGE, change)

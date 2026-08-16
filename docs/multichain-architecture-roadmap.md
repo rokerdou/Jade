@@ -207,6 +207,10 @@ main/
   verified prevout script 和 fingerprint；外部 output 必须是 address，找零 output
   必须是同 policy multisig；当前只允许一个外部付款输出，以适配现有
   `bitcoin_confirm_request_t` UI 摘要结构。该路径只生成确认摘要，不接 signer。
+- BTC 多签 `SignTx` 状态机现在把任何 multisig input 都纳入 prev_tx 验证流程。
+  只有 prevout scriptPubKey 与 multisig policy 绑定通过后，才会生成 UI preview。
+  UI 摘要会显示非敏感 `Policy` 文本，例如 `2-of-3 P2WSH`。用户确认后仍然返回
+  `Bitcoin multisig signing disabled`，不会构造 digest，也不会调用 signer。
 - BTC `SignTx.multisig` 仍保持关闭，并有 host gate 明确覆盖：现有 singlesig
   basic signing policy 必须拒绝 `has_multisig` 的 input/output，避免多签地址/xpub
   兼容工作误把多签签名路径打开。

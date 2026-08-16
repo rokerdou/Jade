@@ -4145,7 +4145,7 @@ int main(int argc, char** argv)
 
     CHECK(trezor_bitcoin_signing_apply_tx_ack(&trezor_btc_multisig_capture_state, trezor_btc_multisig_output_ack_payload,
         trezor_btc_multisig_output_ack_payload_len));
-    CHECK(trezor_bitcoin_signing_ready(&trezor_btc_multisig_capture_state));
+    CHECK(trezor_btc_multisig_capture_state.phase == TREZOR_BITCOIN_SIGNING_PHASE_EXPECT_PREV_META);
     CHECK(trezor_btc_multisig_capture_state.outputs_len == 1);
     CHECK(trezor_btc_multisig_capture_state.output_has_multisig_fingerprint[0]);
     CHECK(memcmp(trezor_btc_multisig_capture_state.output_multisig_fingerprints[0],
@@ -4198,6 +4198,7 @@ int main(int argc, char** argv)
     trezor_btc_multisig_preview_state.total_output = 95000;
     trezor_btc_multisig_preview_state.fee = 5000;
     trezor_btc_multisig_preview_state.fee_rate_sats_per_vbyte = 10;
+    trezor_btc_multisig_preview_state.phase = TREZOR_BITCOIN_SIGNING_PHASE_READY;
     trezor_bitcoin_multisig_preview_t trezor_btc_multisig_preview;
     CHECK(trezor_bitcoin_policy_multisig_preview(&trezor_btc_multisig_preview_state, &trezor_btc_multisig_preview));
     CHECK(trezor_btc_multisig_preview.external_outputs == 1);
@@ -4210,7 +4211,15 @@ int main(int argc, char** argv)
     CHECK(trezor_btc_multisig_confirm_request.amount == 90000);
     CHECK(trezor_btc_multisig_confirm_request.change == 5000);
     CHECK(trezor_btc_multisig_confirm_request.fee == 5000);
+    CHECK(strcmp(trezor_btc_multisig_confirm_request.policy, "2-of-2 P2WSH") == 0);
     CHECK(strcmp(trezor_btc_multisig_confirm_request.to, "tb1qw508d6qejxtdg4y5r3zarvary0c5xw7kxpjzsx") == 0);
+    chain_confirm_summary_t trezor_btc_multisig_summary;
+    CHECK(bitcoin_confirm_summary_from_request(&trezor_btc_multisig_confirm_request, &trezor_btc_multisig_summary));
+    const chain_confirm_field_t* const trezor_btc_multisig_policy
+        = find_confirm_field(&trezor_btc_multisig_summary, CHAIN_CONFIRM_FIELD_POLICY);
+    CHECK(trezor_btc_multisig_policy && trezor_btc_multisig_policy->value_type == CHAIN_CONFIRM_VALUE_TEXT);
+    CHECK(strcmp(trezor_btc_multisig_policy->value.text, "2-of-2 P2WSH") == 0);
+    CHECK(test_confirm_summary_fits_tdisplay_s3(&trezor_btc_multisig_summary));
     trezor_btc_multisig_preview_state.inputs[0].has_verified_prevout_script = false;
     CHECK(!trezor_bitcoin_policy_multisig_preview(&trezor_btc_multisig_preview_state, &trezor_btc_multisig_preview));
     trezor_btc_multisig_preview_state.inputs[0].has_verified_prevout_script = true;
@@ -5390,15 +5399,15 @@ int main(int argc, char** argv)
     CHECK(trezor_session_handle_payload(&trezor_session, TREZOR_MSG_TX_ACK, trezor_btc_multisig_output_ack_payload,
         trezor_btc_multisig_output_ack_payload_len, &session_response_type, session_response_payload,
         sizeof(session_response_payload), &session_response_payload_len));
-    CHECK(session_response_type == TREZOR_MSG_FAILURE);
-    CHECK(!trezor_session_state.has_pending_btc_signing);
+    CHECK(session_response_type == TREZOR_MSG_TX_REQUEST);
+    CHECK(trezor_session_state.has_pending_btc_signing);
     CHECK(!trezor_session_state.has_pending_btc_signed_tx);
     CHECK(g_trezor_btc_confirm_calls == 0);
     CHECK(g_trezor_btc_sign_calls == 0);
     CHECK(trezor_payload_has_varint(
-        session_response_payload, session_response_payload_len, 1, TREZOR_FAILURE_DATA_ERROR));
-    CHECK(trezor_payload_contains_bytes(session_response_payload, session_response_payload_len,
-        (const uint8_t*)"Bitcoin multisig signing disabled", strlen("Bitcoin multisig signing disabled")));
+        session_response_payload, session_response_payload_len, 1, TREZOR_BITCOIN_REQUEST_TXMETA));
+    trezor_bitcoin_signing_reset(&trezor_session_state.pending_btc_signing);
+    trezor_session_state.has_pending_btc_signing = false;
 
     trezor_protobuf_writer_init(&trezor_bitcoin_writer, trezor_bitcoin_payload, sizeof(trezor_bitcoin_payload));
     for (size_t i = 0; i < ARRAY_LEN(btc_state_path); ++i) {
