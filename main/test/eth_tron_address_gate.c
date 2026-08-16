@@ -589,6 +589,50 @@ static bool write_test_trezor_hd_node(trezor_protobuf_writer_t* const writer, co
         && trezor_protobuf_write_bytes_field(writer, 4, node_payload, node_writer.len);
 }
 
+static bool make_test_trezor_multisig_private_key_payload(
+    const uint32_t multisig_node_field, uint8_t* const output, const size_t output_len, size_t* const written)
+{
+    if (!output || !written || (multisig_node_field != 1U && multisig_node_field != 4U)) {
+        return false;
+    }
+
+    uint8_t node_payload[160];
+    uint8_t chain_code[WALLY_BIP32_CHAIN_CODE_LEN];
+    uint8_t private_key[EC_PRIVATE_KEY_LEN];
+    trezor_protobuf_writer_t node_writer;
+    memset(chain_code, 0x33, sizeof(chain_code));
+    memset(private_key, 0x44, sizeof(private_key));
+    trezor_protobuf_writer_init(&node_writer, node_payload, sizeof(node_payload));
+    bool ok = trezor_protobuf_write_varint_field(&node_writer, 1, 3)
+        && trezor_protobuf_write_varint_field(&node_writer, 2, 0x11223344U)
+        && trezor_protobuf_write_varint_field(&node_writer, 3, 0x80000030U)
+        && trezor_protobuf_write_bytes_field(&node_writer, 4, chain_code, sizeof(chain_code))
+        && trezor_protobuf_write_bytes_field(&node_writer, 5, private_key, sizeof(private_key))
+        && trezor_protobuf_write_bytes_field(&node_writer, 6, PRIVATE_KEY_ONE_COMPRESSED_PUBKEY,
+            sizeof(PRIVATE_KEY_ONE_COMPRESSED_PUBKEY));
+
+    trezor_protobuf_writer_t writer;
+    trezor_protobuf_writer_init(&writer, output, output_len);
+    if (ok && multisig_node_field == 1U) {
+        uint8_t node_path_payload[192];
+        trezor_protobuf_writer_t node_path_writer;
+        trezor_protobuf_writer_init(&node_path_writer, node_path_payload, sizeof(node_path_payload));
+        ok = trezor_protobuf_write_bytes_field(&node_path_writer, 1, node_payload, node_writer.len)
+            && trezor_protobuf_write_bytes_field(&writer, 1, node_path_payload, node_path_writer.len);
+        wally_bzero(node_path_payload, sizeof(node_path_payload));
+    } else if (ok) {
+        ok = trezor_protobuf_write_bytes_field(&writer, 4, node_payload, node_writer.len);
+    }
+    ok = ok && trezor_protobuf_write_varint_field(&writer, 3, 1)
+        && trezor_protobuf_write_varint_field(&writer, 6, 1);
+
+    wally_bzero(node_payload, sizeof(node_payload));
+    wally_bzero(chain_code, sizeof(chain_code));
+    wally_bzero(private_key, sizeof(private_key));
+    *written = ok ? writer.len : 0;
+    return ok;
+}
+
 static bool make_test_trezor_multisig_payload(uint8_t* const output, const size_t output_len, size_t* const written)
 {
     if (!output || !written) {
@@ -3798,6 +3842,20 @@ int main(int argc, char** argv)
     CHECK(memcmp(trezor_btc_multisig_p2wsh_policy.fingerprint, trezor_btc_multisig_p2sh_policy.fingerprint,
               SHA256_LEN)
         == 0);
+    uint8_t trezor_btc_private_multisig_payload[512];
+    size_t trezor_btc_private_multisig_payload_len = 0;
+    trezor_bitcoin_multisig_t trezor_btc_private_multisig;
+    wally_bzero(&trezor_btc_private_multisig, sizeof(trezor_btc_private_multisig));
+    CHECK(make_test_trezor_multisig_private_key_payload(1, trezor_btc_private_multisig_payload,
+        sizeof(trezor_btc_private_multisig_payload), &trezor_btc_private_multisig_payload_len));
+    CHECK(!trezor_bitcoin_multisig_decode(trezor_btc_private_multisig_payload,
+        trezor_btc_private_multisig_payload_len, &trezor_btc_private_multisig));
+    CHECK(make_test_trezor_multisig_private_key_payload(4, trezor_btc_private_multisig_payload,
+        sizeof(trezor_btc_private_multisig_payload), &trezor_btc_private_multisig_payload_len));
+    CHECK(!trezor_bitcoin_multisig_decode(trezor_btc_private_multisig_payload,
+        trezor_btc_private_multisig_payload_len, &trezor_btc_private_multisig));
+    wally_bzero(trezor_btc_private_multisig_payload, sizeof(trezor_btc_private_multisig_payload));
+    wally_bzero(&trezor_btc_private_multisig, sizeof(trezor_btc_private_multisig));
 
     uint8_t trezor_btc_multisig_input_payload[768];
     uint8_t trezor_btc_multisig_output_payload[768];
