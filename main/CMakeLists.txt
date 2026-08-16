@@ -132,6 +132,7 @@ if(HOST_CC)
             ${COMPONENT_DIR}/chains/ethereum/confirm.c
             ${COMPONENT_DIR}/chains/ethereum/digest.c
             ${COMPONENT_DIR}/chains/ethereum/path.c
+            ${COMPONENT_DIR}/chains/ethereum/safe_tx.c
             ${COMPONENT_DIR}/chains/ethereum/sign.c
             ${COMPONENT_DIR}/chains/ethereum/tx.c
             ${COMPONENT_DIR}/chains/ethereum/tx_request.c
@@ -194,6 +195,8 @@ if(HOST_CC)
             ${COMPONENT_DIR}/chains/ethereum/digest.h
             ${COMPONENT_DIR}/chains/ethereum/path.c
             ${COMPONENT_DIR}/chains/ethereum/path.h
+            ${COMPONENT_DIR}/chains/ethereum/safe_tx.c
+            ${COMPONENT_DIR}/chains/ethereum/safe_tx.h
             ${COMPONENT_DIR}/chains/ethereum/sign.c
             ${COMPONENT_DIR}/chains/ethereum/sign.h
             ${COMPONENT_DIR}/chains/ethereum/tx.c

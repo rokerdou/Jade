@@ -186,6 +186,138 @@ main/
 - 新增 signer 只能调用 `wallet_core_sign_digest_ecdsa_recoverable()` 或未来统一 signer API。
 - 不允许新增 `get_private_key()`、`wallet_get_hdkey(... PRIVATE ...)` 到链层/协议层。
 
+### Phase EVM-Safe: Safe 2/3 多签与 USDT 签名
+
+目标：支持 Safe 2-of-3 这类 EVM 多签使用场景时，设备只作为其中一个
+Safe owner 签名，不在固件内管理多个 owner 私钥，也不尝试替代 Safe 合约
+threshold 逻辑。固件要做的是解析并确认 SafeTx，再对 EIP-712 digest 签名。
+
+参考优先级：
+
+- Safe 官方合约/文档与 EIP-712 规范。
+- Safe 官方 `safe-cli` / `safe-eth-py`：作为第三方 oracle 和 host gate
+  数据来源。尤其参考 `SafeTx.eip712_structured_data`、
+  `safe_eth.eth.eip712.eip712_encode()`、
+  `trezorlib.ethereum.sign_typed_data_hash()` 的使用方式。
+- Trezor official `EthereumSignTypedData` / `EthereumSignTypedHash`
+  protobuf 和 Connect 行为。
+- OneKey Pro 的 Safe 实践只作架构参考：
+  `core/src/apps/ethereum/onekey/sign_safe_tx.py` 把 SafeTx 作为
+  typed-data 子路径处理，`messages-ethereum-eip712-onekey.proto` 用
+  `EthereumGnosisSafeTxRequest/Ack` 拉取 SafeTx 字段；这个分层思路值得吸收，
+  但 OneKey 私有 message id 不能当作 MetaMask/Trezor 标准。
+
+隔离原则：
+
+- 不改现有 `EthereumSignTx` / `EthereumSignTxEIP1559` 普通 ETH/ERC20
+  签名主流程。
+- 新增 Safe 能力放在独立子路径：
+
+```text
+protocols/trezor/ethereum/typed_data.*
+  -> protocols/trezor/ethereum/safe_normalizer.*
+  -> chains/ethereum/eip712.*
+  -> chains/ethereum/safe_tx.*
+  -> chains/ethereum/safe_confirm.*
+  -> wallet_core_sign_digest_ecdsa_recoverable()
+```
+
+- 普通 ETH 交易继续走：
+
+```text
+protocols/trezor/ethereum/normalizer.*
+  -> chains/ethereum/tx_request.*
+  -> chains/ethereum/tx/digest/confirm/sign.*
+```
+
+- `chains/ethereum/safe_*` 只能接收已归一化的 SafeTx 字段，不能直接解析
+  Trezor wire，也不能调用 seed/mnemonic/xpriv/raw private key API。
+- `protocols/trezor/ethereum/typed_data.*` 只负责 message decode/encode 和
+  session 状态，不直接生成 UI 文案，不直接调用 signer。
+
+trezorlib / Safe CLI 兼容路径：
+
+- `trezorlib` 不直接理解 Safe 2/3 threshold，也不校验 Safe owners；Safe
+  语义由 `safe-cli` / `safe-eth-py` 生成的 `SafeTx.eip712_structured_data`
+  承担。
+- `safe-cli` 的硬件钱包路径会先用
+  `safe_eth.eth.eip712.eip712_encode(eip712_message)` 生成
+  `domain_hash` 和 `message_hash`，再调用
+  `trezorlib.ethereum.sign_typed_data_hash(client, n, domain_hash, message_hash)`。
+- `trezorlib.sign_typed_data_hash()` 发出的设备消息是
+  `EthereumSignTypedHash`，字段为：
+  - `address_n`
+  - `domain_separator_hash`
+  - `message_hash`
+  - optional `encoded_network`
+  设备应返回 `EthereumTypedDataSignature(address, signature)`。
+- 因此首版硬件通信优先级是：
+  1. 实现 `EthereumSignTypedHash`，兼容 Safe CLI / trezorlib 的 SafeTx
+     签名路径。
+  2. 在 host gate 中用 `safe-cli` 生成 SafeTx hash，用设备/本机 harness
+     返回签名，再用第三方库 recover signer。
+  3. 后续再实现完整 `EthereumSignTypedData` 的
+     `StructRequest/StructAck/ValueRequest/ValueAck` 交互流，供 MetaMask
+     或其他 dApp 直接传 typed data 时使用。
+- 风险限制：如果只有 `domain_hash/message_hash` 而没有完整 SafeTx 字段，
+  设备不能展示 USDT 收款人/金额等人类可读内容。首版若走 hash-only
+  模式，必须同时要求 host 提供可校验 SafeTx payload，或把 hash-only
+  签名限制为“显示 domain/message hash 的高级模式”，默认不用于资金转账。
+
+首版安全子集：
+
+- 只开放 `primaryType == "SafeTx"`。
+- 只开放 SafeTx 字段：
+  `to/value/data/operation/safeTxGas/baseGas/gasPrice/gasToken/refundReceiver/nonce`。
+- `domain.chainId` 必须非零，`domain.verifyingContract` 必须是 20 字节地址。
+- `operation == CALL` 才默认允许；`DELEGATE_CALL` 首版拒绝，后续若开放必须
+  单独强提示和门禁。
+- SafeTx `data` 首版只清晰解析：
+  - ERC20 `transfer(address,uint256)`
+  - ERC20 `approve(address,uint256)`
+  - 空 calldata / native value transfer
+- USDT 这类 token metadata 必须绑定 `chain_id + token_contract + decimals`。
+  未知 token 不得显示可信 symbol，只显示合约地址和 raw uint256 amount。
+- 固件不联网查询 Safe owners/threshold。若要显示 2/3 owner policy，必须由
+  主机提供 Safe 配置并让用户确认，或由设备缓存用户确认过的 Safe policy。
+  在没有可信 policy 时，屏幕必须明确显示“Signing as owner”和 Safe 地址，
+  不能假装已验证完整 2/3 成员集合。
+
+必须门禁：
+
+- `safe-cli` / `safe-eth-py` oracle：
+  构造 SafeTx、USDT transfer、USDT approve，生成
+  `domain_hash/message_hash/safe_tx_hash`，与本仓 C 实现逐字节比对。
+- `ethers.js` 或 `viem` oracle：
+  独立计算 EIP-712 hash、ABI decode、signature recover，避免只用 Safe
+  Python 栈自测。
+- Trezor protocol host harness：
+  模拟 `EthereumSignTypedHash` 或 `EthereumSignTypedData` 请求，验证
+  `EthereumTypedDataSignature` 返回格式、address、signature recover。
+- UI 摘要门禁：
+  Safe 地址、owner 地址、chain id、nonce、operation、to/value、
+  token contract、recipient/spender、amount、gasToken/refundReceiver、
+  safeTxGas/baseGas/gasPrice、SafeTx hash 每页行数不能超过 T-Display-S3
+  当前 dialogs 限制。
+- 负向门禁：
+  缺字段、超长 calldata、畸形 uint256、错误地址长度、未知 primary type、
+  非零/异常 gas token、delegatecall、chainId/domain mismatch、token metadata
+  contract mismatch 均必须拒绝或进入明确强提示策略。
+
+后续分阶段：
+
+1. Host-only Safe oracle gate：只新增测试脚本，不碰固件签名路径。
+2. `chains/ethereum/eip712.*`：实现 SafeTx 最小 hash 子集，并用
+   `safe-cli`/`ethers` 双 oracle 对照。
+3. `chains/ethereum/safe_tx.*`：实现 SafeTx 字段校验和 ERC20/USDT 摘要模型。
+4. `protocols/trezor/ethereum/typed_data.*`：接入 Trezor
+   `EthereumSignTypedHash`，优先支持 host 已提供
+   `domain_separator_hash/message_hash` 的模式。
+5. UI 确认和硬件签名：确认通过后只调用统一 digest signer，返回
+   `EthereumTypedDataSignature`。
+6. 再评估完整 `EthereumSignTypedData` struct/value request flow、Safe
+   `execTransaction` raw transaction 解析、Safe message signing。
+
 ### Phase 1: 拆 BTC 协议层大文件
 
 目标：把 `main/protocols/trezor/bitcoin/protocol.c` 拆成 OneKey 风格的职责模块，但每一步只迁一类逻辑。

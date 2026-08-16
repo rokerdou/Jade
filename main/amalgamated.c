@@ -39,6 +39,7 @@ void __wrap_abort(void);
 #include "./chains/ethereum/confirm.c"
 #include "./chains/ethereum/digest.c"
 #include "./chains/ethereum/path.c"
+#include "./chains/ethereum/safe_tx.c"
 #include "./chains/ethereum/sign.c"
 #include "./chains/ethereum/tx.c"
 #include "./chains/ethereum/tx_request.c"

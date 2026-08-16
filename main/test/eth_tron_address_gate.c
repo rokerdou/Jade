@@ -7,6 +7,7 @@
 #include "chains/ethereum/confirm.h"
 #include "chains/ethereum/digest.h"
 #include "chains/ethereum/path.h"
+#include "chains/ethereum/safe_tx.h"
 #include "chains/ethereum/sign.h"
 #include "chains/ethereum/tx.h"
 #include "chains/ethereum/tx_request.h"
@@ -115,6 +116,34 @@ static const uint8_t EXPECTED_ETH_ADDRESS[ETHEREUM_ADDRESS_LEN] = { 0x7e, 0x5f, 
 
 static const uint8_t EXPECTED_TRON_ADDRESS[TRON_ADDRESS_LEN] = { 0x41, 0x7e, 0x5f, 0x45, 0x52, 0x09, 0x1a, 0x69, 0x12,
     0x5d, 0x5d, 0xfc, 0xb7, 0xb8, 0xc2, 0x65, 0x90, 0x29, 0x39, 0x5b, 0xdf };
+
+static const uint8_t SAFE_TEST_ADDRESS[ETHEREUM_ADDRESS_LEN]
+    = { 0x12, 0x34, 0x56, 0x78, 0x90, 0xab, 0xcd, 0xef, 0x12, 0x34,
+          0x56, 0x78, 0x90, 0xab, 0xcd, 0xef, 0x12, 0x34, 0x56, 0x78 };
+
+static const uint8_t SAFE_TEST_USDT_ADDRESS[ETHEREUM_ADDRESS_LEN]
+    = { 0xda, 0xc1, 0x7f, 0x95, 0x8d, 0x2e, 0xe5, 0x23, 0xa2, 0x20,
+          0x62, 0x06, 0x99, 0x45, 0x97, 0xc1, 0x3d, 0x83, 0x1e, 0xc7 };
+
+static const uint8_t SAFE_TEST_RECIPIENT[ETHEREUM_ADDRESS_LEN]
+    = { 0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11,
+          0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11 };
+
+static const uint8_t EXPECTED_SAFE_DOMAIN_HASH[KECCAK256_LEN]
+    = { 0x5c, 0x92, 0xda, 0xda, 0xda, 0x03, 0x78, 0xbc, 0x05, 0xc7, 0x4d, 0x0b, 0x8f, 0x6f, 0x2f, 0xd8,
+          0x7d, 0xc3, 0x54, 0xb8, 0x2d, 0x31, 0x45, 0xea, 0x56, 0x2a, 0x3b, 0xe6, 0x3d, 0x0c, 0x78, 0x00 };
+
+static const uint8_t EXPECTED_SAFE_MESSAGE_HASH[KECCAK256_LEN]
+    = { 0xbc, 0x7c, 0x1a, 0xe4, 0xea, 0x1f, 0x3a, 0xc5, 0x35, 0xd6, 0xca, 0x97, 0xc5, 0xfb, 0xd5, 0x39,
+          0x51, 0x6e, 0xfb, 0x90, 0x3c, 0x73, 0xda, 0x7a, 0x84, 0x3c, 0xa5, 0xa6, 0xff, 0xdb, 0x76, 0xf7 };
+
+static const uint8_t EXPECTED_SAFE_SIGNING_HASH[KECCAK256_LEN]
+    = { 0x35, 0x2d, 0x31, 0x8c, 0x28, 0x51, 0x79, 0xfb, 0x67, 0xc3, 0xa9, 0xaa, 0x1c, 0xcd, 0x10, 0x8d,
+          0x7f, 0x1c, 0xbf, 0x0f, 0x89, 0x0f, 0x02, 0xa1, 0xbe, 0x24, 0x09, 0xcf, 0x25, 0x7d, 0x29, 0x33 };
+
+static const uint8_t EXPECTED_SAFE_CALLDATA_HASH[KECCAK256_LEN]
+    = { 0x5a, 0x2e, 0x4f, 0x8e, 0xc4, 0x58, 0xf1, 0x46, 0x93, 0xf8, 0x37, 0x2d, 0xb3, 0xad, 0x9a, 0xb5,
+          0x3a, 0x81, 0x88, 0x7c, 0x99, 0x2d, 0xe1, 0x86, 0xcc, 0x9e, 0x1e, 0x50, 0xfe, 0x61, 0x9d, 0x73 };
 
 static const uint8_t EXPECTED_KECCAK256_EMPTY[KECCAK256_LEN]
     = { 0xc5, 0xd2, 0x46, 0x01, 0x86, 0xf7, 0x23, 0x3c, 0x92, 0x7e, 0x7d, 0xb2, 0xdc, 0xc7, 0x03, 0xc0, 0xe5, 0x00,
@@ -880,6 +909,36 @@ static void write_u32_be(uint8_t output[4], const uint32_t value)
     output[1] = (uint8_t)(value >> 16);
     output[2] = (uint8_t)(value >> 8);
     output[3] = (uint8_t)value;
+}
+
+static void write_u256_u64(uint8_t output[EVM_ABI_WORD_LEN], uint64_t value)
+{
+    memset(output, 0, EVM_ABI_WORD_LEN);
+    for (size_t i = 0; i < sizeof(value); ++i) {
+        output[EVM_ABI_WORD_LEN - 1U - i] = (uint8_t)value;
+        value >>= 8;
+    }
+}
+
+static ethereum_safe_tx_t make_safe_usdt_transfer(uint8_t data[EVM_ABI_ADDRESS_UINT256_CALL_LEN])
+{
+    uint8_t amount[EVM_ABI_WORD_LEN];
+    write_u256_u64(amount, 1234567);
+    make_erc20_address_uint256_call(0xa9, 0x05, 0x9c, 0xbb, SAFE_TEST_RECIPIENT, amount, data);
+
+    ethereum_safe_tx_t tx;
+    memset(&tx, 0, sizeof(tx));
+    tx.chain_id = 1;
+    memcpy(tx.verifying_contract, SAFE_TEST_ADDRESS, sizeof(tx.verifying_contract));
+    memcpy(tx.to, SAFE_TEST_USDT_ADDRESS, sizeof(tx.to));
+    tx.data = data;
+    tx.data_len = EVM_ABI_ADDRESS_UINT256_CALL_LEN;
+    tx.operation = ETHEREUM_SAFE_TX_OPERATION_CALL;
+    write_u256_u64(tx.safe_tx_gas, 50000);
+    write_u256_u64(tx.base_gas, 21000);
+    write_u256_u64(tx.gas_price, 1000000000ULL);
+    write_u256_u64(tx.nonce, 7);
+    return tx;
 }
 
 static bool make_signed_eth_token_definition(const uint8_t address[ETHEREUM_ADDRESS_LEN], const uint64_t chain_id,
@@ -2144,6 +2203,23 @@ static int dump_oracle_vectors(void)
     print_hex_value("erc20_transfer_call", erc20_transfer_data, sizeof(erc20_transfer_data));
     print_hex_value("erc20_approve_call", erc20_approve_data, sizeof(erc20_approve_data));
 
+    uint8_t safe_transfer_data[EVM_ABI_ADDRESS_UINT256_CALL_LEN];
+    ethereum_safe_tx_t safe_tx = make_safe_usdt_transfer(safe_transfer_data);
+    uint8_t safe_hash[KECCAK256_LEN];
+    if (!ethereum_safe_tx_domain_separator_hash(safe_tx.chain_id, safe_tx.verifying_contract, safe_hash)) {
+        return 1;
+    }
+    print_hex_value("safe_domain_hash", safe_hash, sizeof(safe_hash));
+    if (!ethereum_safe_tx_message_hash(&safe_tx, safe_hash)) {
+        return 1;
+    }
+    print_hex_value("safe_message_hash", safe_hash, sizeof(safe_hash));
+    if (!ethereum_safe_tx_signing_hash(&safe_tx, safe_hash)) {
+        return 1;
+    }
+    print_hex_value("safe_signing_hash", safe_hash, sizeof(safe_hash));
+    print_hex_value("safe_usdt_transfer_call", safe_transfer_data, sizeof(safe_transfer_data));
+
     uint8_t token_contract[ETHEREUM_ADDRESS_LEN];
     memset(token_contract, 0x11, sizeof(token_contract));
     uint8_t signed_token_definition[256];
@@ -2229,6 +2305,30 @@ int main(int argc, char** argv)
     CHECK(!ethereum_path_is_supported(
         eth_account_too_high, sizeof(eth_account_too_high) / sizeof(eth_account_too_high[0])));
     CHECK(!ethereum_path_is_supported(eth_index_too_high, sizeof(eth_index_too_high) / sizeof(eth_index_too_high[0])));
+
+    uint8_t safe_transfer_data[EVM_ABI_ADDRESS_UINT256_CALL_LEN];
+    ethereum_safe_tx_t safe_tx = make_safe_usdt_transfer(safe_transfer_data);
+    uint8_t safe_hash[KECCAK256_LEN];
+    ethereum_safe_tx_summary_t safe_summary;
+    CHECK(ethereum_safe_tx_validate(&safe_tx));
+    CHECK(ethereum_safe_tx_domain_separator_hash(safe_tx.chain_id, safe_tx.verifying_contract, safe_hash));
+    CHECK(memcmp(safe_hash, EXPECTED_SAFE_DOMAIN_HASH, sizeof(safe_hash)) == 0);
+    CHECK(ethereum_safe_tx_message_hash(&safe_tx, safe_hash));
+    CHECK(memcmp(safe_hash, EXPECTED_SAFE_MESSAGE_HASH, sizeof(safe_hash)) == 0);
+    CHECK(ethereum_safe_tx_signing_hash(&safe_tx, safe_hash));
+    CHECK(memcmp(safe_hash, EXPECTED_SAFE_SIGNING_HASH, sizeof(safe_hash)) == 0);
+    CHECK(ethereum_safe_tx_preflight(&safe_tx, &safe_summary));
+    CHECK(safe_summary.type == ETHEREUM_SAFE_TX_SUMMARY_ERC20_TRANSFER);
+    CHECK(memcmp(safe_summary.safe_address, SAFE_TEST_ADDRESS, sizeof(SAFE_TEST_ADDRESS)) == 0);
+    CHECK(memcmp(safe_summary.token_contract, SAFE_TEST_USDT_ADDRESS, sizeof(SAFE_TEST_USDT_ADDRESS)) == 0);
+    CHECK(memcmp(safe_summary.token_recipient, SAFE_TEST_RECIPIENT, sizeof(SAFE_TEST_RECIPIENT)) == 0);
+    CHECK(memcmp(safe_summary.calldata_hash, EXPECTED_SAFE_CALLDATA_HASH, sizeof(EXPECTED_SAFE_CALLDATA_HASH)) == 0);
+    safe_tx.operation = ETHEREUM_SAFE_TX_OPERATION_DELEGATE_CALL;
+    CHECK(ethereum_safe_tx_validate(&safe_tx));
+    CHECK(!ethereum_safe_tx_preflight(&safe_tx, &safe_summary));
+    safe_tx.operation = ETHEREUM_SAFE_TX_OPERATION_CALL;
+    safe_tx.data_len = ETHEREUM_SAFE_TX_MAX_DATA_LEN + 1U;
+    CHECK(!ethereum_safe_tx_validate(&safe_tx));
 
     const uint32_t btc_state_path[]
         = { chain_path_harden(44), chain_path_harden(1), chain_path_harden(0), 0, 0 };

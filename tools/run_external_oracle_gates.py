@@ -14,12 +14,15 @@ from pathlib import Path
 
 import base58
 import rlp
+import safe_cli
 from bech32 import bech32_encode, convertbits
 from eth_account import Account
+from eth_account.messages import encode_typed_data
 from eth_account.typed_transactions import TypedTransaction
 from eth_abi import decode as abi_decode
 from eth_keys import keys
 from eth_utils import keccak, to_checksum_address
+from safe_eth.eth.eip712 import eip712_encode, eip712_encode_hash
 from ecdsa import SECP256k1, SigningKey, VerifyingKey, util as ecdsa_util
 from trezorlib import messages, protobuf
 
@@ -33,6 +36,49 @@ WIRE_CONT_HEADER_LEN = 1
 WIRE_MARKER = 0x3F
 WIRE_MAGIC = 0x23
 ONEKEY_SIGN_PSBT_MESSAGE_TYPE = 10052
+
+
+def safe_usdt_transfer_typed_data() -> dict[str, object]:
+    recipient = "0x1111111111111111111111111111111111111111"
+    amount = 1_234_567
+    calldata = "0xa9059cbb" + ("0" * 24) + recipient[2:] + amount.to_bytes(32, "big").hex()
+    return {
+        "types": {
+            "EIP712Domain": [
+                {"name": "chainId", "type": "uint256"},
+                {"name": "verifyingContract", "type": "address"},
+            ],
+            "SafeTx": [
+                {"name": "to", "type": "address"},
+                {"name": "value", "type": "uint256"},
+                {"name": "data", "type": "bytes"},
+                {"name": "operation", "type": "uint8"},
+                {"name": "safeTxGas", "type": "uint256"},
+                {"name": "baseGas", "type": "uint256"},
+                {"name": "gasPrice", "type": "uint256"},
+                {"name": "gasToken", "type": "address"},
+                {"name": "refundReceiver", "type": "address"},
+                {"name": "nonce", "type": "uint256"},
+            ],
+        },
+        "primaryType": "SafeTx",
+        "domain": {
+            "chainId": 1,
+            "verifyingContract": "0x1234567890abcdef1234567890abcdef12345678",
+        },
+        "message": {
+            "to": "0xdAC17F958D2ee523a2206206994597C13D831ec7",
+            "value": 0,
+            "data": calldata,
+            "operation": 0,
+            "safeTxGas": 50_000,
+            "baseGas": 21_000,
+            "gasPrice": 1_000_000_000,
+            "gasToken": "0x0000000000000000000000000000000000000000",
+            "refundReceiver": "0x0000000000000000000000000000000000000000",
+            "nonce": 7,
+        },
+    }
 
 
 def parse_vectors(output: str) -> dict[str, str]:
@@ -138,6 +184,9 @@ def decode_legacy_raw_tx(raw_tx: bytes) -> dict[str, object]:
 
 
 def expected_vectors() -> dict[str, str]:
+    if not safe_cli.__file__:
+        raise AssertionError("safe-cli import failed")
+
     private_key = keys.PrivateKey(PRIVATE_KEY_ONE)
     public_key = private_key.public_key
     eth_address_bytes = public_key.to_canonical_address()
@@ -180,6 +229,18 @@ def expected_vectors() -> dict[str, str]:
     erc20_address_arg = b"\x00" * 12 + erc20_recipient
     transfer_selector = keccak(text="transfer(address,uint256)")[:4]
     approve_selector = keccak(text="approve(address,uint256)")[:4]
+    safe_typed_data = safe_usdt_transfer_typed_data()
+    safe_magic, safe_domain_hash, safe_message_hash = eip712_encode(safe_typed_data)
+    safe_signable = encode_typed_data(full_message=safe_typed_data)
+    safe_signing_hash = eip712_encode_hash(safe_typed_data)
+    eth_account_safe_hash = keccak(b"\x19" + safe_signable.version + safe_signable.header + safe_signable.body)
+    if safe_magic != b"\x19\x01":
+        raise AssertionError(f"safe-eth-py EIP712 magic mismatch: {safe_magic.hex()}")
+    if safe_signable.header != safe_domain_hash or safe_signable.body != safe_message_hash:
+        raise AssertionError("safe-eth-py and eth-account SafeTx domain/message hashes differ")
+    if eth_account_safe_hash != safe_signing_hash:
+        raise AssertionError("safe-eth-py and eth-account SafeTx signing hashes differ")
+    safe_calldata = bytes.fromhex(str(safe_typed_data["message"]["data"])[2:])
 
     return {
         "eth_checksum_address": eth_checksum,
@@ -197,6 +258,10 @@ def expected_vectors() -> dict[str, str]:
         "eth_eip1559_signing_payload": eip1559_payload.hex(),
         "erc20_transfer_call": (transfer_selector + erc20_address_arg + erc20_amount).hex(),
         "erc20_approve_call": (approve_selector + erc20_address_arg + erc20_amount).hex(),
+        "safe_domain_hash": safe_domain_hash.hex(),
+        "safe_message_hash": safe_message_hash.hex(),
+        "safe_signing_hash": safe_signing_hash.hex(),
+        "safe_usdt_transfer_call": safe_calldata.hex(),
     }
 
 
