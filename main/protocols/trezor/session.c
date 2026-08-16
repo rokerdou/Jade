@@ -657,12 +657,22 @@ static bool trezor_session_handle_payload_ex(const trezor_session_t* const sessi
         wally_bzero(signing_hash, sizeof(signing_hash));
         wally_bzero(&summary, sizeof(summary));
         trezor_trace_set_stage("safe:ack_decode");
+        trezor_ethereum_typed_data_signature_t signature;
+        wally_bzero(&signature, sizeof(signature));
+
         bool ok = trezor_ethereum_safe_tx_ack_decode(request_payload, request_payload_len, &ack);
         trezor_trace_set_stage(ok ? "safe:bind" : "safe:ack_decode_fail");
         ok = ok
             && trezor_ethereum_safe_typed_hash_bind(
                 &session->state->pending_eth_safe_typed_hash, &ack.tx, signing_hash, &summary);
         trezor_trace_set_stage(ok ? "safe:bound" : "safe:bind_fail");
+        if (ok) {
+            trezor_trace_set_stage("safe:sign");
+            ok = session->sign_eth_safe_tx
+                && session->sign_eth_safe_tx(session->sign_eth_safe_tx_ctx,
+                    &session->state->pending_eth_safe_typed_hash, &ack.tx, &summary, signing_hash, &signature);
+            trezor_trace_set_stage(ok ? "safe:signed" : "safe:sign_fail");
+        }
         session->state->has_pending_eth_safe_typed_hash = false;
         wally_bzero(&session->state->pending_eth_safe_typed_hash,
             sizeof(session->state->pending_eth_safe_typed_hash));
@@ -670,11 +680,20 @@ static bool trezor_session_handle_payload_ex(const trezor_session_t* const sessi
         wally_bzero(signing_hash, sizeof(signing_hash));
         wally_bzero(&summary, sizeof(summary));
         if (!ok) {
+            wally_bzero(&signature, sizeof(signature));
             return trezor_session_failure_payload(TREZOR_FAILURE_DATA_ERROR, "Invalid SafeTx payload", response_type,
                 response_payload, response_payload_len, response_payload_written);
         }
-        return trezor_session_failure_payload(TREZOR_FAILURE_DATA_ERROR, "SafeTx UI/signing not enabled",
-            response_type, response_payload, response_payload_len, response_payload_written);
+        *response_type = TREZOR_MSG_ETHEREUM_TYPED_DATA_SIGNATURE;
+        trezor_trace_set_stage("safe:encode_sig");
+        ok = trezor_ethereum_typed_data_signature_encode(
+            &signature, response_payload, response_payload_len, response_payload_written);
+        trezor_trace_set_stage(ok ? "safe:encoded" : "safe:encode_fail");
+        if (ok && response_event) {
+            *response_event = TREZOR_SESSION_RESPONSE_EVENT_SIGNED_RESULT;
+        }
+        wally_bzero(&signature, sizeof(signature));
+        return ok;
     }
 
     if (request_type == TREZOR_MSG_ETHEREUM_SIGN_TX || request_type == TREZOR_MSG_ETHEREUM_SIGN_TX_EIP1559) {

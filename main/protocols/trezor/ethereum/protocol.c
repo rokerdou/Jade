@@ -601,4 +601,23 @@ bool trezor_ethereum_tx_request_encode_signature(const ethereum_signature_t* con
     *written = writer.len;
     return true;
 }
+
+bool trezor_ethereum_typed_data_signature_encode(const trezor_ethereum_typed_data_signature_t* const signature,
+    uint8_t* const output, const size_t output_len, size_t* const written)
+{
+    if (!signature || !output || !written || signature->signature[64] > 1U || signature->address[0] == '\0'
+        || strnlen(signature->address, sizeof(signature->address)) >= sizeof(signature->address)) {
+        return false;
+    }
+
+    trezor_protobuf_writer_t writer;
+    trezor_protobuf_writer_init(&writer, output, output_len);
+    if (!trezor_protobuf_write_bytes_field(&writer, 1, signature->signature, sizeof(signature->signature))
+        || !trezor_protobuf_write_string_field(&writer, 2, signature->address)) {
+        wally_bzero(output, output_len);
+        return false;
+    }
+    *written = writer.len;
+    return true;
+}
 #endif /* AMALGAMATED_BUILD */

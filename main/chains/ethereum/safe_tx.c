@@ -3,8 +3,12 @@
 
 #include "../../crypto/keccak256.h"
 
+#include <stdio.h>
 #include <string.h>
 #include <wally_crypto.h>
+
+#define ETHEREUM_SAFE_UINT256_DECIMAL_MAX_LEN 78
+#define ETHEREUM_SAFE_AMOUNT_TEXT_MAX_LEN (ETHEREUM_SAFE_UINT256_DECIMAL_MAX_LEN + 13)
 
 static const uint8_t ETHEREUM_SAFE_DOMAIN_TYPEHASH[KECCAK256_LEN]
     = { 0x47, 0xe7, 0x95, 0x34, 0xa2, 0x45, 0x95, 0x2e, 0x8b, 0x16, 0x89, 0x3a, 0x33, 0x6b, 0x85, 0xa3,
@@ -25,6 +29,60 @@ static bool ethereum_safe_bytes_are_zero(const uint8_t* const bytes, const size_
         }
     }
     return true;
+}
+
+static bool ethereum_safe_format_uint256_decimal(
+    const uint8_t value[EVM_ABI_WORD_LEN], char* const output, const size_t output_len)
+{
+    if (!value || !output || output_len == 0) {
+        return false;
+    }
+
+    uint8_t work[EVM_ABI_WORD_LEN];
+    memcpy(work, value, sizeof(work));
+
+    char digits[ETHEREUM_SAFE_UINT256_DECIMAL_MAX_LEN + 1];
+    size_t digits_len = 0;
+    while (true) {
+        bool any = false;
+        uint16_t rem = 0;
+        for (size_t i = 0; i < sizeof(work); ++i) {
+            const uint16_t current = (uint16_t)((rem << 8) | work[i]);
+            work[i] = (uint8_t)(current / 10U);
+            rem = current % 10U;
+            any = any || work[i] != 0;
+        }
+        if (digits_len >= ETHEREUM_SAFE_UINT256_DECIMAL_MAX_LEN) {
+            wally_bzero(work, sizeof(work));
+            return false;
+        }
+        digits[digits_len++] = (char)('0' + rem);
+        if (!any) {
+            break;
+        }
+    }
+
+    if (digits_len + 1U > output_len) {
+        wally_bzero(work, sizeof(work));
+        return false;
+    }
+    for (size_t i = 0; i < digits_len; ++i) {
+        output[i] = digits[digits_len - 1U - i];
+    }
+    output[digits_len] = '\0';
+    wally_bzero(work, sizeof(work));
+    return true;
+}
+
+static bool ethereum_safe_format_uint256_units(
+    const uint8_t value[EVM_ABI_WORD_LEN], const char* const suffix, char* const output, const size_t output_len)
+{
+    char decimal[ETHEREUM_SAFE_UINT256_DECIMAL_MAX_LEN + 1];
+    if (!suffix || !ethereum_safe_format_uint256_decimal(value, decimal, sizeof(decimal))) {
+        return false;
+    }
+    const int ret = snprintf(output, output_len, "%s %s", decimal, suffix);
+    return ret > 0 && (size_t)ret < output_len;
 }
 
 static void write_leftpad_address(uint8_t output[EVM_ABI_WORD_LEN], const uint8_t address[ETHEREUM_ADDRESS_LEN])
@@ -143,7 +201,8 @@ bool ethereum_safe_tx_signing_hash(const ethereum_safe_tx_t* const tx, uint8_t o
 bool ethereum_safe_tx_preflight(const ethereum_safe_tx_t* const tx, ethereum_safe_tx_summary_t* const summary)
 {
     if (!ethereum_safe_tx_validate(tx) || !summary || tx->operation != ETHEREUM_SAFE_TX_OPERATION_CALL
-        || (tx->data_len && !tx->data)) {
+        || (tx->data_len && !tx->data) || !ethereum_safe_bytes_are_zero(tx->gas_token, sizeof(tx->gas_token))
+        || !ethereum_safe_bytes_are_zero(tx->refund_receiver, sizeof(tx->refund_receiver))) {
         return false;
     }
 
@@ -175,5 +234,88 @@ bool ethereum_safe_tx_preflight(const ethereum_safe_tx_t* const tx, ethereum_saf
 
     summary->type = ETHEREUM_SAFE_TX_SUMMARY_CONTRACT_CALL;
     return true;
+}
+
+static chain_confirm_operation_t safe_confirm_operation_from_result(const ethereum_safe_tx_summary_t* const result)
+{
+    if (result->type == ETHEREUM_SAFE_TX_SUMMARY_ERC20_TRANSFER) {
+        return CHAIN_CONFIRM_OPERATION_TOKEN_TRANSFER;
+    }
+    if (result->type == ETHEREUM_SAFE_TX_SUMMARY_ERC20_APPROVE) {
+        return CHAIN_CONFIRM_OPERATION_TOKEN_APPROVE;
+    }
+    if (result->type == ETHEREUM_SAFE_TX_SUMMARY_CONTRACT_CALL) {
+        return CHAIN_CONFIRM_OPERATION_CONTRACT_CALL;
+    }
+    return CHAIN_CONFIRM_OPERATION_NATIVE_TRANSFER;
+}
+
+bool ethereum_safe_tx_confirm_summary_from_preflight(const uint32_t* const path, const size_t path_len,
+    const ethereum_safe_tx_t* const tx, const ethereum_safe_tx_summary_t* const result,
+    const uint8_t signing_hash[ETHEREUM_TX_SIGNING_HASH_LEN], chain_confirm_summary_t* const summary)
+{
+    if (!path || path_len == 0 || !tx || !result || result->type == ETHEREUM_SAFE_TX_SUMMARY_UNSUPPORTED
+        || !signing_hash || !summary || !ethereum_safe_tx_validate(tx)) {
+        return false;
+    }
+
+    uint32_t flags = CHAIN_CONFIRM_FLAG_USER_CONFIRM;
+    if (result->type == ETHEREUM_SAFE_TX_SUMMARY_ERC20_APPROVE) {
+        flags |= CHAIN_CONFIRM_FLAG_EXTRA_CONFIRM | CHAIN_CONFIRM_FLAG_APPROVAL;
+    } else if (result->type == ETHEREUM_SAFE_TX_SUMMARY_CONTRACT_CALL) {
+        flags |= CHAIN_CONFIRM_FLAG_EXTRA_CONFIRM | CHAIN_CONFIRM_FLAG_UNKNOWN_CONTRACT;
+    }
+
+    char nonce[ETHEREUM_SAFE_UINT256_DECIMAL_MAX_LEN + 1];
+    char safe_tx_gas[ETHEREUM_SAFE_UINT256_DECIMAL_MAX_LEN + 1];
+    char base_gas[ETHEREUM_SAFE_UINT256_DECIMAL_MAX_LEN + 1];
+    char gas_price[ETHEREUM_SAFE_AMOUNT_TEXT_MAX_LEN];
+    if (!ethereum_safe_format_uint256_decimal(tx->nonce, nonce, sizeof(nonce))
+        || !ethereum_safe_format_uint256_decimal(tx->safe_tx_gas, safe_tx_gas, sizeof(safe_tx_gas))
+        || !ethereum_safe_format_uint256_decimal(tx->base_gas, base_gas, sizeof(base_gas))
+        || !ethereum_safe_format_uint256_units(tx->gas_price, "wei", gas_price, sizeof(gas_price))) {
+        return false;
+    }
+
+    chain_confirm_summary_init(
+        summary, CHAIN_CONFIRM_CHAIN_ETHEREUM, safe_confirm_operation_from_result(result), flags);
+    if (!chain_confirm_summary_add_path(summary, CHAIN_CONFIRM_FIELD_PATH, path, path_len)
+        || !chain_confirm_summary_add_u64(summary, CHAIN_CONFIRM_FIELD_CHAIN_ID, tx->chain_id)
+        || !chain_confirm_summary_add_text(summary, CHAIN_CONFIRM_FIELD_NONCE, nonce)
+        || !chain_confirm_summary_add_bytes(summary, CHAIN_CONFIRM_FIELD_SAFE, result->safe_address,
+            sizeof(result->safe_address))
+        || !chain_confirm_summary_add_text(summary, CHAIN_CONFIRM_FIELD_SAFE_TX_GAS, safe_tx_gas)
+        || !chain_confirm_summary_add_text(summary, CHAIN_CONFIRM_FIELD_BASE_GAS, base_gas)
+        || !chain_confirm_summary_add_text(summary, CHAIN_CONFIRM_FIELD_GAS_PRICE, gas_price)) {
+        return false;
+    }
+
+    if (result->type == ETHEREUM_SAFE_TX_SUMMARY_NATIVE_TRANSFER) {
+        char amount[ETHEREUM_SAFE_AMOUNT_TEXT_MAX_LEN];
+        return ethereum_safe_format_uint256_units(tx->value, "wei", amount, sizeof(amount))
+            && chain_confirm_summary_add_bytes(summary, CHAIN_CONFIRM_FIELD_TO, result->to, sizeof(result->to))
+            && chain_confirm_summary_add_text(summary, CHAIN_CONFIRM_FIELD_AMOUNT, amount)
+            && chain_confirm_summary_add_bytes(summary, CHAIN_CONFIRM_FIELD_SAFE_TX_HASH, signing_hash,
+                ETHEREUM_TX_SIGNING_HASH_LEN);
+    }
+
+    if (result->type == ETHEREUM_SAFE_TX_SUMMARY_ERC20_TRANSFER
+        || result->type == ETHEREUM_SAFE_TX_SUMMARY_ERC20_APPROVE) {
+        char token_amount[ETHEREUM_SAFE_AMOUNT_TEXT_MAX_LEN];
+        return ethereum_safe_format_uint256_units(result->token_amount, "units", token_amount, sizeof(token_amount))
+            && chain_confirm_summary_add_bytes(summary, CHAIN_CONFIRM_FIELD_TOKEN_CONTRACT, result->token_contract,
+                sizeof(result->token_contract))
+            && chain_confirm_summary_add_bytes(summary, CHAIN_CONFIRM_FIELD_TOKEN_RECIPIENT, result->token_recipient,
+                sizeof(result->token_recipient))
+            && chain_confirm_summary_add_text(summary, CHAIN_CONFIRM_FIELD_TOKEN_AMOUNT, token_amount)
+            && chain_confirm_summary_add_bytes(summary, CHAIN_CONFIRM_FIELD_SAFE_TX_HASH, signing_hash,
+                ETHEREUM_TX_SIGNING_HASH_LEN);
+    }
+
+    return chain_confirm_summary_add_bytes(summary, CHAIN_CONFIRM_FIELD_TO, result->to, sizeof(result->to))
+        && chain_confirm_summary_add_bytes(summary, CHAIN_CONFIRM_FIELD_CALLDATA_HASH, result->calldata_hash,
+            sizeof(result->calldata_hash))
+        && chain_confirm_summary_add_bytes(
+            summary, CHAIN_CONFIRM_FIELD_SAFE_TX_HASH, signing_hash, ETHEREUM_TX_SIGNING_HASH_LEN);
 }
 #endif /* AMALGAMATED_BUILD */

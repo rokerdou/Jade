@@ -52,6 +52,11 @@ typedef struct {
     bool has_encoded_network;
 } trezor_ethereum_sign_typed_hash_t;
 
+typedef struct {
+    uint8_t signature[EC_SIGNATURE_RECOVERABLE_LEN];
+    char address[ETHEREUM_CHECKSUM_ADDRESS_STRING_LEN];
+} trezor_ethereum_typed_data_signature_t;
+
 bool trezor_ethereum_get_address_decode(
     const uint8_t* payload, size_t payload_len, trezor_ethereum_get_address_t* output);
 bool trezor_ethereum_address_encode(const char* address, uint8_t* output, size_t output_len, size_t* written);
@@ -65,5 +70,7 @@ bool trezor_ethereum_signing_state_ready(const trezor_ethereum_signing_state_t* 
 bool trezor_ethereum_tx_request_encode_data(size_t data_length, uint8_t* output, size_t output_len, size_t* written);
 bool trezor_ethereum_tx_request_encode_signature(
     const ethereum_signature_t* signature, uint8_t* output, size_t output_len, size_t* written);
+bool trezor_ethereum_typed_data_signature_encode(const trezor_ethereum_typed_data_signature_t* signature,
+    uint8_t* output, size_t output_len, size_t* written);
 
 #endif /* TREZOR_ETHEREUM_PROTOCOL_H_ */

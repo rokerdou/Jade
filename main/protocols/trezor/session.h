@@ -2,6 +2,7 @@
 #define TREZOR_SESSION_H_
 
 #include "bitcoin/protocol.h"
+#include "../../chains/ethereum/safe_tx.h"
 #include "ethereum/protocol.h"
 #include "features.h"
 #include "public_key.h"
@@ -23,6 +24,10 @@ typedef bool (*trezor_session_public_key_callback_t)(
     void* ctx, const trezor_public_key_request_t* request, trezor_public_key_response_t* response);
 typedef bool (*trezor_session_eth_sign_tx_callback_t)(
     void* ctx, const ethereum_tx_preflight_request_t* request, ethereum_signature_t* signature);
+typedef bool (*trezor_session_eth_sign_safe_tx_callback_t)(void* ctx,
+    const trezor_ethereum_sign_typed_hash_t* typed_hash, const ethereum_safe_tx_t* tx,
+    const ethereum_safe_tx_summary_t* summary, const uint8_t signing_hash[ETHEREUM_TX_SIGNING_HASH_LEN],
+    trezor_ethereum_typed_data_signature_t* signature);
 typedef bool (*trezor_session_btc_confirm_tx_callback_t)(void* ctx, const bitcoin_confirm_request_t* request);
 typedef bool (*trezor_session_btc_sign_digest_callback_t)(
     void* ctx, const wallet_core_path_t* path, const uint8_t* digest, size_t digest_len, uint8_t* signature, size_t signature_len);
@@ -66,6 +71,8 @@ typedef struct {
     void* get_public_key_ctx;
     trezor_session_eth_sign_tx_callback_t sign_eth_tx;
     void* sign_eth_tx_ctx;
+    trezor_session_eth_sign_safe_tx_callback_t sign_eth_safe_tx;
+    void* sign_eth_safe_tx_ctx;
     trezor_session_btc_confirm_tx_callback_t confirm_btc_tx;
     void* confirm_btc_tx_ctx;
     trezor_session_btc_sign_digest_callback_t sign_btc_digest;

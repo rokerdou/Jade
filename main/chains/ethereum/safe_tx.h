@@ -6,6 +6,7 @@
 #include <stdint.h>
 
 #include "../../crypto/keccak256.h"
+#include "../confirm_summary.h"
 #include "../evm_abi.h"
 #include "address.h"
 #include "digest.h"
@@ -58,5 +59,8 @@ bool ethereum_safe_tx_domain_separator_hash(
 bool ethereum_safe_tx_message_hash(const ethereum_safe_tx_t* tx, uint8_t output[KECCAK256_LEN]);
 bool ethereum_safe_tx_signing_hash(const ethereum_safe_tx_t* tx, uint8_t output[ETHEREUM_TX_SIGNING_HASH_LEN]);
 bool ethereum_safe_tx_preflight(const ethereum_safe_tx_t* tx, ethereum_safe_tx_summary_t* summary);
+bool ethereum_safe_tx_confirm_summary_from_preflight(const uint32_t* path, size_t path_len,
+    const ethereum_safe_tx_t* tx, const ethereum_safe_tx_summary_t* result,
+    const uint8_t signing_hash[ETHEREUM_TX_SIGNING_HASH_LEN], chain_confirm_summary_t* summary);
 
 #endif /* ETHEREUM_SAFE_TX_H_ */

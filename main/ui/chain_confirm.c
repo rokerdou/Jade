@@ -52,6 +52,8 @@ static const char* field_name(const chain_confirm_field_kind_t kind)
         return "From";
     case CHAIN_CONFIRM_FIELD_OWNER:
         return "Owner";
+    case CHAIN_CONFIRM_FIELD_SAFE:
+        return "Safe";
     case CHAIN_CONFIRM_FIELD_TO:
         return "To";
     case CHAIN_CONFIRM_FIELD_AMOUNT:
@@ -80,6 +82,14 @@ static const char* field_name(const chain_confirm_field_kind_t kind)
         return "Fee Limit";
     case CHAIN_CONFIRM_FIELD_CALLDATA_HASH:
         return "Calldata Hash";
+    case CHAIN_CONFIRM_FIELD_SAFE_TX_HASH:
+        return "SafeTx Hash";
+    case CHAIN_CONFIRM_FIELD_SAFE_TX_GAS:
+        return "SafeTx Gas";
+    case CHAIN_CONFIRM_FIELD_BASE_GAS:
+        return "Base Gas";
+    case CHAIN_CONFIRM_FIELD_GAS_PRICE:
+        return "Gas Price";
     }
     return "Field";
 }
@@ -108,6 +118,8 @@ static const char* field_trace_stage(const chain_confirm_field_kind_t kind, cons
         return done ? "ui:from_ok" : "ui:from";
     case CHAIN_CONFIRM_FIELD_OWNER:
         return done ? "ui:owner_ok" : "ui:owner";
+    case CHAIN_CONFIRM_FIELD_SAFE:
+        return done ? "ui:safe_ok" : "ui:safe";
     case CHAIN_CONFIRM_FIELD_TO:
         return done ? "ui:to_ok" : "ui:to";
     case CHAIN_CONFIRM_FIELD_AMOUNT:
@@ -136,6 +148,14 @@ static const char* field_trace_stage(const chain_confirm_field_kind_t kind, cons
         return done ? "ui:feelimit_ok" : "ui:feelimit";
     case CHAIN_CONFIRM_FIELD_CALLDATA_HASH:
         return done ? "ui:calldata_ok" : "ui:calldata";
+    case CHAIN_CONFIRM_FIELD_SAFE_TX_HASH:
+        return done ? "ui:safehash_ok" : "ui:safehash";
+    case CHAIN_CONFIRM_FIELD_SAFE_TX_GAS:
+        return done ? "ui:safetxgas_ok" : "ui:safetxgas";
+    case CHAIN_CONFIRM_FIELD_BASE_GAS:
+        return done ? "ui:basegas_ok" : "ui:basegas";
+    case CHAIN_CONFIRM_FIELD_GAS_PRICE:
+        return done ? "ui:gasprice_ok" : "ui:gasprice";
     }
     return done ? "ui:field_ok" : "ui:field";
 }

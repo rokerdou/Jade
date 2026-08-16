@@ -36,6 +36,9 @@ WIRE_CONT_HEADER_LEN = 1
 WIRE_MARKER = 0x3F
 WIRE_MAGIC = 0x23
 ONEKEY_SIGN_PSBT_MESSAGE_TYPE = 10052
+ETHEREUM_GNOSIS_SAFE_TX_ACK_MESSAGE_TYPE = 20118
+ETHEREUM_GNOSIS_SAFE_TX_REQUEST_MESSAGE_TYPE = 20119
+ETHEREUM_TYPED_DATA_SIGNATURE_MESSAGE_TYPE = 469
 
 
 def safe_usdt_transfer_typed_data() -> dict[str, object]:
@@ -503,6 +506,112 @@ def wire_encode(message_type: int, payload: bytes) -> bytes:
     return b"".join(chunks)
 
 
+def protobuf_varint(value: int) -> bytes:
+    if value < 0:
+        raise ValueError("varint cannot encode negative values")
+    output = bytearray()
+    while True:
+        byte = value & 0x7F
+        value >>= 7
+        if value:
+            output.append(byte | 0x80)
+        else:
+            output.append(byte)
+            return bytes(output)
+
+
+def protobuf_len_field(field_number: int, value: bytes) -> bytes:
+    return protobuf_varint((field_number << 3) | 2) + protobuf_varint(len(value)) + value
+
+
+def protobuf_string_field(field_number: int, value: str) -> bytes:
+    return protobuf_len_field(field_number, value.encode("ascii"))
+
+
+def protobuf_varint_field(field_number: int, value: int) -> bytes:
+    return protobuf_varint((field_number << 3) | 0) + protobuf_varint(value)
+
+
+def minimal_uint256_bytes(value: int) -> bytes:
+    if value < 0 or value >= 1 << 256:
+        raise ValueError("uint256 out of range")
+    if value == 0:
+        return b""
+    return value.to_bytes((value.bit_length() + 7) // 8, "big")
+
+
+def make_safe_tx_ack_payload(safe_typed_data: dict[str, object]) -> bytes:
+    domain = safe_typed_data["domain"]
+    message = safe_typed_data["message"]
+    if not isinstance(domain, dict) or not isinstance(message, dict):
+        raise AssertionError("invalid SafeTx typed data shape")
+
+    payload = bytearray()
+    payload += protobuf_string_field(1, str(message["to"]))
+    payload += protobuf_len_field(2, minimal_uint256_bytes(int(message["value"])))
+    payload += protobuf_len_field(3, bytes.fromhex(str(message["data"])[2:]))
+    payload += protobuf_varint_field(4, int(message["operation"]))
+    payload += protobuf_len_field(5, minimal_uint256_bytes(int(message["safeTxGas"])))
+    payload += protobuf_len_field(6, minimal_uint256_bytes(int(message["baseGas"])))
+    payload += protobuf_len_field(7, minimal_uint256_bytes(int(message["gasPrice"])))
+    payload += protobuf_string_field(8, str(message["gasToken"]))
+    payload += protobuf_string_field(9, str(message["refundReceiver"]))
+    payload += protobuf_len_field(10, minimal_uint256_bytes(int(message["nonce"])))
+    payload += protobuf_varint_field(11, int(domain["chainId"]))
+    payload += protobuf_string_field(12, str(domain["verifyingContract"]))
+    return bytes(payload)
+
+
+def decode_typed_data_signature_payload(payload: bytes) -> tuple[bytes, str]:
+    signature: bytes | None = None
+    address: str | None = None
+    pos = 0
+    while pos < len(payload):
+        key = 0
+        shift = 0
+        while True:
+            if pos >= len(payload) or shift > 63:
+                raise AssertionError("malformed typed-data signature protobuf key")
+            byte = payload[pos]
+            pos += 1
+            key |= (byte & 0x7F) << shift
+            if (byte & 0x80) == 0:
+                break
+            shift += 7
+        field_number = key >> 3
+        wire_type = key & 0x07
+        if wire_type != 2:
+            raise AssertionError(f"unexpected typed-data signature wire type: {wire_type}")
+        length = 0
+        shift = 0
+        while True:
+            if pos >= len(payload) or shift > 63:
+                raise AssertionError("malformed typed-data signature protobuf length")
+            byte = payload[pos]
+            pos += 1
+            length |= (byte & 0x7F) << shift
+            if (byte & 0x80) == 0:
+                break
+            shift += 7
+        if length > len(payload) - pos:
+            raise AssertionError("typed-data signature payload overruns buffer")
+        value = payload[pos : pos + length]
+        pos += length
+        if field_number == 1:
+            if signature is not None:
+                raise AssertionError("duplicate typed-data signature field")
+            signature = value
+        elif field_number == 2:
+            if address is not None:
+                raise AssertionError("duplicate typed-data address field")
+            address = value.decode("ascii")
+        else:
+            raise AssertionError(f"unexpected typed-data signature field: {field_number}")
+    if signature is None or address is None:
+        raise AssertionError("typed-data signature response missing fields")
+    return signature, address
+
+
 def run_local_wire_oracle(gate: Path, message_type: int, message: messages.MessageType) -> tuple[int, bytes]:
     wire = wire_encode(message_type, message_payload(message))
     output = subprocess.check_output([str(gate), "--trezor-wire-oracle", wire.hex()], text=True)
@@ -528,6 +637,27 @@ def run_local_wire_script(
     if btc_compact_signatures is not None:
         env = os.environ.copy()
         env["TREZOR_TEST_BTC_COMPACT_SIGNATURES"] = ",".join(sig.hex() for sig in btc_compact_signatures)
+    output = subprocess.check_output([str(gate), "--trezor-wire-script", *wires], text=True, env=env)
+    parsed = parse_vectors(output)
+    responses: list[tuple[int, bytes]] = []
+    for index in range(len(script)):
+        responses.append((int(parsed[f"response_type_{index}"]), bytes.fromhex(parsed[f"response_payload_{index}"])))
+    return responses
+
+
+def run_local_raw_wire_script(
+    gate: Path,
+    script: list[tuple[int, bytes]],
+    *,
+    eth_compact_signature: bytes | None = None,
+) -> list[tuple[int, bytes]]:
+    wires = [wire_encode(message_type, payload).hex() for message_type, payload in script]
+    env = None
+    if eth_compact_signature is not None:
+        if len(eth_compact_signature) != 65:
+            raise AssertionError("ETH compact signature must be recid/header + r + s")
+        env = os.environ.copy()
+        env["TREZOR_TEST_ETH_COMPACT_SIGNATURE"] = eth_compact_signature.hex()
     output = subprocess.check_output([str(gate), "--trezor-wire-script", *wires], text=True, env=env)
     parsed = parse_vectors(output)
     responses: list[tuple[int, bytes]] = []
@@ -2542,6 +2672,48 @@ def check_trezorlib_protocol_oracle(gate: Path, local_vectors: dict[str, str]) -
         raise AssertionError(f"EthereumSignTypedHash must request SafeTx payload, got {response_type}")
     if payload:
         raise AssertionError("EthereumGnosisSafeTxRequest payload must be empty")
+
+    safe_typed_data = safe_usdt_transfer_typed_data()
+    safe_signing_hash = bytes.fromhex(local_vectors["safe_signing_hash"])
+    safe_signature = keys.PrivateKey(PRIVATE_KEY_ONE).sign_msg_hash(safe_signing_hash)
+    safe_compact_signature = bytes([safe_signature.v + 27]) + int(safe_signature.r).to_bytes(32, "big") + int(
+        safe_signature.s
+    ).to_bytes(32, "big")
+    safe_responses = run_local_raw_wire_script(
+        gate,
+        [
+            (
+                int(messages.MessageType.EthereumSignTypedHash),
+                message_payload(
+                    messages.EthereumSignTypedHash(
+                        address_n=eth_path,
+                        domain_separator_hash=bytes.fromhex(local_vectors["safe_domain_hash"]),
+                        message_hash=bytes.fromhex(local_vectors["safe_message_hash"]),
+                    )
+                ),
+            ),
+            (ETHEREUM_GNOSIS_SAFE_TX_ACK_MESSAGE_TYPE, make_safe_tx_ack_payload(safe_typed_data)),
+        ],
+        eth_compact_signature=safe_compact_signature,
+    )
+    if safe_responses[0][0] != ETHEREUM_GNOSIS_SAFE_TX_REQUEST_MESSAGE_TYPE or safe_responses[0][1]:
+        raise AssertionError(f"SafeTx first response mismatch: {safe_responses[0][0]}")
+    if safe_responses[1][0] != ETHEREUM_TYPED_DATA_SIGNATURE_MESSAGE_TYPE:
+        raise AssertionError(f"SafeTx signature response type mismatch: {safe_responses[1][0]}")
+    typed_signature, typed_address = decode_typed_data_signature_payload(safe_responses[1][1])
+    if len(typed_signature) != 65:
+        raise AssertionError(f"SafeTx typed signature length mismatch: {len(typed_signature)}")
+    if typed_address != local_vectors["eth_checksum_address"]:
+        raise AssertionError(f"SafeTx typed signature address mismatch: {typed_address}")
+    safe_recovered = keys.Signature(
+        vrs=(
+            typed_signature[64],
+            int.from_bytes(typed_signature[:32], "big"),
+            int.from_bytes(typed_signature[32:64], "big"),
+        )
+    ).recover_public_key_from_msg_hash(safe_signing_hash).to_checksum_address()
+    if safe_recovered != local_vectors["eth_checksum_address"]:
+        raise AssertionError(f"SafeTx signature recover mismatch: {safe_recovered}")
 
     response_type, payload = run_local_wire_oracle(
         gate,

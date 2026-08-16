@@ -305,13 +305,12 @@ trezorlib / Safe CLI 兼容路径：
 - Trezor protocol host harness：
   模拟 `EthereumSignTypedHash -> EthereumGnosisSafeTxRequest ->
   EthereumGnosisSafeTxAck`，验证 hash-only 不会直接签名，SafeTx Ack
-  必须完成字段解析和 hash 绑定；后续接签名后再验证
+  必须完成字段解析和 hash 绑定；签名后验证
   `EthereumTypedDataSignature` 返回格式、address、signature recover。
 - UI 摘要门禁：
-  Safe 地址、owner 地址、chain id、nonce、operation、to/value、
-  token contract、recipient/spender、amount、gasToken/refundReceiver、
-  safeTxGas/baseGas/gasPrice、SafeTx hash 每页行数不能超过 T-Display-S3
-  当前 dialogs 限制。
+  Safe 地址、chain id、nonce、to/value、token contract、
+  recipient/spender、amount、safeTxGas/baseGas/gasPrice、SafeTx hash
+  每页行数不能超过 T-Display-S3 当前 dialogs 限制。
 - 负向门禁：
   缺字段、超长 calldata、畸形 uint256、错误地址长度、未知 primary type、
   非零/异常 gas token、delegatecall、chainId/domain mismatch、token metadata
@@ -349,8 +348,27 @@ trezorlib / Safe CLI 兼容路径：
 - `EthereumGnosisSafeTxAck` parser 已按 OneKey 字段布局实现，缺字段、
   重复字段、未知字段、错误地址、畸形 uint256/leading zero、超长 data
   均拒绝。
-- 下一步是 SafeTx 结构化 UI 摘要和真实签名。绑定通过后才允许进入 UI 和
-  `wallet_core_sign_digest_ecdsa_recoverable()`。
+- SafeTx 结构化 UI 摘要已接入：绑定通过后显示 path、chain id、nonce、
+  Safe 地址、token contract、recipient/spender、amount、
+  safeTxGas/baseGas/gasPrice、SafeTx signing hash；所有字段走
+  `chain_confirm_summary_t` 和 T-Display-S3 行数门禁。
+- SafeTx 首版真实签名已接入：`session.c` 只把已绑定的 typed hash、
+  SafeTx、summary、signing_hash 交给 `wallet_adapter` callback；
+  `wallet_adapter` 负责 UI 确认后调用
+  `wallet_core_sign_digest_ecdsa_recoverable()`，协议层和链层不获取
+  raw private key。
+- `tools/run_external_oracle_gates.py` 已补 SafeTx 二阶段 raw-wire oracle：
+  使用 `safe-eth-py`/`eth_account` 生成 SafeTx hash，用第三方 `eth_keys`
+  recover `EthereumTypedDataSignature(r||s||recid)`，验证 signer address
+  与测试私钥地址一致。
+
+后续缺口：
+
+- 完整 `EthereumSignTypedData` struct/value request flow 还未接入。
+- Safe owner/threshold/policy 仍未由设备验证；当前只确认并签名 SafeTx，
+  不声称设备已验证 2/3 owner 集合。
+- 非零 `gasToken/refundReceiver` 首版拒绝；后续若支持 gas token/refund
+  receiver，需要把它们加入强提示 UI 和独立 oracle/负向门禁。
 
 ### Phase 1: 拆 BTC 协议层大文件
 

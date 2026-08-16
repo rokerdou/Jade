@@ -13,6 +13,7 @@
 #include "../../chains/bitcoin/wallet.h"
 #include "../../chains/ethereum/address.h"
 #include "../../chains/ethereum/path.h"
+#include "../../chains/ethereum/safe_tx.h"
 #include "../../chains/ethereum/sign.h"
 #include "../../chains/ethereum/wallet.h"
 #include "../../idletimer.h"
@@ -176,6 +177,89 @@ static bool trezor_wallet_sign_eth_tx(
     return ok;
 }
 
+static bool trezor_wallet_recovery_id_from_wally_signature(const uint8_t header, uint8_t* const recovery_id)
+{
+    if (!recovery_id) {
+        return false;
+    }
+    if (header == 27 || header == 28) {
+        *recovery_id = (uint8_t)(header - 27);
+        return true;
+    }
+    if (header == 31 || header == 32) {
+        *recovery_id = (uint8_t)(header - 31);
+        return true;
+    }
+    return false;
+}
+
+static bool trezor_wallet_sign_eth_safe_tx(void* ctx, const trezor_ethereum_sign_typed_hash_t* const typed_hash,
+    const ethereum_safe_tx_t* const tx, const ethereum_safe_tx_summary_t* const result,
+    const uint8_t signing_hash[ETHEREUM_TX_SIGNING_HASH_LEN],
+    trezor_ethereum_typed_data_signature_t* const signature)
+{
+    (void)ctx;
+    if (!typed_hash || !tx || !result || !signing_hash || !signature || !trezor_auth_bridge_wallet_ready()
+        || !ethereum_path_is_supported(typed_hash->address_n, typed_hash->address_n_len)) {
+        trezor_trace_set_stage("safesign:reject");
+        return false;
+    }
+
+    wallet_core_path_t path;
+    uint8_t signer_address[ETHEREUM_ADDRESS_LEN];
+    uint8_t recoverable_signature[EC_SIGNATURE_RECOVERABLE_LEN];
+    chain_confirm_summary_t summary;
+    wally_bzero(&path, sizeof(path));
+    wally_bzero(signer_address, sizeof(signer_address));
+    wally_bzero(recoverable_signature, sizeof(recoverable_signature));
+    wally_bzero(&summary, sizeof(summary));
+    wally_bzero(signature, sizeof(*signature));
+
+    path.len = typed_hash->address_n_len;
+    memcpy(path.parts, typed_hash->address_n, typed_hash->address_n_len * sizeof(typed_hash->address_n[0]));
+
+    trezor_trace_set_stage("safesign:summary");
+    bool ok = ethereum_wallet_address_from_path(&path, signer_address, sizeof(signer_address))
+        && ethereum_address_to_checksum_string(signer_address, sizeof(signer_address), signature->address,
+            sizeof(signature->address))
+        && ethereum_safe_tx_confirm_summary_from_preflight(
+            typed_hash->address_n, typed_hash->address_n_len, tx, result, signing_hash, &summary);
+
+    if (ok) {
+        trezor_trace_set_stage("safesign:display");
+        idletimer_set_min_timeout_secs(TREZOR_WALLET_ADAPTER_INTERACTIVE_TIMEOUT_SECS);
+        ok = show_chain_confirm_summary_activity(&summary);
+        idletimer_set_min_timeout_secs(0);
+        trezor_trace_set_stage(ok ? "safesign:display_ok" : "safesign:display_cancel");
+    }
+    if (ok) {
+        trezor_trace_set_stage("safesign:wallet_sign");
+        ok = wallet_core_sign_digest_ecdsa_recoverable(
+            &path, signing_hash, ETHEREUM_TX_SIGNING_HASH_LEN, recoverable_signature, sizeof(recoverable_signature));
+        trezor_trace_set_stage(ok ? "safesign:wallet_ok" : "safesign:wallet_fail");
+    }
+    if (ok) {
+        uint8_t recovery_id = 0;
+        ok = trezor_wallet_recovery_id_from_wally_signature(recoverable_signature[0], &recovery_id);
+        if (ok) {
+            memcpy(signature->signature, recoverable_signature + 1, ETHEREUM_SIGNATURE_R_LEN);
+            memcpy(signature->signature + ETHEREUM_SIGNATURE_R_LEN,
+                recoverable_signature + 1 + ETHEREUM_SIGNATURE_R_LEN, ETHEREUM_SIGNATURE_S_LEN);
+            signature->signature[ETHEREUM_SIGNATURE_R_LEN + ETHEREUM_SIGNATURE_S_LEN] = recovery_id;
+        }
+        trezor_trace_set_stage(ok ? "safesign:recid_ok" : "safesign:recid_fail");
+    }
+
+    if (!ok) {
+        wally_bzero(signature, sizeof(*signature));
+    }
+    wally_bzero(&path, sizeof(path));
+    wally_bzero(signer_address, sizeof(signer_address));
+    wally_bzero(recoverable_signature, sizeof(recoverable_signature));
+    wally_bzero(&summary, sizeof(summary));
+    return ok;
+}
+
 static bool trezor_wallet_confirm_btc_tx(void* ctx, const bitcoin_confirm_request_t* const request)
 {
     (void)ctx;
@@ -264,6 +348,8 @@ trezor_session_t trezor_wallet_adapter_session(const trezor_wallet_adapter_confi
         .get_public_key_ctx = NULL,
         .sign_eth_tx = trezor_wallet_sign_eth_tx,
         .sign_eth_tx_ctx = NULL,
+        .sign_eth_safe_tx = trezor_wallet_sign_eth_safe_tx,
+        .sign_eth_safe_tx_ctx = NULL,
         .confirm_btc_tx = trezor_wallet_confirm_btc_tx,
         .confirm_btc_tx_ctx = NULL,
         .sign_btc_digest = trezor_wallet_sign_btc_digest,
