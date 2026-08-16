@@ -5062,6 +5062,22 @@ int main(int argc, char** argv)
     CHECK(strstr(trace_text, "xpub-test-only") == NULL);
     CHECK(strstr(trace_text, "mrCDrCybB6J1vRfbwM5hemdJz73FwDBC8r") == NULL);
 
+    uint8_t trailing_wire_chunks[2U * TREZOR_WIRE_CHUNK_SIZE];
+    size_t trailing_wire_len = 0;
+    CHECK(trezor_wire_encode_message(TREZOR_MSG_GET_FEATURES, NULL, 0, trailing_wire_chunks,
+        sizeof(trailing_wire_chunks), &trailing_wire_len));
+    CHECK(trailing_wire_len == TREZOR_WIRE_CHUNK_SIZE);
+    memset(trailing_wire_chunks + trailing_wire_len, 0x3f, TREZOR_WIRE_CHUNK_SIZE);
+    CHECK(!trezor_wire_decode_message(trailing_wire_chunks, trailing_wire_len + TREZOR_WIRE_CHUNK_SIZE,
+        &session_response_type, session_response_payload, sizeof(session_response_payload), &session_response_payload_len));
+    CHECK(trezor_session_handle_wire(&trezor_session, trailing_wire_chunks, trailing_wire_len + TREZOR_WIRE_CHUNK_SIZE,
+        session_response_chunks, sizeof(session_response_chunks), &session_response_len));
+    CHECK(trezor_wire_decode_message(session_response_chunks, session_response_len, &session_response_type,
+        session_response_payload, sizeof(session_response_payload), &session_response_payload_len));
+    CHECK(session_response_type == TREZOR_MSG_FAILURE);
+    CHECK(trezor_payload_has_varint(
+        session_response_payload, session_response_payload_len, 1, TREZOR_FAILURE_INVALID_PROTOCOL));
+
     uint8_t oversized_session_payload[TREZOR_SESSION_MAX_REQUEST_PAYLOAD_LEN + 1];
     memset(oversized_session_payload, 0x5a, sizeof(oversized_session_payload));
     CHECK(trezor_wire_encode_message(TREZOR_MSG_GET_FEATURES, oversized_session_payload,

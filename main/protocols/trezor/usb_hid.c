@@ -34,6 +34,7 @@
 #define TREZOR_USB_HID_TASK_PRIORITY 5
 #define TREZOR_USB_HID_RX_BUF_LEN 2304
 #define TREZOR_USB_HID_TX_BUF_LEN 2304
+#define TREZOR_USB_HID_RX_PARTIAL_TIMEOUT_MS 5000
 #define TREZOR_USB_HID_SIGNED_NOTICE_MS 1200
 #define TREZOR_USB_WEBUSB_VENDOR_CODE 0x01
 #define TREZOR_USB_WEBUSB_GET_URL 0x02
@@ -339,12 +340,22 @@ static void trezor_usb_hid_task(void* ignore)
 
     size_t rx_len = 0;
     size_t expected_len = 0;
+    TickType_t last_rx_tick = 0;
 
     while (s_hid_enabled) {
         trezor_usb_hid_chunk_t chunk;
         if (xQueueReceive(s_hid_rx_queue, &chunk, 100 / portTICK_PERIOD_MS) != pdTRUE) {
+            if (rx_len != 0 && last_rx_tick != 0
+                && xTaskGetTickCount() - last_rx_tick > pdMS_TO_TICKS(TREZOR_USB_HID_RX_PARTIAL_TIMEOUT_MS)) {
+                trezor_trace_set_stage("usb:rx_timeout");
+                wally_bzero(s_hid_rx_chunks, rx_len);
+                rx_len = 0;
+                expected_len = 0;
+                last_rx_tick = 0;
+            }
             continue;
         }
+        last_rx_tick = xTaskGetTickCount();
         idletimer_register_activity(false);
         trezor_trace_set_stage("usb:task_rx");
         trezor_trace_set_note("task rx queued=%lu rx_len=%lu", (unsigned long)uxQueueMessagesWaiting(s_hid_rx_queue),
@@ -375,15 +386,19 @@ static void trezor_usb_hid_task(void* ignore)
             trezor_trace_set_stage("usb:expect_ok");
         } else if (chunk.bytes[0] != TREZOR_WIRE_MARKER) {
             trezor_trace_set_stage("usb:cont_bad");
+            wally_bzero(s_hid_rx_chunks, rx_len);
             rx_len = 0;
             expected_len = 0;
+            last_rx_tick = 0;
             continue;
         }
 
         if (rx_len > sizeof(s_hid_rx_chunks) - sizeof(chunk.bytes)) {
             trezor_trace_set_stage("usb:rx_oversize");
+            wally_bzero(s_hid_rx_chunks, rx_len);
             rx_len = 0;
             expected_len = 0;
+            last_rx_tick = 0;
             continue;
         }
         trezor_trace_set_stage("usb:copy");
@@ -452,6 +467,7 @@ static void trezor_usb_hid_task(void* ignore)
             }
             rx_len = 0;
             expected_len = 0;
+            last_rx_tick = 0;
         }
     }
 

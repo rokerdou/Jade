@@ -109,7 +109,7 @@ bool trezor_wire_decode_message(const uint8_t* const input, const size_t input_l
     }
 
     size_t required_len = 0;
-    if (!trezor_wire_encoded_len(decoded_len, &required_len) || input_len < required_len) {
+    if (!trezor_wire_encoded_len(decoded_len, &required_len) || input_len != required_len) {
         return false;
     }
 

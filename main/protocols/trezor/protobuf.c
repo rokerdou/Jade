@@ -7,7 +7,7 @@
 
 static bool trezor_protobuf_append(trezor_protobuf_writer_t* const writer, const uint8_t* const bytes, const size_t len)
 {
-    if (!writer || (!bytes && len) || len > writer->cap - writer->len) {
+    if (!writer || writer->len > writer->cap || (!bytes && len) || len > writer->cap - writer->len) {
         return false;
     }
     if (len) {
