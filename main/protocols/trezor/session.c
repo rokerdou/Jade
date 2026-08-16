@@ -536,12 +536,6 @@ static bool trezor_session_handle_payload_ex(const trezor_session_t* const sessi
             return trezor_session_failure_payload(TREZOR_FAILURE_DATA_ERROR, "Invalid Bitcoin address request",
                 response_type, response_payload, response_payload_len, response_payload_written);
         }
-        if (request.has_multisig) {
-            wally_bzero(&request, sizeof(request));
-            return trezor_session_failure_payload(TREZOR_FAILURE_DATA_ERROR, "Bitcoin multisig address unsupported",
-                response_type, response_payload, response_payload_len, response_payload_written);
-        }
-
         bool deferred = false;
         if (!trezor_session_maybe_defer_for_local_unlock(session, request_type, request_payload, request_payload_len,
                 response_type, response_payload, response_payload_len, response_payload_written, &deferred)) {

@@ -85,6 +85,52 @@ static bool trezor_bitcoin_normalize_multisig_payload(const uint8_t* const paylo
     return ok;
 }
 
+static bool trezor_bitcoin_multisig_summary_from_policy(
+    const trezor_bitcoin_multisig_policy_t* const policy, trezor_bitcoin_multisig_summary_t* const summary)
+{
+    if (!policy || !summary || policy->num_pubkeys > UINT8_MAX
+        || policy->script_pubkey_len > sizeof(summary->script_pubkey)) {
+        return false;
+    }
+    wally_bzero(summary, sizeof(*summary));
+    summary->variant = policy->variant;
+    summary->threshold = policy->threshold;
+    summary->num_pubkeys = (uint8_t)policy->num_pubkeys;
+    summary->sorted = policy->sorted;
+    memcpy(summary->script_pubkey, policy->script_pubkey, policy->script_pubkey_len);
+    summary->script_pubkey_len = policy->script_pubkey_len;
+    return true;
+}
+
+static bool trezor_bitcoin_normalize_multisig_payload_with_policy(const uint8_t* const payload, const size_t payload_len,
+    const bool has_multisig, const uint32_t script_type, trezor_bitcoin_multisig_summary_t* const summary,
+    trezor_bitcoin_multisig_policy_t* const policy)
+{
+    if (!summary || !policy) {
+        return false;
+    }
+    wally_bzero(summary, sizeof(*summary));
+    wally_bzero(policy, sizeof(*policy));
+    if (!has_multisig) {
+        return true;
+    }
+    if (!payload || payload_len == 0) {
+        return false;
+    }
+
+    trezor_bitcoin_multisig_t multisig;
+    wally_bzero(&multisig, sizeof(multisig));
+    const bool ok = trezor_bitcoin_multisig_decode(payload, payload_len, &multisig)
+        && trezor_bitcoin_multisig_normalize(&multisig, script_type, policy)
+        && trezor_bitcoin_multisig_summary_from_policy(policy, summary);
+    wally_bzero(&multisig, sizeof(multisig));
+    if (!ok) {
+        wally_bzero(summary, sizeof(*summary));
+        wally_bzero(policy, sizeof(*policy));
+    }
+    return ok;
+}
+
 bool trezor_bitcoin_get_address_decode(
     const uint8_t* const payload, const size_t payload_len, trezor_bitcoin_get_address_t* const output)
 {
@@ -168,10 +214,13 @@ bool trezor_bitcoin_get_address_decode(
         : (script_type == BITCOIN_P2PKH_SPENDADDRESS || script_type == BITCOIN_P2WPKH_SPENDWITNESS
             || script_type == BITCOIN_P2SH_P2WPKH_SPENDP2SHWITNESS);
     trezor_bitcoin_coin_t coin = TREZOR_BITCOIN_COIN_MAINNET;
+    const bool multisig_ok = trezor_bitcoin_normalize_multisig_payload_with_policy(multisig_payload, multisig_payload_len,
+        output->has_multisig, script_type, &output->multisig, &output->multisig_policy);
+    output->has_multisig_policy = output->has_multisig && multisig_ok;
+
     return output->address_n_len > 0
         && (!output->has_coin_name || trezor_bitcoin_coin_from_name(output->coin_name, &coin)) && supported_script
-        && trezor_bitcoin_normalize_multisig_payload(
-            multisig_payload, multisig_payload_len, output->has_multisig, script_type, &output->multisig);
+        && multisig_ok;
 }
 
 bool trezor_bitcoin_sign_tx_decode(

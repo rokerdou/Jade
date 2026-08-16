@@ -22,6 +22,8 @@
 #include "../../wallet_core/wallet_core.h"
 
 #include <string.h>
+#include <wally_address.h>
+#include <wally_core.h>
 #include <wally_crypto.h>
 
 #define TREZOR_WALLET_ADAPTER_INTERACTIVE_TIMEOUT_SECS 600
@@ -73,22 +75,94 @@ static bool trezor_wallet_get_eth_address(
     return true;
 }
 
-static bool trezor_wallet_get_bitcoin_address(
-    void* ctx, const trezor_bitcoin_get_address_t* const request, char* const address, const size_t address_len)
+static bool trezor_wallet_bitcoin_path_from_request(
+    const trezor_bitcoin_get_address_t* const request, wallet_core_path_t* const path)
 {
-    (void)ctx;
-    if (!request || !address || !trezor_auth_bridge_wallet_ready() || !request->has_coin_name || request->has_multisig
-        || (strcmp(request->coin_name, "Testnet") != 0 && strcmp(request->coin_name, "Bitcoin") != 0)
-        || (request->has_script_type && request->script_type != BITCOIN_P2PKH_SPENDADDRESS
-            && request->script_type != BITCOIN_P2WPKH_SPENDWITNESS
-            && request->script_type != BITCOIN_P2SH_P2WPKH_SPENDP2SHWITNESS)) {
+    if (!request || !path || request->address_n_len == 0 || request->address_n_len > WALLET_CORE_MAX_PATH_LEN) {
+        return false;
+    }
+    wally_bzero(path, sizeof(*path));
+    path->len = request->address_n_len;
+    memcpy(path->parts, request->address_n, request->address_n_len * sizeof(request->address_n[0]));
+    return true;
+}
+
+static bool trezor_wallet_bitcoin_multisig_contains_local_pubkey(const trezor_bitcoin_get_address_t* const request)
+{
+    if (!request || !request->has_multisig || !request->has_multisig_policy) {
         return false;
     }
 
     wallet_core_path_t path;
-    memset(&path, 0, sizeof(path));
-    path.len = request->address_n_len;
-    memcpy(path.parts, request->address_n, request->address_n_len * sizeof(request->address_n[0]));
+    uint8_t local_pubkey[EC_PUBLIC_KEY_LEN];
+    wally_bzero(&path, sizeof(path));
+    wally_bzero(local_pubkey, sizeof(local_pubkey));
+    const bool derived = trezor_wallet_bitcoin_path_from_request(request, &path)
+        && wallet_core_get_public_key(&path, WALLET_CORE_PUBKEY_COMPRESSED, local_pubkey, sizeof(local_pubkey));
+    wally_bzero(&path, sizeof(path));
+    if (!derived) {
+        wally_bzero(local_pubkey, sizeof(local_pubkey));
+        return false;
+    }
+
+    bool found = false;
+    for (size_t i = 0; i < request->multisig_policy.num_pubkeys; ++i) {
+        const uint8_t* const candidate = request->multisig_policy.pubkeys + (i * EC_PUBLIC_KEY_LEN);
+        if (memcmp(candidate, local_pubkey, sizeof(local_pubkey)) == 0) {
+            found = true;
+            break;
+        }
+    }
+    wally_bzero(local_pubkey, sizeof(local_pubkey));
+    return found;
+}
+
+static bool trezor_wallet_copy_wally_string(char* const encoded, char* const output, const size_t output_len)
+{
+    if (!encoded || !output || output_len == 0) {
+        wally_free_string(encoded);
+        return false;
+    }
+    const size_t encoded_len = strlen(encoded);
+    const bool ok = encoded_len > 0 && encoded_len < output_len;
+    if (ok) {
+        memcpy(output, encoded, encoded_len + 1);
+    }
+    wally_free_string(encoded);
+    return ok;
+}
+
+static bool trezor_wallet_multisig_address_from_script_pubkey(const trezor_bitcoin_multisig_summary_t* const summary,
+    const bool mainnet, char* const address, const size_t address_len)
+{
+    if (!summary || !address || address_len == 0 || !is_multisig(summary->variant)) {
+        return false;
+    }
+
+    char* encoded = NULL;
+    bool ok = false;
+    if (summary->variant == MULTI_P2WSH) {
+        const char* const hrp = mainnet ? "bc" : "tb";
+        ok = summary->script_pubkey_len == WALLY_SCRIPTPUBKEY_P2WSH_LEN
+            && wally_addr_segwit_from_bytes(summary->script_pubkey, summary->script_pubkey_len, hrp, 0, &encoded)
+                == WALLY_OK;
+    } else {
+        const uint32_t network = mainnet ? WALLY_NETWORK_BITCOIN_MAINNET : WALLY_NETWORK_BITCOIN_TESTNET;
+        ok = summary->script_pubkey_len == WALLY_SCRIPTPUBKEY_P2SH_LEN
+            && wally_scriptpubkey_to_address(summary->script_pubkey, summary->script_pubkey_len, network, &encoded)
+                == WALLY_OK;
+    }
+    return ok && trezor_wallet_copy_wally_string(encoded, address, address_len);
+}
+
+static bool trezor_wallet_bitcoin_singlesig_address(
+    const trezor_bitcoin_get_address_t* const request, char* const address, const size_t address_len)
+{
+    wallet_core_path_t path;
+    wally_bzero(&path, sizeof(path));
+    if (!trezor_wallet_bitcoin_path_from_request(request, &path)) {
+        return false;
+    }
 
     const uint32_t script_type = request->has_script_type ? request->script_type : BITCOIN_P2PKH_SPENDADDRESS;
     const bool mainnet = strcmp(request->coin_name, "Bitcoin") == 0;
@@ -104,6 +178,33 @@ static bool trezor_wallet_get_bitcoin_address(
                      : bitcoin_wallet_p2sh_p2wpkh_testnet_address_from_path(&path, address, address_len);
     }
     wally_bzero(&path, sizeof(path));
+    return ok;
+}
+
+static bool trezor_wallet_get_bitcoin_address(
+    void* ctx, const trezor_bitcoin_get_address_t* const request, char* const address, const size_t address_len)
+{
+    (void)ctx;
+    if (!request || !address || !trezor_auth_bridge_wallet_ready() || !request->has_coin_name
+        || (strcmp(request->coin_name, "Testnet") != 0 && strcmp(request->coin_name, "Bitcoin") != 0)
+        || (request->has_script_type && request->script_type != BITCOIN_P2PKH_SPENDADDRESS
+            && request->script_type != BITCOIN_MULTISIG_SPENDMULTISIG
+            && request->script_type != BITCOIN_P2WPKH_SPENDWITNESS
+            && request->script_type != BITCOIN_P2SH_P2WPKH_SPENDP2SHWITNESS)) {
+        return false;
+    }
+
+    const uint32_t script_type = request->has_script_type ? request->script_type : BITCOIN_P2PKH_SPENDADDRESS;
+    const bool mainnet = strcmp(request->coin_name, "Bitcoin") == 0;
+    bool ok = false;
+    if (request->has_multisig) {
+        const bool script_ok = script_type == BITCOIN_MULTISIG_SPENDMULTISIG
+            || script_type == BITCOIN_P2WPKH_SPENDWITNESS || script_type == BITCOIN_P2SH_P2WPKH_SPENDP2SHWITNESS;
+        ok = script_ok && trezor_wallet_bitcoin_multisig_contains_local_pubkey(request)
+            && trezor_wallet_multisig_address_from_script_pubkey(&request->multisig, mainnet, address, address_len);
+    } else {
+        ok = trezor_wallet_bitcoin_singlesig_address(request, address, address_len);
+    }
     if (!ok) {
         wally_bzero(address, address_len);
         return false;

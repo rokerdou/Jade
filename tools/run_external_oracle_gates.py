@@ -1519,13 +1519,21 @@ def trezor_multisig_fixture() -> tuple[
     bytes,
     bytes,
 ]:
-    from embit import bip32, script
+    from embit import bip32, ec, script
 
-    seeds = [bytes([0x11]) * 32, bytes([0x22]) * 32, bytes([0x33]) * 32]
+    local_hd_node = messages.HDNodeType(
+        depth=5,
+        fingerprint=0x01020304,
+        child_num=0,
+        chain_code=b"\x44" * 32,
+        public_key=BTC_TEST_COMPRESSED_PUBKEY,
+    )
+    local_pubkey = ec.PublicKey.parse(BTC_TEST_COMPRESSED_PUBKEY)
+    seeds = [bytes([0x22]) * 32, bytes([0x33]) * 32]
     account_nodes = [bip32.HDKey.from_seed(seed).derive("m/48h/1h/0h/2h").to_public() for seed in seeds]
     child_nodes = [node.child(0).child(0) for node in account_nodes]
-    child_pubkeys = [node.get_public_key() for node in child_nodes]
-    child_hd_nodes = [hdnode_type_from_xpub(str(node)) for node in child_nodes]
+    child_pubkeys = [local_pubkey] + [node.get_public_key() for node in child_nodes]
+    child_hd_nodes = [local_hd_node] + [hdnode_type_from_xpub(str(node)) for node in child_nodes]
 
     preserved_redeem = script.multisig(2, child_pubkeys).data
     sorted_redeem = script.multisig(2, sorted(child_pubkeys, key=lambda pubkey: pubkey.sec())).data
@@ -1854,7 +1862,65 @@ def check_local_btc_signtx_wire_script_oracle(gate: Path) -> None:
             multisig=multisig,
         ),
     )
-    assert_btc_failure(get_multisig_address_res, messages.FailureType.DataError, "BTC multisig address request")
+    if get_multisig_address_res[0] != messages.MessageType.Address:
+        raise AssertionError(f"BTC multisig address request must return Address, got {get_multisig_address_res[0]}")
+    multisig_address = protobuf.load_message(io.BytesIO(get_multisig_address_res[1]), messages.Address)
+    if multisig_address.address != "2NGateMultisigP2SHTestnet1111111":
+        raise AssertionError(f"unexpected BTC multisig address response: {multisig_address.address}")
+
+    multisig_address_cases = [
+        (
+            messages.InputScriptType.SPENDWITNESS,
+            "tb1qgatemultisigp2wsh000000000000000000000000000000000",
+        ),
+        (
+            messages.InputScriptType.SPENDP2SHWITNESS,
+            "2NGateMultisigNestedTestnet111111",
+        ),
+    ]
+    for script_type, expected_address in multisig_address_cases:
+        response = run_local_wire_oracle(
+            gate,
+            messages.MessageType.GetAddress,
+            messages.GetAddress(
+                address_n=[0x80000030, 0x80000001, 0x80000000, 0x80000002, 0, 0],
+                coin_name="Testnet",
+                show_display=False,
+                script_type=script_type,
+                multisig=multisig,
+            ),
+        )
+        if response[0] != messages.MessageType.Address:
+            raise AssertionError(f"BTC multisig address request {script_type} must return Address, got {response[0]}")
+        actual_address = protobuf.load_message(io.BytesIO(response[1]), messages.Address).address
+        if actual_address != expected_address:
+            raise AssertionError(
+                f"unexpected BTC multisig address response for {script_type}: {actual_address}"
+            )
+
+    no_local_multisig = messages.MultisigRedeemScriptType(
+        nodes=multisig_nodes[1:],
+        address_n=[],
+        signatures=[b"", b""],
+        m=2,
+        pubkeys_order=messages.MultisigPubkeysOrder.PRESERVED,
+    )
+    no_local_multisig_address_res = run_local_wire_oracle(
+        gate,
+        messages.MessageType.GetAddress,
+        messages.GetAddress(
+            address_n=[0x80000030, 0x80000001, 0x80000000, 0x80000002, 0, 0],
+            coin_name="Testnet",
+            show_display=False,
+            script_type=messages.InputScriptType.SPENDMULTISIG,
+            multisig=no_local_multisig,
+        ),
+    )
+    assert_btc_failure(
+        no_local_multisig_address_res,
+        messages.FailureType.ActionCancelled,
+        "BTC multisig address without local signer",
+    )
 
     valid_multisig_input_responses = run_local_wire_script(
         gate,

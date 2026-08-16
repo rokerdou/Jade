@@ -476,7 +476,31 @@ static bool trezor_test_get_bitcoin_address(
     const uint32_t script_type = request->has_script_type ? request->script_type : BITCOIN_P2PKH_SPENDADDRESS;
     const bool mainnet = request->has_coin_name && strcmp(request->coin_name, "Bitcoin") == 0;
     bool ok = false;
-    if (script_type == BITCOIN_P2PKH_SPENDADDRESS && !mainnet) {
+    if (request->has_multisig) {
+        bool has_local_pubkey = request->has_multisig_policy && request->multisig_policy.num_pubkeys > 0;
+        for (size_t i = 0; has_local_pubkey && i < request->multisig_policy.num_pubkeys; ++i) {
+            const uint8_t* const candidate = request->multisig_policy.pubkeys + (i * EC_PUBLIC_KEY_LEN);
+            if (memcmp(candidate, PRIVATE_KEY_ONE_COMPRESSED_PUBKEY, sizeof(PRIVATE_KEY_ONE_COMPRESSED_PUBKEY)) == 0) {
+                break;
+            }
+            if (i + 1 == request->multisig_policy.num_pubkeys) {
+                has_local_pubkey = false;
+            }
+        }
+        const char* expected = NULL;
+        if (has_local_pubkey && request->multisig.variant == MULTI_P2SH) {
+            expected = mainnet ? "3GateMultisigP2SHMainnet1111111" : "2NGateMultisigP2SHTestnet1111111";
+        } else if (has_local_pubkey && request->multisig.variant == MULTI_P2WSH) {
+            expected = mainnet ? "bc1qgatemultisigp2wsh000000000000000000000000000000000"
+                               : "tb1qgatemultisigp2wsh000000000000000000000000000000000";
+        } else if (has_local_pubkey && request->multisig.variant == MULTI_P2WSH_P2SH) {
+            expected = mainnet ? "3GateMultisigNestedMainnet111111" : "2NGateMultisigNestedTestnet111111";
+        }
+        if (expected && strlen(expected) < address_len) {
+            memcpy(address, expected, strlen(expected) + 1);
+            ok = true;
+        }
+    } else if (script_type == BITCOIN_P2PKH_SPENDADDRESS && !mainnet) {
         ok = bitcoin_p2pkh_testnet_address_from_compressed_pubkey(
             PRIVATE_KEY_ONE_COMPRESSED_PUBKEY, sizeof(PRIVATE_KEY_ONE_COMPRESSED_PUBKEY), address, address_len);
     } else if (script_type == BITCOIN_P2PKH_SPENDADDRESS && mainnet) {
@@ -1327,6 +1351,24 @@ int wally_addr_segwit_from_bytes(
 {
     const char expected_testnet[] = "tb1qw508d6qejxtdg4y5r3zarvary0c5xw7kxpjzsx";
     const char expected_mainnet[] = "bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4";
+    const char expected_p2wsh_testnet[] = "tb1qgatemultisigp2wsh000000000000000000000000000000000";
+    const char expected_p2wsh_mainnet[] = "bc1qgatemultisigp2wsh000000000000000000000000000000000";
+    if (bytes && bytes_len == WALLY_SCRIPTPUBKEY_P2WSH_LEN && addr_family && flags == 0 && output
+        && bytes[0] == 0x00 && bytes[1] == SHA256_LEN) {
+        const char* const expected = strcmp(addr_family, "bc") == 0 ? expected_p2wsh_mainnet
+            : strcmp(addr_family, "tb") == 0                         ? expected_p2wsh_testnet
+                                                                     : NULL;
+        if (!expected) {
+            return WALLY_EINVAL;
+        }
+        const size_t expected_len = strlen(expected) + 1;
+        *output = malloc(expected_len);
+        if (!*output) {
+            return WALLY_ENOMEM;
+        }
+        memcpy(*output, expected, expected_len);
+        return WALLY_OK;
+    }
     if (!bytes || bytes_len != sizeof(EXPECTED_BTC_P2WPKH_SCRIPTPUBKEY) || !addr_family || flags != 0 || !output
         || memcmp(bytes, EXPECTED_BTC_P2WPKH_SCRIPTPUBKEY, sizeof(EXPECTED_BTC_P2WPKH_SCRIPTPUBKEY)) != 0) {
         return WALLY_EINVAL;
@@ -1400,6 +1442,32 @@ int wally_address_to_scriptpubkey(
         return WALLY_OK;
     }
     return WALLY_EINVAL;
+}
+
+int wally_scriptpubkey_to_address(
+    const unsigned char* scriptpubkey, size_t scriptpubkey_len, uint32_t network, char** output)
+{
+    if (!scriptpubkey || scriptpubkey_len != WALLY_SCRIPTPUBKEY_P2SH_LEN || !output || scriptpubkey[0] != 0xa9
+        || scriptpubkey[1] != HASH160_LEN || scriptpubkey[2 + HASH160_LEN] != 0x87) {
+        return WALLY_EINVAL;
+    }
+
+    const char* expected = NULL;
+    if (network == WALLY_NETWORK_BITCOIN_TESTNET) {
+        expected = "2NGateMultisigP2SHTestnet1111111";
+    } else if (network == WALLY_NETWORK_BITCOIN_MAINNET) {
+        expected = "3GateMultisigP2SHMainnet1111111";
+    } else {
+        return WALLY_EINVAL;
+    }
+
+    const size_t expected_len = strlen(expected) + 1;
+    *output = malloc(expected_len);
+    if (!*output) {
+        return WALLY_ENOMEM;
+    }
+    memcpy(*output, expected, expected_len);
+    return WALLY_OK;
 }
 
 static void sort_compressed_pubkeys(uint8_t* const keys, const size_t num_keys)

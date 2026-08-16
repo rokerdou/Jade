@@ -50,6 +50,8 @@ typedef struct {
     bool chunkify;
     bool has_multisig;
     trezor_bitcoin_multisig_summary_t multisig;
+    bool has_multisig_policy;
+    trezor_bitcoin_multisig_policy_t multisig_policy;
 } trezor_bitcoin_get_address_t;
 
 typedef struct {

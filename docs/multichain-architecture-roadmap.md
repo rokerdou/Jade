@@ -174,7 +174,12 @@ main/
 - BTC `GetPublicKey` 已支持多签 xpub-only 导入路径：
   BIP45 `m/45'` 返回 `xpub/tpub`，BIP48 `m/48'/coin'/account'/1'` 返回
   `Ypub/Upub`，BIP48 `m/48'/coin'/account'/2'` 返回 `Zpub/Vpub`。这只表示
-  Sparrow/OneKey 可以获取 cosigner public node，不表示多签地址确认或多签签名已经开放。
+  Sparrow/OneKey 可以获取 cosigner public node，不表示多签签名已经开放。
+- BTC `GetAddress.multisig` 已开放 P2SH、P2WSH、P2SH-P2WSH 三种 Trezor
+  multisig 地址请求。实现遵循 OneKey/Trezor 的安全原则：先把
+  `MultisigRedeemScriptType` 归一化成内部 policy/redeem script/scriptPubKey，
+  再派生本机公钥并确认它属于该 policy，最后才返回/展示地址。若 policy 不包含
+  本机公钥，地址请求会拒绝。
 - Sparrow/lark 的 singlesig xpub 导入会用默认 `SPENDADDRESS` 调
   `GetPublicKey(m/49'...)` / `GetPublicKey(m/84'...)`。固件现在只在账户级 public-node
   导出路径把这个默认值视为客户端兼容占位，并按 BIP purpose 推断 ypub/zpub；
@@ -435,8 +440,8 @@ trezorlib / Safe CLI 兼容路径：
   导入和签名表现。
 - Sparrow/OneKey 完整导入兼容：`GetPublicKey`、`GetAddress`、`show_display`、
   `ignore_xpub_magic`、model/version/internal_model、firmware range 仍需真实客户端矩阵测试。
-- P2WSH/P2SH multisig 的 xpub-only 导入已开放；地址显示和签名仍暂不开放。它们不是
-  简单 xpub 版本字节问题，还需要
+- P2WSH/P2SH multisig 的 xpub-only 导入和 `GetAddress.multisig` 已开放；
+  多签签名仍暂不开放。它们不是简单 xpub 版本字节问题，还需要
   descriptor/multisig/pubkey order/witnessScript/change policy/fee review 的完整门禁；
   当前固件必须继续拒绝 `SPENDMULTISIG` 和未知 witness script 签名请求。
 - Trezor `MultisigRedeemScriptType` normalizer 已开始落地：能解析 old-style
@@ -444,7 +449,8 @@ trezorlib / Safe CLI 兼容路径：
   hardened suffix、`m > n`，并转换为内部 multisig policy/redeem script/scriptPubKey。
   这仍是前置安全层，不等于开放 multisig 地址或签名。
 - BTC `GetAddress`、`TxInputType`、`TxOutputType` 的 `multisig` 字段已接入 decode：
-  合法 multisig 请求会完成 normalizer 并保存小型 summary，随后仍在地址/签名策略层
+  合法 multisig 请求会完成 normalizer。`GetAddress` 会额外保留完整 policy 供本机 signer
+  membership 校验；`TxInputType`/`TxOutputType` 仍只保存小型 summary，并在签名策略层
   明确拒绝。协议状态不会把完整 multisig pubkey/policy 嵌入每个 input/output，以避免
   T-Display-S3/ESP32-S3 上的栈和状态内存膨胀。
 
@@ -515,7 +521,8 @@ trezorlib / Safe CLI 兼容路径：
      `MULTI_P2WSH_P2SH` policy，并生成 redeem script/scriptPubKey 用于后续 prevout/change
      绑定。
    - `messages.c` 已把 `GetAddress.multisig`、`TxInputType.multisig`、
-     `TxOutputType.multisig` 纳入解析，但只保留 scriptPubKey summary；完整 normalizer
+     `TxOutputType.multisig` 纳入解析。`GetAddress` 保留完整 policy 用于本机 signer
+     membership 校验；input/output 只保留 scriptPubKey summary，完整 normalizer
      临时对象用完即清零，不进入长期 signing state。
    - Host gate 使用 `trezorlib` 生成 `MultisigRedeemScriptType` payload，使用第三方
      `embit.script.multisig()` 生成期望 redeem script，覆盖 old-style/new-style、
@@ -524,11 +531,11 @@ trezorlib / Safe CLI 兼容路径：
      执行；host oracle 用已派生 child xpub + 空 suffix 避免 fake derivation 自测。
    - Host gate 已新增 BTC signing state 结构尺寸门禁，防止后续把完整 multisig 结构塞进
      每个 input/output，造成 ESP32 栈/堆压力。
-   - 未完成 descriptor/xpub/path/change 绑定前，只能开放 public-node 导入；地址确认和
-     签名必须明确拒绝，不能半支持。
-   - 当前 gate 已覆盖 `GetAddress` multisig 字段、`SignTx` multisig input/output 的拒绝路径，
-     并新增 normalizer 级 policy/redeem script 门禁。这些请求仍必须停在
-     协议/normalizer 边界，不能进入 signing policy。
+   - 未完成 descriptor/xpub/path/change 绑定前，只能开放 public-node 导入和
+     `GetAddress.multisig` 地址确认；签名必须明确拒绝，不能半支持。
+   - 当前 gate 已覆盖 `GetAddress` multisig 正向路径、policy 不包含本机公钥的拒绝路径、
+     `SignTx` multisig input/output 的拒绝路径，并新增 normalizer 级 policy/redeem
+     script 门禁。签名请求仍必须停在协议/normalizer 边界，不能进入 signing policy。
 
 3. Taproot / BIP86
    - OneKey/Trezor proto 的 `SPENDTAPROOT=5`、`PAYTOTAPROOT=6` 只是协议入口，不等于可签名。
