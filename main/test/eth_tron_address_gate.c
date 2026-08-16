@@ -4085,6 +4085,56 @@ int main(int argc, char** argv)
     trezor_btc_multisig_capture_state.inputs_len = 1;
     CHECK(!trezor_bitcoin_policy_is_basic(&trezor_btc_multisig_capture_state));
 
+    trezor_bitcoin_signing_state_t trezor_btc_multisig_preview_state = trezor_btc_multisig_capture_state;
+    trezor_btc_multisig_preview_state.request.outputs_count = 2;
+    trezor_btc_multisig_preview_state.outputs_len = 2;
+    trezor_btc_multisig_preview_state.outputs[1] = trezor_btc_multisig_preview_state.outputs[0];
+    trezor_btc_multisig_preview_state.output_has_multisig_fingerprint[1]
+        = trezor_btc_multisig_preview_state.output_has_multisig_fingerprint[0];
+    memcpy(trezor_btc_multisig_preview_state.output_multisig_fingerprints[1],
+        trezor_btc_multisig_preview_state.output_multisig_fingerprints[0],
+        sizeof(trezor_btc_multisig_preview_state.output_multisig_fingerprints[1]));
+    memset(&trezor_btc_multisig_preview_state.outputs[0], 0, sizeof(trezor_btc_multisig_preview_state.outputs[0]));
+    trezor_btc_multisig_preview_state.outputs[0].has_address = true;
+    memcpy(trezor_btc_multisig_preview_state.outputs[0].address,
+        "tb1qw508d6qejxtdg4y5r3zarvary0c5xw7kxpjzsx",
+        sizeof("tb1qw508d6qejxtdg4y5r3zarvary0c5xw7kxpjzsx"));
+    trezor_btc_multisig_preview_state.outputs[0].has_amount = true;
+    trezor_btc_multisig_preview_state.outputs[0].amount = 90000;
+    trezor_btc_multisig_preview_state.outputs[0].script_type = BITCOIN_PAYTOADDRESS;
+    trezor_btc_multisig_preview_state.outputs[1].amount = 5000;
+    trezor_btc_multisig_preview_state.inputs[0].has_verified_prevout_script = true;
+    trezor_btc_multisig_preview_state.inputs[0].verified_prevout_script_len
+        = trezor_btc_multisig_p2wsh_policy.script_pubkey_len;
+    memcpy(trezor_btc_multisig_preview_state.inputs[0].verified_prevout_script,
+        trezor_btc_multisig_p2wsh_policy.script_pubkey,
+        trezor_btc_multisig_p2wsh_policy.script_pubkey_len);
+    trezor_btc_multisig_preview_state.total_input = 100000;
+    trezor_btc_multisig_preview_state.total_output = 95000;
+    trezor_btc_multisig_preview_state.fee = 5000;
+    trezor_btc_multisig_preview_state.fee_rate_sats_per_vbyte = 10;
+    trezor_bitcoin_multisig_preview_t trezor_btc_multisig_preview;
+    CHECK(trezor_bitcoin_policy_multisig_preview(&trezor_btc_multisig_preview_state, &trezor_btc_multisig_preview));
+    CHECK(trezor_btc_multisig_preview.external_outputs == 1);
+    CHECK(trezor_btc_multisig_preview.first_external_output_index == 0);
+    CHECK(trezor_btc_multisig_preview.external_amount == 90000);
+    CHECK(trezor_btc_multisig_preview.change_amount == 5000);
+    bitcoin_confirm_request_t trezor_btc_multisig_confirm_request;
+    CHECK(trezor_bitcoin_signing_to_multisig_confirm_request(
+        &trezor_btc_multisig_preview_state, &trezor_btc_multisig_confirm_request));
+    CHECK(trezor_btc_multisig_confirm_request.amount == 90000);
+    CHECK(trezor_btc_multisig_confirm_request.change == 5000);
+    CHECK(trezor_btc_multisig_confirm_request.fee == 5000);
+    CHECK(strcmp(trezor_btc_multisig_confirm_request.to, "tb1qw508d6qejxtdg4y5r3zarvary0c5xw7kxpjzsx") == 0);
+    trezor_btc_multisig_preview_state.inputs[0].has_verified_prevout_script = false;
+    CHECK(!trezor_bitcoin_policy_multisig_preview(&trezor_btc_multisig_preview_state, &trezor_btc_multisig_preview));
+    trezor_btc_multisig_preview_state.inputs[0].has_verified_prevout_script = true;
+    memcpy(trezor_btc_multisig_preview_state.outputs[0].address, "not-a-bitcoin-address",
+        sizeof("not-a-bitcoin-address"));
+    CHECK(trezor_bitcoin_policy_multisig_preview(&trezor_btc_multisig_preview_state, &trezor_btc_multisig_preview));
+    CHECK(!trezor_bitcoin_signing_to_multisig_confirm_request(
+        &trezor_btc_multisig_preview_state, &trezor_btc_multisig_confirm_request));
+
     uint8_t trezor_btc_tx_request_payload[64];
     size_t trezor_btc_tx_request_payload_len = 0;
     CHECK(trezor_bitcoin_tx_request_encode(TREZOR_BITCOIN_REQUEST_TXINPUT, true, 0,

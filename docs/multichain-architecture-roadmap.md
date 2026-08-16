@@ -198,6 +198,10 @@ main/
   用保存的 fingerprint 判断某个 multisig output 是否与所有 multisig inputs
   属于同一 policy。当前实现故意保守：混合 singlesig/multisig、缺 fingerprint、
   input fingerprint 不一致、output fingerprint 不匹配都会返回 false。
+- BTC 多签 preview/confirm plan 已有第一版门禁：所有 inputs 必须是多签、必须有
+  verified prevout script 和 fingerprint；外部 output 必须是 address，找零 output
+  必须是同 policy multisig；当前只允许一个外部付款输出，以适配现有
+  `bitcoin_confirm_request_t` UI 摘要结构。该路径只生成确认摘要，不接 signer。
 - BTC `SignTx.multisig` 仍保持关闭，并有 host gate 明确覆盖：现有 singlesig
   basic signing policy 必须拒绝 `has_multisig` 的 input/output，避免多签地址/xpub
   兼容工作误把多签签名路径打开。

@@ -97,6 +97,49 @@ bool trezor_bitcoin_signing_to_confirm_request(
     return true;
 }
 
+bool trezor_bitcoin_signing_to_multisig_confirm_request(
+    const trezor_bitcoin_signing_state_t* const state, bitcoin_confirm_request_t* const request)
+{
+    if (!state || !request || state->inputs_len == 0
+        || state->inputs[0].address_n_len > CHAIN_CONFIRM_MAX_PATH_LEN) {
+        return false;
+    }
+
+    trezor_bitcoin_multisig_preview_t preview;
+    wally_bzero(&preview, sizeof(preview));
+    if (!trezor_bitcoin_policy_multisig_preview(state, &preview)
+        || preview.first_external_output_index >= state->outputs_len) {
+        wally_bzero(&preview, sizeof(preview));
+        return false;
+    }
+
+    trezor_bitcoin_coin_t coin = TREZOR_BITCOIN_COIN_MAINNET;
+    const trezor_bitcoin_tx_output_t* const external_output = &state->outputs[preview.first_external_output_index];
+    uint8_t validated_script[WALLY_SEGWIT_ADDRESS_PUBKEY_MAX_LEN];
+    size_t validated_script_len = 0;
+    wally_bzero(validated_script, sizeof(validated_script));
+    const bool ok = trezor_bitcoin_policy_signing_coin(state, &coin)
+        && trezor_bitcoin_output_script(
+            external_output, coin, validated_script, sizeof(validated_script), &validated_script_len)
+        && validated_script_len > 0 && strlen(external_output->address) < sizeof(request->to);
+    wally_bzero(validated_script, sizeof(validated_script));
+    if (!ok) {
+        wally_bzero(&preview, sizeof(preview));
+        return false;
+    }
+
+    wally_bzero(request, sizeof(*request));
+    request->path_len = state->inputs[0].address_n_len;
+    memcpy(request->path, state->inputs[0].address_n, request->path_len * sizeof(request->path[0]));
+    memcpy(request->to, external_output->address, strlen(external_output->address) + 1U);
+    request->amount = preview.external_amount;
+    request->change = preview.change_amount;
+    request->fee = state->fee;
+    request->fee_rate_sats_per_vbyte = state->fee_rate_sats_per_vbyte;
+    wally_bzero(&preview, sizeof(preview));
+    return true;
+}
+
 static bool trezor_bitcoin_path_from_input(const trezor_bitcoin_tx_input_t* const input, wallet_core_path_t* const path)
 {
     if (!input || !path || input->address_n_len == 0 || input->address_n_len > WALLET_CORE_MAX_PATH_LEN) {

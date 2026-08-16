@@ -1,6 +1,7 @@
 #ifndef AMALGAMATED_BUILD
 #include "policy.h"
 
+#include "script_policy.h"
 #include "signing_state.h"
 #include "../../../chains/bitcoin/path.h"
 
@@ -185,6 +186,70 @@ bool trezor_bitcoin_policy_multisig_output_matches_inputs(
         state->output_multisig_fingerprints[output_index], sizeof(state->output_multisig_fingerprints[output_index]));
     trezor_bitcoin_multisig_matcher_reset(&matcher);
     return ok;
+}
+
+bool trezor_bitcoin_policy_multisig_preview(
+    const trezor_bitcoin_signing_state_t* const state, trezor_bitcoin_multisig_preview_t* const preview)
+{
+    trezor_bitcoin_coin_t coin = TREZOR_BITCOIN_COIN_MAINNET;
+    if (!state || !preview || !trezor_bitcoin_signing_ready(state) || state->inputs_len == 0 || state->outputs_len == 0
+        || state->inputs_len != state->request.inputs_count || state->outputs_len != state->request.outputs_count
+        || state->inputs_len > TREZOR_BITCOIN_TX_INPUTS_MAX || state->outputs_len > TREZOR_BITCOIN_TX_OUTPUTS_MAX
+        || !state->request.serialize || state->request.lock_time != 0
+        || !trezor_bitcoin_policy_signing_coin(state, &coin)
+        || state->fee_rate_sats_per_vbyte > TREZOR_BITCOIN_MAX_FEE_RATE_SATS_PER_VBYTE) {
+        return false;
+    }
+
+    wally_bzero(preview, sizeof(*preview));
+    for (size_t i = 0; i < state->inputs_len; ++i) {
+        const trezor_bitcoin_tx_input_t* const input = &state->inputs[i];
+        if (!input->has_multisig || !input->has_prev_hash || !input->has_prev_index || !input->has_amount
+            || !input->has_verified_prevout_script || !state->input_has_multisig_fingerprint[i]
+            || input->verified_prevout_script_len == 0
+            || !trezor_bitcoin_script_policy_prevout_matches_input(
+                input, coin, input->verified_prevout_script, input->verified_prevout_script_len)) {
+            wally_bzero(preview, sizeof(*preview));
+            return false;
+        }
+    }
+
+    for (size_t i = 0; i < state->outputs_len; ++i) {
+        const trezor_bitcoin_tx_output_t* const output = &state->outputs[i];
+        if (!output->has_amount) {
+            wally_bzero(preview, sizeof(*preview));
+            return false;
+        }
+        if (output->has_address) {
+            if (output->has_multisig || output->address_n_len != 0 || output->script_type != BITCOIN_PAYTOADDRESS) {
+                wally_bzero(preview, sizeof(*preview));
+                return false;
+            }
+            if (preview->external_outputs == 0) {
+                preview->first_external_output_index = i;
+            }
+            ++preview->external_outputs;
+            if (!trezor_bitcoin_policy_add_u64(&preview->external_amount, output->amount)) {
+                wally_bzero(preview, sizeof(*preview));
+                return false;
+            }
+        } else {
+            if (!output->has_multisig || output->address_n_len == 0 || output->script_type != BITCOIN_PAYTOMULTISIG
+                || !trezor_bitcoin_policy_multisig_output_matches_inputs(state, i)
+                || !trezor_bitcoin_policy_add_u64(&preview->change_amount, output->amount)) {
+                wally_bzero(preview, sizeof(*preview));
+                return false;
+            }
+        }
+    }
+
+    if (preview->external_outputs != 1 || preview->external_amount == 0
+        || preview->external_amount > state->total_output || preview->change_amount > state->total_output
+        || preview->external_amount != state->total_output - preview->change_amount) {
+        wally_bzero(preview, sizeof(*preview));
+        return false;
+    }
+    return true;
 }
 
 static bool trezor_bitcoin_policy_input_is_supported_without_prev_tx_verification(
