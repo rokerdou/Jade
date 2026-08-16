@@ -310,6 +310,27 @@ bool trezor_bitcoin_policy_multisig_output_matches_inputs(
     return ok;
 }
 
+static bool trezor_bitcoin_policy_multisig_path_type(
+    const script_variant_t variant, bitcoin_multisig_path_type_t* const path_type)
+{
+    if (!path_type) {
+        return false;
+    }
+    if (variant == MULTI_P2SH) {
+        *path_type = BITCOIN_MULTISIG_PATH_P2SH;
+        return true;
+    }
+    if (variant == MULTI_P2WSH_P2SH) {
+        *path_type = BITCOIN_MULTISIG_PATH_P2SH_P2WSH;
+        return true;
+    }
+    if (variant == MULTI_P2WSH) {
+        *path_type = BITCOIN_MULTISIG_PATH_P2WSH;
+        return true;
+    }
+    return false;
+}
+
 bool trezor_bitcoin_policy_multisig_preview(
     const trezor_bitcoin_signing_state_t* const state, trezor_bitcoin_multisig_preview_t* const preview)
 {
@@ -324,10 +345,21 @@ bool trezor_bitcoin_policy_multisig_preview(
     }
 
     wally_bzero(preview, sizeof(*preview));
+    const bool testnet = trezor_bitcoin_coin_is_testnet(coin);
+    const trezor_bitcoin_tx_input_t* const first_input = &state->inputs[0];
+    bitcoin_multisig_path_type_t path_type = BITCOIN_MULTISIG_PATH_P2SH;
+    if (!first_input->has_multisig
+        || !trezor_bitcoin_policy_multisig_path_type(first_input->multisig.variant, &path_type)) {
+        return false;
+    }
     for (size_t i = 0; i < state->inputs_len; ++i) {
         const trezor_bitcoin_tx_input_t* const input = &state->inputs[i];
         if (!input->has_multisig || !input->has_prev_hash || !input->has_prev_index || !input->has_amount
             || !input->has_verified_prevout_script || !state->input_has_multisig_fingerprint[i]
+            || input->multisig.variant != first_input->multisig.variant
+            || !bitcoin_path_is_multisig_signing(input->address_n, input->address_n_len, testnet, path_type)
+            || !bitcoin_path_multisig_wallet_matches(
+                first_input->address_n, first_input->address_n_len, input->address_n, input->address_n_len)
             || input->verified_prevout_script_len == 0
             || !trezor_bitcoin_script_policy_prevout_matches_input(
                 input, coin, input->verified_prevout_script, input->verified_prevout_script_len)) {
@@ -357,6 +389,9 @@ bool trezor_bitcoin_policy_multisig_preview(
             }
         } else {
             if (!output->has_multisig || output->address_n_len == 0 || output->script_type != BITCOIN_PAYTOMULTISIG
+                || output->multisig.variant != first_input->multisig.variant
+                || !bitcoin_path_is_multisig_change_for_input(first_input->address_n, first_input->address_n_len,
+                    output->address_n, output->address_n_len, testnet, path_type)
                 || !trezor_bitcoin_policy_multisig_output_matches_inputs(state, i)
                 || !trezor_bitcoin_policy_add_u64(&preview->change_amount, output->amount)) {
                 wally_bzero(preview, sizeof(*preview));

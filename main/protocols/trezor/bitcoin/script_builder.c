@@ -150,6 +150,34 @@ bool trezor_bitcoin_script_builder_output_script(const trezor_bitcoin_tx_output_
     }
     *written = 0;
 
+    if (!output->has_address && output->has_multisig) {
+        const trezor_bitcoin_multisig_summary_t* const multisig = &output->multisig;
+        const bitcoin_multisig_path_type_t path_type = multisig->variant == MULTI_P2SH ? BITCOIN_MULTISIG_PATH_P2SH
+            : multisig->variant == MULTI_P2WSH_P2SH ? BITCOIN_MULTISIG_PATH_P2SH_P2WSH
+                                                    : BITCOIN_MULTISIG_PATH_P2WSH;
+        const bool variant_ok = multisig->variant == MULTI_P2SH || multisig->variant == MULTI_P2WSH
+            || multisig->variant == MULTI_P2WSH_P2SH;
+        const bool script_shape_ok = multisig->variant == MULTI_P2WSH
+            ? multisig->script_pubkey_len == WALLY_SCRIPTPUBKEY_P2WSH_LEN && multisig->script_pubkey[0] == 0
+                && multisig->script_pubkey[1] == SHA256_LEN
+            : multisig->script_pubkey_len == WALLY_SCRIPTPUBKEY_P2SH_LEN && multisig->script_pubkey[0] == 0xa9
+                && multisig->script_pubkey[1] == HASH160_LEN
+                && multisig->script_pubkey[WALLY_SCRIPTPUBKEY_P2SH_LEN - 1U] == 0x87;
+        if (output->script_type != BITCOIN_PAYTOMULTISIG || output->address_n_len == 0
+            || output->address_n_len > WALLET_CORE_MAX_PATH_LEN || !variant_ok || multisig->threshold == 0
+            || multisig->num_pubkeys == 0 || multisig->threshold > multisig->num_pubkeys
+            || multisig->num_pubkeys > TREZOR_BITCOIN_MULTISIG_MAX_SIGNERS || multisig->script_pubkey_len == 0
+            || multisig->script_pubkey_len > sizeof(multisig->script_pubkey) || multisig->script_pubkey_len > script_len
+            || !script_shape_ok
+            || !bitcoin_path_is_multisig_change(
+                output->address_n, output->address_n_len, trezor_bitcoin_coin_is_testnet(coin), path_type)) {
+            return false;
+        }
+        memcpy(script, multisig->script_pubkey, multisig->script_pubkey_len);
+        *written = multisig->script_pubkey_len;
+        return true;
+    }
+
     if (output->has_address) {
         if (wally_addr_segwit_to_bytes(output->address, trezor_bitcoin_coin_segwit_hrp(coin), 0, script,
                 script_len, written)

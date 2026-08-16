@@ -113,10 +113,14 @@ if(HOST_CC)
     set(wallet_core_public_node_gate_bin ${CMAKE_BINARY_DIR}/wallet_core_public_node_gate)
     set(wallet_core_public_node_gate_stamp ${CMAKE_BINARY_DIR}/wallet_core_public_node_gate.stamp)
     add_custom_command(OUTPUT ${eth_tron_address_gate_stamp}
-        COMMAND ${HOST_CC} -std=c11 -Wall -Wextra -Werror
+        COMMAND ${HOST_CC} -std=c11 -Wall -Wextra -Werror -Wno-error=array-parameter -Wno-error=unused-function
             -DTREZOR_ETHEREUM_DEFINITIONS_HOST_TEST
             -I${COMPONENT_DIR}
             -I${COMPONENT_DIR}/test/host_shims
+            -I${PROJECT_DIR}/components/esp32_bc-ur/src
+            -I${PROJECT_DIR}/components/libwally-core
+            -I${PROJECT_DIR}/components/libwally-core/upstream/src
+            -I${PROJECT_DIR}/components/libwally-core/upstream/src/ccan
             -I${PROJECT_DIR}/components/libwally-core/upstream/include
             ${COMPONENT_DIR}/test/eth_tron_address_gate.c
             ${COMPONENT_DIR}/chains/authorization.c
@@ -139,6 +143,7 @@ if(HOST_CC)
             ${COMPONENT_DIR}/chains/ethereum/wallet.c
             ${COMPONENT_DIR}/protocols/trezor/bitcoin/messages.c
             ${COMPONENT_DIR}/protocols/trezor/bitcoin/multisig.c
+            ${COMPONENT_DIR}/protocols/trezor/bitcoin/multisig_tx.c
             ${COMPONENT_DIR}/protocols/trezor/bitcoin/normalizer.c
             ${COMPONENT_DIR}/protocols/trezor/bitcoin/script_builder.c
             ${COMPONENT_DIR}/protocols/trezor/bitcoin/protocol.c
@@ -160,6 +165,9 @@ if(HOST_CC)
             ${COMPONENT_DIR}/protocols/trezor/session.c
             ${COMPONENT_DIR}/protocols/trezor/trace.c
             ${COMPONENT_DIR}/protocols/trezor/wire.c
+            ${PROJECT_DIR}/components/esp32_bc-ur/src/sha2.c
+            ${PROJECT_DIR}/components/esp32_bc-ur/src/memzero.c
+            ${PROJECT_DIR}/components/libwally-core/upstream/src/ccan/ccan/crypto/ripemd160/ripemd160.c
             ${COMPONENT_DIR}/chains/tron/address.c
             ${COMPONENT_DIR}/chains/tron/authorize.c
             ${COMPONENT_DIR}/chains/tron/confirm.c
@@ -212,6 +220,8 @@ if(HOST_CC)
             ${COMPONENT_DIR}/protocols/trezor/bitcoin/messages.h
             ${COMPONENT_DIR}/protocols/trezor/bitcoin/multisig.c
             ${COMPONENT_DIR}/protocols/trezor/bitcoin/multisig.h
+            ${COMPONENT_DIR}/protocols/trezor/bitcoin/multisig_tx.c
+            ${COMPONENT_DIR}/protocols/trezor/bitcoin/multisig_tx.h
             ${COMPONENT_DIR}/protocols/trezor/bitcoin/normalizer.c
             ${COMPONENT_DIR}/protocols/trezor/bitcoin/normalizer.h
             ${COMPONENT_DIR}/protocols/trezor/bitcoin/script_builder.c
@@ -255,6 +265,12 @@ if(HOST_CC)
             ${COMPONENT_DIR}/protocols/trezor/trace.h
             ${COMPONENT_DIR}/protocols/trezor/wire.c
             ${COMPONENT_DIR}/protocols/trezor/wire.h
+            ${PROJECT_DIR}/components/esp32_bc-ur/src/sha2.c
+            ${PROJECT_DIR}/components/esp32_bc-ur/src/sha2.h
+            ${PROJECT_DIR}/components/esp32_bc-ur/src/memzero.c
+            ${PROJECT_DIR}/components/esp32_bc-ur/src/memzero.h
+            ${PROJECT_DIR}/components/libwally-core/upstream/src/ccan/ccan/crypto/ripemd160/ripemd160.c
+            ${PROJECT_DIR}/components/libwally-core/upstream/src/ccan/ccan/crypto/ripemd160/ripemd160.h
             ${COMPONENT_DIR}/chains/tron/address.c
             ${COMPONENT_DIR}/chains/tron/address.h
             ${COMPONENT_DIR}/chains/tron/authorize.c

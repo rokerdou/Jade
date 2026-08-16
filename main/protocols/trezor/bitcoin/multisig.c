@@ -426,25 +426,27 @@ static bool build_multisig_script_pubkey(trezor_bitcoin_multisig_policy_t* const
             == WALLY_OK;
     }
     if (policy->variant == MULTI_P2WSH) {
-        return wally_witness_program_from_bytes(policy->redeem_script, policy->redeem_script_len,
-                   WALLY_SCRIPT_SHA256, policy->script_pubkey, sizeof(policy->script_pubkey),
-                   &policy->script_pubkey_len)
-            == WALLY_OK;
+        const bool ok = wally_witness_program_from_bytes(policy->redeem_script, policy->redeem_script_len,
+                            WALLY_SCRIPT_SHA256, policy->witness_program, sizeof(policy->witness_program),
+                            &policy->witness_program_len)
+                == WALLY_OK
+            && policy->witness_program_len == sizeof(policy->witness_program);
+        if (ok) {
+            memcpy(policy->script_pubkey, policy->witness_program, policy->witness_program_len);
+            policy->script_pubkey_len = policy->witness_program_len;
+        }
+        return ok;
     }
     if (policy->variant == MULTI_P2WSH_P2SH) {
-        uint8_t witness_scriptpubkey[WALLY_SCRIPTPUBKEY_P2WSH_LEN];
-        size_t witness_scriptpubkey_len = 0;
-        wally_bzero(witness_scriptpubkey, sizeof(witness_scriptpubkey));
         const bool ok = wally_witness_program_from_bytes(policy->redeem_script, policy->redeem_script_len,
-                            WALLY_SCRIPT_SHA256, witness_scriptpubkey, sizeof(witness_scriptpubkey),
-                            &witness_scriptpubkey_len)
+                            WALLY_SCRIPT_SHA256, policy->witness_program, sizeof(policy->witness_program),
+                            &policy->witness_program_len)
                 == WALLY_OK
-            && witness_scriptpubkey_len == sizeof(witness_scriptpubkey)
-            && wally_scriptpubkey_p2sh_from_bytes(witness_scriptpubkey, witness_scriptpubkey_len,
+            && policy->witness_program_len == sizeof(policy->witness_program)
+            && wally_scriptpubkey_p2sh_from_bytes(policy->witness_program, policy->witness_program_len,
                    WALLY_SCRIPT_HASH160, policy->script_pubkey, sizeof(policy->script_pubkey),
                    &policy->script_pubkey_len)
                 == WALLY_OK;
-        wally_bzero(witness_scriptpubkey, sizeof(witness_scriptpubkey));
         return ok;
     }
     return false;

@@ -25,6 +25,7 @@ from eth_utils import keccak, to_checksum_address
 from safe_eth.eth.eip712 import eip712_encode, eip712_encode_hash
 from ecdsa import SECP256k1, SigningKey, VerifyingKey, util as ecdsa_util
 from trezorlib import messages, protobuf
+from trezorlib.tools import parse_path
 
 
 PRIVATE_KEY_ONE = bytes.fromhex("00" * 31 + "01")
@@ -1823,6 +1824,277 @@ def check_trezor_multisig_normalizer_oracle(gate: Path) -> None:
     )
 
 
+def parse_push_only_script(raw: bytes) -> list[bytes]:
+    """Parse the strict push-only subset used by multisig scriptSig."""
+    items: list[bytes] = []
+    offset = 0
+    while offset < len(raw):
+        opcode = raw[offset]
+        offset += 1
+        if opcode == 0:
+            items.append(b"")
+            continue
+        if opcode <= 75:
+            item_len = opcode
+        elif opcode == 0x4C:
+            if offset >= len(raw):
+                raise AssertionError("truncated OP_PUSHDATA1")
+            item_len = raw[offset]
+            offset += 1
+        elif opcode == 0x4D:
+            if offset + 2 > len(raw):
+                raise AssertionError("truncated OP_PUSHDATA2")
+            item_len = int.from_bytes(raw[offset : offset + 2], "little")
+            offset += 2
+        else:
+            raise AssertionError(f"non-push opcode in multisig scriptSig: 0x{opcode:02x}")
+        if item_len == 0 or item_len > len(raw) - offset:
+            raise AssertionError("invalid multisig scriptSig push length")
+        items.append(raw[offset : offset + item_len])
+        offset += item_len
+    return items
+
+
+def check_trezor_multisig_tx_structure_oracle(gate: Path) -> None:
+    """Verify multisig digest, raw transaction, and review binding with embit."""
+    from embit import ec, script
+    from embit.transaction import Transaction
+
+    child_hd_nodes, _, redeem_script, _ = trezor_multisig_fixture()
+    multisig = messages.MultisigRedeemScriptType(
+        nodes=child_hd_nodes,
+        address_n=[],
+        signatures=[b"", b"", b""],
+        m=2,
+        pubkeys_order=messages.MultisigPubkeysOrder.PRESERVED,
+    )
+    compact_signatures = [b"\x11" * 64, b"\x22" * 64]
+    expected_signatures = [
+        ecdsa_util.sigencode_der(
+            int.from_bytes(value[:32], "big"),
+            int.from_bytes(value[32:], "big"),
+            SECP256k1.order,
+        )
+        + b"\x01"
+        for value in compact_signatures
+    ]
+    witness_program = b"\x00\x20" + hashlib.sha256(redeem_script).digest()
+    cases = [
+        (
+            messages.InputScriptType.SPENDMULTISIG,
+            b"\xa9\x14" + hash160(redeem_script) + b"\x87",
+            b"",
+            "2-of-3 P2SH",
+        ),
+        (
+            messages.InputScriptType.SPENDWITNESS,
+            witness_program,
+            witness_program,
+            "2-of-3 P2WSH",
+        ),
+        (
+            messages.InputScriptType.SPENDP2SHWITNESS,
+            b"\xa9\x14" + hash160(witness_program) + b"\x87",
+            witness_program,
+            "2-of-3 P2SH-P2WSH",
+        ),
+    ]
+
+    for script_type, prevout_script, expected_witness_program, policy_text in cases:
+        expected_path_type = {
+            messages.InputScriptType.SPENDMULTISIG: 0,
+            messages.InputScriptType.SPENDP2SHWITNESS: 1,
+            messages.InputScriptType.SPENDWITNESS: 2,
+        }[script_type]
+        expected_path = f"2147483696/2147483649/2147483648/{0x80000000 | expected_path_type}/0/0"
+        output = subprocess.check_output(
+            [
+                str(gate),
+                "--trezor-multisig-tx",
+                message_payload(multisig).hex(),
+                str(int(script_type)),
+                prevout_script.hex(),
+                expected_witness_program.hex() if expected_witness_program else "-",
+                b"".join(compact_signatures).hex(),
+            ],
+            text=True,
+        )
+        parsed = parse_vectors(output)
+        if parsed.get("summary_ok") != "1" or parsed.get("digest_ok") != "1" or parsed.get("tx_ok") != "1":
+            raise AssertionError(f"multisig tx C gate failed for {script_type}: {parsed}")
+
+        raw_tx = bytes.fromhex(parsed["raw_tx"])
+        tx = Transaction.parse(raw_tx)
+        if tx.serialize() != raw_tx:
+            raise AssertionError(f"multisig raw tx round-trip mismatch for {script_type}")
+        if tx.version != 2 or tx.locktime != 0 or len(tx.vin) != 1 or len(tx.vout) != 2:
+            raise AssertionError(f"multisig raw tx shape mismatch for {script_type}")
+        tx_input = tx.vin[0]
+        if tx_input.txid != bytes(range(32)) or tx_input.vout != 1 or tx_input.sequence != 0xFFFFFFFD:
+            raise AssertionError(f"multisig outpoint/sequence mismatch for {script_type}")
+        if tx.vout[0].value != 90_000 or tx.vout[0].script_pubkey.data != btc_p2wpkh_script_pubkey():
+            raise AssertionError(f"multisig external output mismatch for {script_type}")
+        if tx.vout[1].value != 5_000 or tx.vout[1].script_pubkey.data != prevout_script:
+            raise AssertionError(f"multisig change output mismatch for {script_type}")
+
+        if (
+            parsed.get("summary_to") != btc_tx_output_address()
+            or parsed.get("summary_policy") != policy_text
+            or parsed.get("summary_amount") != "90000"
+            or parsed.get("summary_change") != "5000"
+            or parsed.get("summary_fee") != "5000"
+            or parsed.get("summary_fee_rate") != "10"
+            or parsed.get("path_len") != "6"
+            or parsed.get("path") != expected_path
+        ):
+            raise AssertionError(f"multisig UI summary is not bound to raw tx for {script_type}: {parsed}")
+        if 100_000 - sum(output.value for output in tx.vout) != int(parsed["summary_fee"]):
+            raise AssertionError(f"multisig fee/raw tx mismatch for {script_type}")
+
+        expected_digest = (
+            tx.sighash_legacy(0, script.Script(redeem_script), sighash=1)
+            if script_type == messages.InputScriptType.SPENDMULTISIG
+            else tx.sighash_segwit(0, script.Script(redeem_script), 100_000, sighash=1)
+        )
+        if bytes.fromhex(parsed["digest"]) != expected_digest:
+            raise AssertionError(
+                f"multisig digest mismatch for {script_type}: "
+                f"actual={parsed['digest']} expected={expected_digest.hex()}"
+            )
+
+        for encoded in expected_signatures:
+            if ec.Signature.parse(encoded[:-1]).serialize() != encoded[:-1]:
+                raise AssertionError("fake multisig signature is not canonical DER")
+        if script_type == messages.InputScriptType.SPENDMULTISIG:
+            if tx_input.witness.items:
+                raise AssertionError("legacy P2SH multisig unexpectedly contains witness")
+            if parse_push_only_script(tx_input.script_sig.data) != [b"", *expected_signatures, redeem_script]:
+                raise AssertionError("P2SH multisig signature/redeem-script placement mismatch")
+        else:
+            expected_script_sig_items = (
+                []
+                if script_type == messages.InputScriptType.SPENDWITNESS
+                else [witness_program]
+            )
+            if parse_push_only_script(tx_input.script_sig.data) != expected_script_sig_items:
+                raise AssertionError(f"multisig nested scriptSig mismatch for {script_type}")
+            if tx_input.witness.items != [b"", *expected_signatures, redeem_script]:
+                raise AssertionError(f"multisig witness signature/script placement mismatch for {script_type}")
+
+    bad_prevout = bytearray(cases[1][1])
+    bad_prevout[-1] ^= 1
+    bad_calls = [
+        [bad_prevout.hex(), witness_program.hex(), b"".join(compact_signatures).hex()],
+        [cases[1][1].hex(), witness_program.hex(), compact_signatures[0].hex()],
+        [cases[1][1].hex(), (witness_program[:-1] + bytes([witness_program[-1] ^ 1])).hex(), b"".join(compact_signatures).hex()],
+    ]
+    for prevout_hex, witness_hex, signatures_hex in bad_calls:
+        result = subprocess.run(
+            [
+                str(gate),
+                "--trezor-multisig-tx",
+                message_payload(multisig).hex(),
+                str(int(messages.InputScriptType.SPENDWITNESS)),
+                prevout_hex,
+                witness_hex,
+                signatures_hex,
+            ],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            check=False,
+        )
+        if result.returncode == 0:
+            raise AssertionError("multisig tx gate accepted corrupted policy/signature input")
+
+    for script_type, prevout_script, expected_witness_program, _ in cases:
+        for path_case in (
+            "external-change",
+            "wrong-account",
+            "wrong-coin",
+            "wrong-script",
+            "wrong-input-script",
+            "oversized-index",
+        ):
+            result = subprocess.run(
+                [
+                    str(gate),
+                    "--trezor-multisig-tx",
+                    message_payload(multisig).hex(),
+                    str(int(script_type)),
+                    prevout_script.hex(),
+                    expected_witness_program.hex() if expected_witness_program else "-",
+                    b"".join(compact_signatures).hex(),
+                    path_case,
+                ],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                check=False,
+            )
+            if result.returncode == 0:
+                raise AssertionError(
+                    f"multisig tx gate accepted invalid {path_case} path for {script_type}"
+                )
+
+    bip45_path = parse_path("m/45h/0/0/0")
+    bip45_output = subprocess.check_output(
+        [
+            str(gate),
+            "--trezor-multisig-tx",
+            message_payload(multisig).hex(),
+            str(int(messages.InputScriptType.SPENDMULTISIG)),
+            cases[0][1].hex(),
+            "-",
+            b"".join(compact_signatures).hex(),
+            "bip45-valid",
+        ],
+        text=True,
+    )
+    bip45_parsed = parse_vectors(bip45_output)
+    if (
+        bip45_parsed.get("summary_ok") != "1"
+        or bip45_parsed.get("digest_ok") != "1"
+        or bip45_parsed.get("tx_ok") != "1"
+        or bip45_parsed.get("path") != "/".join(str(part) for part in bip45_path)
+    ):
+        raise AssertionError(f"BIP45 multisig path gate mismatch: {bip45_parsed}")
+
+    for script_type, prevout_script, expected_witness_program, policy_text in cases:
+        expected_path_type = {
+            messages.InputScriptType.SPENDMULTISIG: 0,
+            messages.InputScriptType.SPENDP2SHWITNESS: 1,
+            messages.InputScriptType.SPENDWITNESS: 2,
+        }[script_type]
+        mainnet_output = subprocess.check_output(
+            [
+                str(gate),
+                "--trezor-multisig-tx",
+                message_payload(multisig).hex(),
+                str(int(script_type)),
+                prevout_script.hex(),
+                expected_witness_program.hex() if expected_witness_program else "-",
+                b"".join(compact_signatures).hex(),
+                "mainnet-valid",
+            ],
+            text=True,
+        )
+        mainnet_parsed = parse_vectors(mainnet_output)
+        mainnet_path = f"2147483696/2147483648/2147483648/{0x80000000 | expected_path_type}/0/0"
+        if (
+            mainnet_parsed.get("summary_ok") != "1"
+            or mainnet_parsed.get("digest_ok") != "1"
+            or mainnet_parsed.get("tx_ok") != "1"
+            or mainnet_parsed.get("summary_to") != btc_tx_output_address_mainnet()
+            or mainnet_parsed.get("summary_policy") != policy_text
+            or mainnet_parsed.get("path") != mainnet_path
+        ):
+            raise AssertionError(f"mainnet BIP48 multisig path gate mismatch: {mainnet_parsed}")
+        mainnet_tx = Transaction.parse(bytes.fromhex(mainnet_parsed["raw_tx"]))
+        if mainnet_tx.vout[0].script_pubkey.data != btc_p2wpkh_script_pubkey():
+            raise AssertionError(f"mainnet multisig external output mismatch for {script_type}")
+
+
 def check_local_btc_signtx_wire_script_oracle(gate: Path) -> None:
     btc_pubkey_hash = hash160(BTC_TEST_COMPRESSED_PUBKEY)
     btc_p2wpkh_script = b"\x00\x14" + btc_pubkey_hash
@@ -3157,6 +3429,7 @@ def main() -> int:
     check_trezorlib_btc_signtx_host_flow_oracle()
     check_embit_psbt_oracle()
     check_trezor_multisig_normalizer_oracle(gate)
+    check_trezor_multisig_tx_structure_oracle(gate)
     check_local_btc_signtx_wire_script_oracle(gate)
     check_trezorlib_protocol_oracle(gate, local)
     print("PASS external_oracle_gates")

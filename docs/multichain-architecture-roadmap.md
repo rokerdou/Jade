@@ -205,7 +205,8 @@ main/
   input fingerprint 不一致、output fingerprint 不匹配都会返回 false。
 - BTC 多签 preview/confirm plan 已有第一版门禁：所有 inputs 必须是多签、必须有
   verified prevout script 和 fingerprint；外部 output 必须是 address，找零 output
-  必须是同 policy multisig；当前只允许一个外部付款输出，以适配现有
+  必须是同 policy multisig；所有 input 还必须使用相同钱包路径前缀和脚本 variant，
+  change 必须与 input 绑定到同一 BIP45/BIP48 钱包前缀，并使用分支 1。当前只允许一个外部付款输出，以适配现有
   `bitcoin_confirm_request_t` UI 摘要结构。该路径只生成确认摘要，不接 signer。
 - BTC 多签 `SignTx` 状态机现在把任何 multisig input 都纳入 prev_tx 验证流程。
   只有 prevout scriptPubKey 与 multisig policy 绑定通过后，才会生成 UI preview。
@@ -215,14 +216,27 @@ main/
   `SPENDP2SHWITNESS`/P2SH-P2WSH 三种输入变体的完整 prev_tx 请求链。门禁还覆盖
   prevout scriptPubKey 不匹配拒绝，以及 P2WSH input 搭配 P2SH multisig 找零时
   不能被误识别为同 policy 找零。
+- BTC 多签 digest/raw-tx 结构门禁已独立落到 `bitcoin/multisig_tx.*`：模块只接收
+  normalized policy、公开交易字段和 compact signature，不读取私钥，也不调用 signer。
+  它会再次校验 redeem script/pubkey 顺序、P2SH/P2WSH hash 绑定、verified prevout、
+  policy fingerprint、同 policy 找零、金额与 fee/UI 摘要，再使用 libwally 构造
+  legacy sighash、BIP143 sighash、scriptSig/witness 和 raw tx。
+- 第三方 oracle 使用 `trezorlib` 构造 multisig protobuf、使用 `embit` 重新计算
+  P2SH legacy digest 与 P2WSH/P2SH-P2WSH BIP143 digest，并独立解析 raw tx，核对
+  DER+SIGHASH_ALL 签名位置、redeem/witness script、outpoint、sequence、付款金额、
+  multisig 找零、fee、完整 signer path 和 UI summary。BIP45 legacy 与主网/测试网 BIP48
+  P2SH/P2WSH/P2SH-P2WSH 都有正向门禁；错误 prevout、错误 witness program、签名数量不足、
+  外部分支冒充找零、账户/coin/script-purpose 不匹配、索引越界都有拒绝门禁。
+  fake signatures 只用于结构测试，不代表真签名已开放。
 - BTC fee-rate 估算已补保守 multisig 估算：只使用 threshold、signer count 和
   P2SH/P2WSH/P2SH-P2WSH variant，不读取 redeem script、xpub、signature 或私钥材料。
 - BTC `SignTx.multisig` 仍保持关闭，并有 host gate 明确覆盖：现有 singlesig
   basic signing policy 必须拒绝 `has_multisig` 的 input/output，避免多签地址/xpub
   兼容工作误把多签签名路径打开。
 - BTC session ready 分支已补显式 multisig gate：一旦 pending `SignTx`
-  状态包含 multisig input/output，直接返回 `Bitcoin multisig signing disabled`，
-  不进入 UI 确认、不进入 digest 构造、不调用 `wallet_core` 签名。
+  状态包含 multisig input/output，会先走受限 preview/confirm，然后返回
+  `Bitcoin multisig signing disabled`。session 尚未连接 `multisig_tx` digest/raw-tx
+  builder，不调用 `wallet_core` 签名，因此本轮新增结构模块不会意外开放真签名。
 - Sparrow/lark 的 singlesig xpub 导入会用默认 `SPENDADDRESS` 调
   `GetPublicKey(m/49'...)` / `GetPublicKey(m/84'...)`。固件现在只在账户级 public-node
   导出路径把这个默认值视为客户端兼容占位，并按 BIP purpose 推断 ypub/zpub；
@@ -584,8 +598,8 @@ trezorlib / Safe CLI 兼容路径：
      临时对象用完即清零，不进入长期 signing state。
    - `multisig_policy_t` 已生成 OneKey/Trezor 风格 fingerprint；host gate 验证
      old-style/new-style protobuf forms、BIP67 order mode 和 threshold 变化的 fingerprint
-     行为。fingerprint 暂不进入 input/output summary，后续如果要做 change-output policy
-     matcher，应设计专门的小型 policy object，而不是把完整 policy 塞进 signing state。
+     行为。fingerprint 通过独立旁路数组进入 signing state，只用于 input policy 一致性和
+     change-output matcher；完整 xpub/redeem policy 仍不进入长期 input/output summary。
    - Host gate 使用 `trezorlib` 生成 `MultisigRedeemScriptType` payload，使用第三方
      `embit.script.multisig()` 生成期望 redeem script，覆盖 old-style/new-style、
      BIP67 lexicographic 排序、private_key 字段拒绝、hardened suffix 拒绝、`m > n` 拒绝。
@@ -597,8 +611,9 @@ trezorlib / Safe CLI 兼容路径：
      `GetAddress.multisig` 地址确认；签名必须明确拒绝，不能半支持。
    - 当前 gate 已覆盖 `GetAddress` multisig 正向路径、policy 不包含本机公钥的拒绝路径、
      `SignTx` multisig input/output 的拒绝路径，并新增 normalizer 级 policy/redeem
-     script 门禁和 `script_policy` prevout scriptPubKey 绑定门禁。签名请求仍必须停在
-     协议/normalizer 边界，不能进入 signing policy。
+     script 门禁、`script_policy` prevout scriptPubKey 绑定门禁，以及 P2SH/P2WSH/
+     P2SH-P2WSH digest/raw-tx 结构 oracle。session 仍不接 signer；下一阶段必须先设计
+     多 owner 部分签名槽位、真实 ECDSA oracle 和硬件确认/取消回归，才能开放签名。
 
 3. Taproot / BIP86
    - OneKey/Trezor proto 的 `SPENDTAPROOT=5`、`PAYTOTAPROOT=6` 只是协议入口，不等于可签名。

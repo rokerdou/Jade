@@ -9,6 +9,7 @@
 #include <stdint.h>
 #include <wally_bip32.h>
 #include <wally_crypto.h>
+#include <wally_script.h>
 
 // Keep this adapter-local so the Trezor protocol normalizer does not pull in
 // Jade's CBOR RPC signer layer. The value intentionally mirrors signer.h.
@@ -58,6 +59,8 @@ typedef struct {
     uint8_t pubkeys[TREZOR_BITCOIN_MULTISIG_MAX_SIGNERS * EC_PUBLIC_KEY_LEN];
     uint8_t redeem_script[TREZOR_BITCOIN_MULTISIG_REDEEM_SCRIPT_MAX_LEN];
     size_t redeem_script_len;
+    uint8_t witness_program[WALLY_SCRIPTPUBKEY_P2WSH_LEN];
+    size_t witness_program_len;
     uint8_t script_pubkey[TREZOR_BITCOIN_MULTISIG_SCRIPT_PUBKEY_MAX_LEN];
     size_t script_pubkey_len;
 } trezor_bitcoin_multisig_policy_t;

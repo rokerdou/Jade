@@ -1,3 +1,4 @@
+#include "ccan/ccan/crypto/ripemd160/ripemd160.h"
 #include "chains/bitcoin/address.h"
 #include "chains/bitcoin/confirm.h"
 #include "chains/bitcoin/path.h"
@@ -19,8 +20,10 @@
 #include "chains/tron/path.h"
 #include "chains/tron/tx.h"
 #include "crypto/keccak256.h"
+#include "memzero.h"
 #include "protocols/trezor/bitcoin/messages.h"
 #include "protocols/trezor/bitcoin/multisig.h"
+#include "protocols/trezor/bitcoin/multisig_tx.h"
 #include "protocols/trezor/bitcoin/normalizer.h"
 #include "protocols/trezor/bitcoin/policy.h"
 #include "protocols/trezor/bitcoin/prev_tx_verifier.h"
@@ -40,6 +43,7 @@
 #include "protocols/trezor/session.h"
 #include "protocols/trezor/trace.h"
 #include "protocols/trezor/wire.h"
+#include "sha2.h"
 #include "ui/chain_confirm.h"
 
 #include <stdbool.h>
@@ -157,6 +161,7 @@ static const uint8_t EXPECTED_KECCAK256_ABC[KECCAK256_LEN]
           0xe6, 0xe3, 0x3a, 0x64, 0xa0, 0x36, 0xec, 0x44, 0xf5, 0x8f, 0xa1, 0x2d, 0x6c, 0x45 };
 
 static bool g_wallet_pubkey_ok = true;
+static bool g_host_real_multisig_hashes = false;
 static bool g_ui_accept = true;
 static size_t g_ui_calls = 0;
 static chain_confirm_summary_t g_last_ui_summary;
@@ -1789,7 +1794,15 @@ int wally_hash160(const unsigned char* bytes, size_t bytes_len, unsigned char* b
         return WALLY_EINVAL;
     }
 
-    if (bytes_len == sizeof(PRIVATE_KEY_ONE_COMPRESSED_PUBKEY)
+    if (g_host_real_multisig_hashes) {
+        uint8_t sha256[SHA256_LEN];
+        struct ripemd160 digest;
+        sha256_Raw(bytes, bytes_len, sha256);
+        ripemd160(&digest, sha256, sizeof(sha256));
+        memcpy(bytes_out, digest.u.u8, len);
+        memset(sha256, 0, sizeof(sha256));
+        memset(&digest, 0, sizeof(digest));
+    } else if (bytes_len == sizeof(PRIVATE_KEY_ONE_COMPRESSED_PUBKEY)
         && memcmp(bytes, PRIVATE_KEY_ONE_COMPRESSED_PUBKEY, sizeof(PRIVATE_KEY_ONE_COMPRESSED_PUBKEY)) == 0) {
         memcpy(bytes_out, EXPECTED_BTC_TESTNET_HASH160, sizeof(EXPECTED_BTC_TESTNET_HASH160));
     } else if (bytes_len == sizeof(EXPECTED_BTC_P2WPKH_SCRIPTPUBKEY)
@@ -1811,6 +1824,11 @@ int wally_sha256(const unsigned char* bytes, size_t bytes_len, unsigned char* by
 {
     if ((!bytes && bytes_len) || !bytes_out || len != SHA256_LEN) {
         return WALLY_EINVAL;
+    }
+
+    if (g_host_real_multisig_hashes) {
+        sha256_Raw(bytes, bytes_len, bytes_out);
+        return WALLY_OK;
     }
 
     memset(bytes_out, 0, len);
@@ -1840,6 +1858,13 @@ int wally_bzero(void* bytes, size_t bytes_len)
         memset(bytes, 0, bytes_len);
     }
     return WALLY_OK;
+}
+
+void wally_clear(void* bytes, size_t bytes_len)
+{
+    if (bytes) {
+        memzero(bytes, bytes_len);
+    }
 }
 
 int wally_ec_sig_to_der(
@@ -1887,12 +1912,162 @@ int wally_ec_sig_to_der(
     return WALLY_OK;
 }
 
+static bool host_script_push(const uint8_t* const value, const size_t value_len, uint8_t* const output,
+    const size_t output_len, size_t* const written)
+{
+    if (!value || value_len == 0 || !output || !written) {
+        return false;
+    }
+    size_t prefix_len = 0;
+    if (value_len <= 75U) {
+        prefix_len = 1U;
+    } else if (value_len <= UINT8_MAX) {
+        prefix_len = 2U;
+    } else if (value_len <= UINT16_MAX) {
+        prefix_len = 3U;
+    } else {
+        return false;
+    }
+    if (prefix_len > output_len || value_len > output_len - prefix_len) {
+        *written = prefix_len + value_len;
+        return false;
+    }
+    size_t pos = 0;
+    if (prefix_len == 1U) {
+        output[pos++] = (uint8_t)value_len;
+    } else if (prefix_len == 2U) {
+        output[pos++] = 0x4c;
+        output[pos++] = (uint8_t)value_len;
+    } else {
+        output[pos++] = 0x4d;
+        output[pos++] = (uint8_t)value_len;
+        output[pos++] = (uint8_t)(value_len >> 8);
+    }
+    memcpy(output + pos, value, value_len);
+    *written = pos + value_len;
+    return true;
+}
+
+int wally_scriptsig_multisig_from_bytes(const unsigned char* script, size_t script_len, const unsigned char* bytes,
+    size_t bytes_len, const uint32_t* sighash, size_t sighash_len, uint32_t flags, unsigned char* bytes_out, size_t len,
+    size_t* written)
+{
+    if (written) {
+        *written = 0;
+    }
+    const size_t signatures_count = bytes_len / EC_SIGNATURE_LEN;
+    if (!script || script_len == 0 || !bytes || bytes_len == 0 || bytes_len % EC_SIGNATURE_LEN != 0
+        || signatures_count == 0 || signatures_count > TREZOR_BITCOIN_MULTISIG_MAX_SIGNERS || !sighash
+        || sighash_len != signatures_count || flags != 0 || !bytes_out || !written) {
+        return WALLY_EINVAL;
+    }
+
+    uint8_t der[TREZOR_BITCOIN_MULTISIG_MAX_SIGNERS][EC_SIGNATURE_DER_MAX_LEN + 1U];
+    size_t der_lens[TREZOR_BITCOIN_MULTISIG_MAX_SIGNERS] = { 0 };
+    size_t required = 1U;
+    memset(der, 0, sizeof(der));
+    for (size_t i = 0; i < signatures_count; ++i) {
+        if (sighash[i] > UINT8_MAX
+            || wally_ec_sig_to_der(
+                   bytes + (i * EC_SIGNATURE_LEN), EC_SIGNATURE_LEN, der[i], EC_SIGNATURE_DER_MAX_LEN, &der_lens[i])
+                != WALLY_OK
+            || der_lens[i] >= sizeof(der[i])) {
+            memset(der, 0, sizeof(der));
+            return WALLY_EINVAL;
+        }
+        der[i][der_lens[i]++] = (uint8_t)sighash[i];
+        required += (der_lens[i] <= 75U ? 1U : 2U) + der_lens[i];
+    }
+    required += (script_len <= 75U ? 1U : script_len <= UINT8_MAX ? 2U : 3U) + script_len;
+    if (len < required) {
+        *written = required;
+        memset(der, 0, sizeof(der));
+        return WALLY_OK;
+    }
+
+    size_t pos = 0;
+    bytes_out[pos++] = 0;
+    for (size_t i = 0; i < signatures_count; ++i) {
+        size_t pushed = 0;
+        if (!host_script_push(der[i], der_lens[i], bytes_out + pos, len - pos, &pushed)) {
+            memset(der, 0, sizeof(der));
+            return WALLY_EINVAL;
+        }
+        pos += pushed;
+    }
+    size_t pushed = 0;
+    if (!host_script_push(script, script_len, bytes_out + pos, len - pos, &pushed)) {
+        memset(der, 0, sizeof(der));
+        return WALLY_EINVAL;
+    }
+    pos += pushed;
+    *written = pos;
+    memset(der, 0, sizeof(der));
+    return pos == required ? WALLY_OK : WALLY_EINVAL;
+}
+
+int wally_witness_multisig_from_bytes(const unsigned char* script, size_t script_len, const unsigned char* bytes,
+    size_t bytes_len, const uint32_t* sighash, size_t sighash_len, uint32_t flags,
+    struct wally_tx_witness_stack** witness)
+{
+    const size_t signatures_count = bytes_len / EC_SIGNATURE_LEN;
+    if (witness) {
+        *witness = NULL;
+    }
+    if (!script || script_len == 0 || !bytes || bytes_len == 0 || bytes_len % EC_SIGNATURE_LEN != 0
+        || signatures_count == 0 || signatures_count > TREZOR_BITCOIN_MULTISIG_MAX_SIGNERS || !sighash
+        || sighash_len != signatures_count || flags != 0 || !witness
+        || wally_tx_witness_stack_init_alloc(signatures_count + 2U, witness) != WALLY_OK || !*witness) {
+        return WALLY_EINVAL;
+    }
+
+    (*witness)->items = calloc((*witness)->items_allocation_len, sizeof(*(*witness)->items));
+    if (!(*witness)->items) {
+        wally_tx_witness_stack_free(*witness);
+        *witness = NULL;
+        return WALLY_ENOMEM;
+    }
+    (*witness)->num_items = 1U;
+    uint8_t der[EC_SIGNATURE_DER_MAX_LEN + 1U];
+    for (size_t i = 0; i < signatures_count; ++i) {
+        size_t der_len = 0;
+        memset(der, 0, sizeof(der));
+        if (sighash[i] > UINT8_MAX
+            || wally_ec_sig_to_der(
+                   bytes + (i * EC_SIGNATURE_LEN), EC_SIGNATURE_LEN, der, EC_SIGNATURE_DER_MAX_LEN, &der_len)
+                != WALLY_OK
+            || der_len >= sizeof(der)) {
+            memset(der, 0, sizeof(der));
+            wally_tx_witness_stack_free(*witness);
+            *witness = NULL;
+            return WALLY_EINVAL;
+        }
+        der[der_len++] = (uint8_t)sighash[i];
+        if (wally_tx_witness_stack_add(*witness, der, der_len) != WALLY_OK) {
+            memset(der, 0, sizeof(der));
+            wally_tx_witness_stack_free(*witness);
+            *witness = NULL;
+            return WALLY_EINVAL;
+        }
+    }
+    memset(der, 0, sizeof(der));
+    if (wally_tx_witness_stack_add(*witness, script, script_len) != WALLY_OK) {
+        wally_tx_witness_stack_free(*witness);
+        *witness = NULL;
+        return WALLY_EINVAL;
+    }
+    return WALLY_OK;
+}
+
 int wally_map_init(size_t allocation_len, wally_map_verify_fn_t verify_fn, struct wally_map* output)
 {
     if (!output) {
         return WALLY_EINVAL;
     }
-    output->items = NULL;
+    output->items = allocation_len ? calloc(allocation_len, sizeof(*output->items)) : NULL;
+    if (allocation_len && !output->items) {
+        return WALLY_ENOMEM;
+    }
     output->num_items = 0;
     output->items_allocation_len = allocation_len;
     output->verify_fn = verify_fn;
@@ -1901,8 +2076,20 @@ int wally_map_init(size_t allocation_len, wally_map_verify_fn_t verify_fn, struc
 
 int wally_map_add_integer(struct wally_map* map_in, uint32_t key, const unsigned char* value, size_t value_len)
 {
-    (void)key;
-    return map_in && value && value_len == sizeof(uint64_t) ? WALLY_OK : WALLY_EINVAL;
+    if (!map_in || !value || value_len == 0 || map_in->num_items >= map_in->items_allocation_len) {
+        return WALLY_EINVAL;
+    }
+    struct wally_map_item* const item = &map_in->items[map_in->num_items];
+    item->key = NULL;
+    item->key_len = key;
+    item->value = malloc(value_len);
+    if (!item->value) {
+        return WALLY_ENOMEM;
+    }
+    memcpy(item->value, value, value_len);
+    item->value_len = value_len;
+    ++map_in->num_items;
+    return WALLY_OK;
 }
 
 int wally_map_clear(struct wally_map* map_in)
@@ -1910,6 +2097,11 @@ int wally_map_clear(struct wally_map* map_in)
     if (!map_in) {
         return WALLY_EINVAL;
     }
+    for (size_t i = 0; i < map_in->num_items; ++i) {
+        free(map_in->items[i].key);
+        free(map_in->items[i].value);
+    }
+    free(map_in->items);
     memset(map_in, 0, sizeof(*map_in));
     return WALLY_OK;
 }
@@ -2031,6 +2223,154 @@ int wally_tx_add_raw_output(
     return WALLY_OK;
 }
 
+typedef struct {
+    uint8_t bytes[8192];
+    size_t len;
+} host_tx_hash_writer_t;
+
+static bool host_hash_write(host_tx_hash_writer_t* const writer, const void* const bytes, const size_t bytes_len)
+{
+    if (!writer || (!bytes && bytes_len) || bytes_len > sizeof(writer->bytes) - writer->len) {
+        return false;
+    }
+    memcpy(writer->bytes + writer->len, bytes, bytes_len);
+    writer->len += bytes_len;
+    return true;
+}
+
+static bool host_hash_write_u32(host_tx_hash_writer_t* const writer, const uint32_t value)
+{
+    const uint8_t encoded[] = { (uint8_t)value, (uint8_t)(value >> 8), (uint8_t)(value >> 16), (uint8_t)(value >> 24) };
+    return host_hash_write(writer, encoded, sizeof(encoded));
+}
+
+static bool host_hash_write_u64(host_tx_hash_writer_t* const writer, const uint64_t value)
+{
+    uint8_t encoded[sizeof(value)];
+    for (size_t i = 0; i < sizeof(encoded); ++i) {
+        encoded[i] = (uint8_t)(value >> (8U * i));
+    }
+    return host_hash_write(writer, encoded, sizeof(encoded));
+}
+
+static bool host_hash_write_compact(host_tx_hash_writer_t* const writer, const uint64_t value)
+{
+    if (value < 0xfdU) {
+        const uint8_t encoded = (uint8_t)value;
+        return host_hash_write(writer, &encoded, sizeof(encoded));
+    }
+    if (value <= UINT16_MAX) {
+        const uint8_t encoded[] = { 0xfd, (uint8_t)value, (uint8_t)(value >> 8) };
+        return host_hash_write(writer, encoded, sizeof(encoded));
+    }
+    if (value <= UINT32_MAX) {
+        const uint8_t prefix = 0xfe;
+        return host_hash_write(writer, &prefix, sizeof(prefix)) && host_hash_write_u32(writer, (uint32_t)value);
+    }
+    const uint8_t prefix = 0xff;
+    return host_hash_write(writer, &prefix, sizeof(prefix)) && host_hash_write_u64(writer, value);
+}
+
+static void host_sha256d(const uint8_t* const bytes, const size_t bytes_len, uint8_t output[SHA256_LEN])
+{
+    uint8_t first[SHA256_LEN];
+    sha256_Raw(bytes, bytes_len, first);
+    sha256_Raw(first, sizeof(first), output);
+    memset(first, 0, sizeof(first));
+}
+
+static bool host_hash_write_output(host_tx_hash_writer_t* const writer, const struct wally_tx_output* const output)
+{
+    return writer && output && host_hash_write_u64(writer, output->satoshi)
+        && host_hash_write_compact(writer, output->script_len)
+        && host_hash_write(writer, output->script, output->script_len);
+}
+
+static bool host_map_get_u64(const struct wally_map* const map, const uint32_t key, uint64_t* const output)
+{
+    if (!map || !output) {
+        return false;
+    }
+    for (size_t i = 0; i < map->num_items; ++i) {
+        if (!map->items[i].key && map->items[i].key_len == key && map->items[i].value_len == sizeof(*output)) {
+            memcpy(output, map->items[i].value, sizeof(*output));
+            return true;
+        }
+    }
+    return false;
+}
+
+static bool host_multisig_legacy_sighash(const struct wally_tx* const tx, const size_t index,
+    const uint8_t* const script, const size_t script_len, uint8_t digest[SHA256_LEN])
+{
+    host_tx_hash_writer_t writer = { 0 };
+    bool ok = host_hash_write_u32(&writer, tx->version) && host_hash_write_compact(&writer, tx->num_inputs);
+    for (size_t i = 0; ok && i < tx->num_inputs; ++i) {
+        ok = host_hash_write(&writer, tx->inputs[i].txhash, sizeof(tx->inputs[i].txhash))
+            && host_hash_write_u32(&writer, tx->inputs[i].index)
+            && host_hash_write_compact(&writer, i == index ? script_len : 0)
+            && (i != index || host_hash_write(&writer, script, script_len))
+            && host_hash_write_u32(&writer, tx->inputs[i].sequence);
+    }
+    ok = ok && host_hash_write_compact(&writer, tx->num_outputs);
+    for (size_t i = 0; ok && i < tx->num_outputs; ++i) {
+        ok = host_hash_write_output(&writer, &tx->outputs[i]);
+    }
+    ok = ok && host_hash_write_u32(&writer, tx->locktime) && host_hash_write_u32(&writer, 1U);
+    if (ok) {
+        host_sha256d(writer.bytes, writer.len, digest);
+    }
+    memset(&writer, 0, sizeof(writer));
+    return ok;
+}
+
+static bool host_multisig_segwit_sighash(const struct wally_tx* const tx, const size_t index,
+    const struct wally_map* const values, const uint8_t* const script, const size_t script_len,
+    uint8_t digest[SHA256_LEN])
+{
+    host_tx_hash_writer_t prevouts = { 0 };
+    host_tx_hash_writer_t sequences = { 0 };
+    host_tx_hash_writer_t outputs = { 0 };
+    host_tx_hash_writer_t writer = { 0 };
+    uint8_t prevouts_hash[SHA256_LEN];
+    uint8_t sequences_hash[SHA256_LEN];
+    uint8_t outputs_hash[SHA256_LEN];
+    uint64_t amount = 0;
+    bool ok = host_map_get_u64(values, (uint32_t)index, &amount);
+    for (size_t i = 0; ok && i < tx->num_inputs; ++i) {
+        ok = host_hash_write(&prevouts, tx->inputs[i].txhash, sizeof(tx->inputs[i].txhash))
+            && host_hash_write_u32(&prevouts, tx->inputs[i].index)
+            && host_hash_write_u32(&sequences, tx->inputs[i].sequence);
+    }
+    for (size_t i = 0; ok && i < tx->num_outputs; ++i) {
+        ok = host_hash_write_output(&outputs, &tx->outputs[i]);
+    }
+    if (ok) {
+        host_sha256d(prevouts.bytes, prevouts.len, prevouts_hash);
+        host_sha256d(sequences.bytes, sequences.len, sequences_hash);
+        host_sha256d(outputs.bytes, outputs.len, outputs_hash);
+        ok = host_hash_write_u32(&writer, tx->version) && host_hash_write(&writer, prevouts_hash, sizeof(prevouts_hash))
+            && host_hash_write(&writer, sequences_hash, sizeof(sequences_hash))
+            && host_hash_write(&writer, tx->inputs[index].txhash, sizeof(tx->inputs[index].txhash))
+            && host_hash_write_u32(&writer, tx->inputs[index].index) && host_hash_write_compact(&writer, script_len)
+            && host_hash_write(&writer, script, script_len) && host_hash_write_u64(&writer, amount)
+            && host_hash_write_u32(&writer, tx->inputs[index].sequence)
+            && host_hash_write(&writer, outputs_hash, sizeof(outputs_hash))
+            && host_hash_write_u32(&writer, tx->locktime) && host_hash_write_u32(&writer, 1U);
+    }
+    if (ok) {
+        host_sha256d(writer.bytes, writer.len, digest);
+    }
+    memset(&prevouts, 0, sizeof(prevouts));
+    memset(&sequences, 0, sizeof(sequences));
+    memset(&outputs, 0, sizeof(outputs));
+    memset(&writer, 0, sizeof(writer));
+    memset(prevouts_hash, 0, sizeof(prevouts_hash));
+    memset(sequences_hash, 0, sizeof(sequences_hash));
+    memset(outputs_hash, 0, sizeof(outputs_hash));
+    return ok;
+}
+
 int wally_tx_get_input_signature_hash(const struct wally_tx* tx, size_t index, const struct wally_map* scripts,
     const struct wally_map* assets, const struct wally_map* values, const unsigned char* script, size_t script_len,
     uint32_t key_version, uint32_t codesep_position, const unsigned char* annex, size_t annex_len,
@@ -2047,10 +2387,19 @@ int wally_tx_get_input_signature_hash(const struct wally_tx* tx, size_t index, c
     (void)genesis_blockhash;
     (void)genesis_blockhash_len;
     (void)cache;
-    if (!tx || index >= tx->num_inputs || !script
-        || (script_len != sizeof(EXPECTED_BTC_P2WPKH_SCRIPTPUBKEY) && script_len != WALLY_SCRIPTPUBKEY_P2PKH_LEN)
-        || sighash != 1 || (flags != WALLY_SIGTYPE_SW_V0 && flags != WALLY_SIGTYPE_PRE_SW) || !bytes_out
+    if (!tx || index >= tx->num_inputs || !script || script_len == 0 || sighash != 1
+        || (flags != WALLY_SIGTYPE_SW_V0 && flags != WALLY_SIGTYPE_PRE_SW) || !bytes_out
         || len != sizeof(EXPECTED_BTC_TEST_DIGEST)) {
+        return WALLY_EINVAL;
+    }
+    if (script_len > WALLY_SCRIPTPUBKEY_P2PKH_LEN) {
+        return (flags == WALLY_SIGTYPE_PRE_SW
+                       ? host_multisig_legacy_sighash(tx, index, script, script_len, bytes_out)
+                       : host_multisig_segwit_sighash(tx, index, values, script, script_len, bytes_out))
+            ? WALLY_OK
+            : WALLY_EINVAL;
+    }
+    if (script_len != sizeof(EXPECTED_BTC_P2WPKH_SCRIPTPUBKEY) && script_len != WALLY_SCRIPTPUBKEY_P2PKH_LEN) {
         return WALLY_EINVAL;
     }
     memcpy(bytes_out, EXPECTED_BTC_TEST_DIGEST, sizeof(EXPECTED_BTC_TEST_DIGEST));
@@ -2231,7 +2580,7 @@ int wally_tx_get_txid(const struct wally_tx* tx, unsigned char* bytes_out, size_
 
 int wally_tx_witness_stack_init_alloc(size_t allocation_len, struct wally_tx_witness_stack** output)
 {
-    if (allocation_len != 2 || !output) {
+    if (allocation_len == 0 || allocation_len > TREZOR_BITCOIN_MULTISIG_MAX_SIGNERS + 2U || !output) {
         return WALLY_EINVAL;
     }
     struct wally_tx_witness_stack* stack = calloc(1, sizeof(*stack));
@@ -2554,6 +2903,222 @@ static int run_trezor_multisig_normalizer(
     return matched ? 0 : 2;
 }
 
+static void host_multisig_policy_to_summary(
+    const trezor_bitcoin_multisig_policy_t* const policy, trezor_bitcoin_multisig_summary_t* const summary)
+{
+    wally_bzero(summary, sizeof(*summary));
+    summary->variant = policy->variant;
+    summary->threshold = policy->threshold;
+    summary->num_pubkeys = (uint8_t)policy->num_pubkeys;
+    summary->sorted = policy->sorted;
+    summary->script_pubkey_len = policy->script_pubkey_len;
+    memcpy(summary->script_pubkey, policy->script_pubkey, policy->script_pubkey_len);
+}
+
+static int run_trezor_multisig_tx_gate(const char* const multisig_hex, const char* const script_type_str,
+    const char* const prevout_script_hex, const char* const witness_program_hex,
+    const char* const compact_signatures_hex, const char* const path_case)
+{
+    uint8_t multisig_payload[2048];
+    size_t multisig_payload_len = 0;
+    uint8_t prevout_script[TREZOR_BITCOIN_MULTISIG_SCRIPT_PUBKEY_MAX_LEN];
+    size_t prevout_script_len = 0;
+    uint8_t witness_program[WALLY_SCRIPTPUBKEY_P2WSH_LEN];
+    size_t witness_program_len = 0;
+    uint8_t compact_signatures[TREZOR_BITCOIN_MULTISIG_MAX_SIGNERS * EC_SIGNATURE_LEN];
+    size_t compact_signatures_len = 0;
+    unsigned int parsed_script_type = 0;
+    trezor_bitcoin_multisig_t multisig;
+    trezor_bitcoin_multisig_policy_t policy;
+    trezor_bitcoin_signing_state_t state;
+    bitcoin_confirm_request_t confirm;
+    wallet_core_path_t path;
+    uint8_t digest[SHA256_LEN];
+    uint8_t serialized_tx[TREZOR_BITCOIN_SIGNED_TX_MAX_LEN];
+    size_t serialized_tx_len = 0;
+    wally_bzero(&multisig, sizeof(multisig));
+    wally_bzero(&policy, sizeof(policy));
+    wally_bzero(&state, sizeof(state));
+    wally_bzero(&confirm, sizeof(confirm));
+    wally_bzero(&path, sizeof(path));
+    wally_bzero(digest, sizeof(digest));
+    wally_bzero(serialized_tx, sizeof(serialized_tx));
+
+    const bool witness_arg_ok = witness_program_hex && strcmp(witness_program_hex, "-") == 0
+        ? true
+        : parse_hex_bytes(witness_program_hex, witness_program, sizeof(witness_program), &witness_program_len);
+    if (!multisig_hex || !script_type_str || !prevout_script_hex || !compact_signatures_hex
+        || !parse_hex_bytes(multisig_hex, multisig_payload, sizeof(multisig_payload), &multisig_payload_len)
+        || !parse_hex_bytes(prevout_script_hex, prevout_script, sizeof(prevout_script), &prevout_script_len)
+        || !witness_arg_ok
+        || !parse_hex_bytes(
+            compact_signatures_hex, compact_signatures, sizeof(compact_signatures), &compact_signatures_len)
+        || sscanf(script_type_str, "%u", &parsed_script_type) != 1 || parsed_script_type > UINT32_MAX
+        || !trezor_bitcoin_multisig_decode(multisig_payload, multisig_payload_len, &multisig)) {
+        return 1;
+    }
+    const bool mainnet_path_case = path_case && strcmp(path_case, "mainnet-valid") == 0;
+
+    uint32_t path_type = UINT32_MAX;
+    if (parsed_script_type == BITCOIN_MULTISIG_SPENDMULTISIG) {
+        path_type = BITCOIN_MULTISIG_PATH_P2SH;
+    } else if (parsed_script_type == BITCOIN_P2SH_P2WPKH_SPENDP2SHWITNESS) {
+        path_type = BITCOIN_MULTISIG_PATH_P2SH_P2WSH;
+    } else if (parsed_script_type == BITCOIN_P2WPKH_SPENDWITNESS) {
+        path_type = BITCOIN_MULTISIG_PATH_P2WSH;
+    } else {
+        return 1;
+    }
+
+    g_host_real_multisig_hashes = true;
+    const bool normalized = trezor_bitcoin_multisig_normalize(&multisig, (uint32_t)parsed_script_type, &policy);
+    g_host_real_multisig_hashes = false;
+    if (!normalized || prevout_script_len == 0 || prevout_script_len != policy.script_pubkey_len
+        || memcmp(prevout_script, policy.script_pubkey, prevout_script_len) != 0
+        || witness_program_len != policy.witness_program_len
+        || (witness_program_len && memcmp(witness_program, policy.witness_program, witness_program_len) != 0)
+        || compact_signatures_len != policy.threshold * EC_SIGNATURE_LEN) {
+        return 1;
+    }
+
+    g_host_real_multisig_hashes = true;
+
+    state.request.inputs_count = 1;
+    state.request.outputs_count = 2;
+    state.request.has_coin_name = true;
+    const char* const coin_name = mainnet_path_case ? "Bitcoin" : "Testnet";
+    memcpy(state.request.coin_name, coin_name, strlen(coin_name) + 1U);
+    state.request.version = 2;
+    state.request.lock_time = 0;
+    state.request.serialize = true;
+    state.inputs_len = 1;
+    state.outputs_len = 2;
+    state.phase = TREZOR_BITCOIN_SIGNING_PHASE_READY;
+    state.total_input = 100000;
+    state.total_output = 95000;
+    state.fee = 5000;
+    state.fee_rate_sats_per_vbyte = 10;
+
+    trezor_bitcoin_tx_input_t* const input = &state.inputs[0];
+    uint32_t input_path[] = { 0x80000030U, mainnet_path_case ? 0x80000000U : 0x80000001U, 0x80000000U, 0, 0, 0 };
+    uint32_t change_path[]
+        = { 0x80000030U, mainnet_path_case ? 0x80000000U : 0x80000001U, 0x80000000U, 0, 1, 0 };
+    size_t input_path_len = ARRAY_LEN(input_path);
+    size_t change_path_len = ARRAY_LEN(change_path);
+    input_path[3] = 0x80000000U | path_type;
+    change_path[3] = 0x80000000U | path_type;
+    if (!path_case || strcmp(path_case, "valid") == 0 || mainnet_path_case) {
+        /* Valid BIP48 testnet account/change pair. */
+    } else if (strcmp(path_case, "bip45-valid") == 0 && path_type == BITCOIN_MULTISIG_PATH_P2SH) {
+        const uint32_t bip45_input[] = { 0x8000002dU, 0, 0, 0 };
+        const uint32_t bip45_change[] = { 0x8000002dU, 0, 1, 0 };
+        memcpy(input_path, bip45_input, sizeof(bip45_input));
+        memcpy(change_path, bip45_change, sizeof(bip45_change));
+        input_path_len = ARRAY_LEN(bip45_input);
+        change_path_len = ARRAY_LEN(bip45_change);
+    } else if (strcmp(path_case, "external-change") == 0) {
+        change_path[4] = 0;
+    } else if (strcmp(path_case, "wrong-account") == 0) {
+        change_path[2] = 0x80000001U;
+    } else if (strcmp(path_case, "wrong-coin") == 0) {
+        change_path[1] = 0x80000000U;
+    } else if (strcmp(path_case, "wrong-script") == 0) {
+        change_path[3] = 0x80000000U | ((path_type + 1U) % 3U);
+    } else if (strcmp(path_case, "wrong-input-script") == 0) {
+        input_path[3] = 0x80000000U | ((path_type + 1U) % 3U);
+    } else if (strcmp(path_case, "oversized-index") == 0) {
+        change_path[5] = 1000001U;
+    } else {
+        return 1;
+    }
+    memcpy(input->address_n, input_path, input_path_len * sizeof(input_path[0]));
+    input->address_n_len = input_path_len;
+    input->has_prev_hash = true;
+    for (size_t i = 0; i < sizeof(input->prev_hash); ++i) {
+        input->prev_hash[i] = (uint8_t)i;
+    }
+    input->has_prev_index = true;
+    input->prev_index = 1;
+    input->sequence = 0xfffffffdU;
+    input->script_type = (uint32_t)parsed_script_type;
+    input->has_amount = true;
+    input->amount = state.total_input;
+    input->has_verified_prevout_script = true;
+    memcpy(input->verified_prevout_script, prevout_script, prevout_script_len);
+    input->verified_prevout_script_len = prevout_script_len;
+    input->has_multisig = true;
+    host_multisig_policy_to_summary(&policy, &input->multisig);
+    state.input_has_multisig_fingerprint[0] = true;
+    memcpy(state.input_multisig_fingerprints[0], policy.fingerprint, SHA256_LEN);
+
+    trezor_bitcoin_tx_output_t* const external = &state.outputs[0];
+    external->has_address = true;
+    const char* const external_address = mainnet_path_case ? "bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4"
+                                                           : "tb1qw508d6qejxtdg4y5r3zarvary0c5xw7kxpjzsx";
+    memcpy(external->address, external_address, strlen(external_address) + 1U);
+    external->has_amount = true;
+    external->amount = 90000;
+    external->script_type = BITCOIN_PAYTOADDRESS;
+
+    trezor_bitcoin_tx_output_t* const change = &state.outputs[1];
+    memcpy(change->address_n, change_path, change_path_len * sizeof(change_path[0]));
+    change->address_n_len = change_path_len;
+    change->has_amount = true;
+    change->amount = 5000;
+    change->script_type = BITCOIN_PAYTOMULTISIG;
+    change->has_multisig = true;
+    host_multisig_policy_to_summary(&policy, &change->multisig);
+    state.output_has_multisig_fingerprint[1] = true;
+    memcpy(state.output_multisig_fingerprints[1], policy.fingerprint, SHA256_LEN);
+
+    const trezor_bitcoin_multisig_policy_t* policies[] = { &policy };
+    const trezor_bitcoin_multisig_unlock_t unlock = { .policy = &policy,
+        .compact_signatures = compact_signatures,
+        .compact_signatures_len = compact_signatures_len,
+        .signatures_count = policy.threshold };
+    const bool summary_ok = trezor_bitcoin_signing_to_multisig_confirm_request(&state, &confirm);
+    const bool digest_ok
+        = trezor_bitcoin_multisig_build_hash(&state, policies, ARRAY_LEN(policies), 0, &path, digest, sizeof(digest));
+    const bool tx_ok = trezor_bitcoin_multisig_build_signed_tx(
+        &state, &unlock, 1, serialized_tx, sizeof(serialized_tx), &serialized_tx_len);
+
+    printf("summary_ok=%u\n", summary_ok ? 1U : 0U);
+    printf("digest_ok=%u\n", digest_ok ? 1U : 0U);
+    printf("tx_ok=%u\n", tx_ok ? 1U : 0U);
+    printf("summary_to=%s\n", summary_ok ? confirm.to : "");
+    printf("summary_policy=%s\n", summary_ok ? confirm.policy : "");
+    printf("summary_amount=%llu\n", (unsigned long long)(summary_ok ? confirm.amount : 0));
+    printf("summary_change=%llu\n", (unsigned long long)(summary_ok ? confirm.change : 0));
+    printf("summary_fee=%llu\n", (unsigned long long)(summary_ok ? confirm.fee : 0));
+    printf("summary_fee_rate=%llu\n", (unsigned long long)(summary_ok ? confirm.fee_rate_sats_per_vbyte : 0));
+    printf("path_len=%u\n", digest_ok ? (unsigned int)path.len : 0U);
+    printf("path=");
+    for (size_t i = 0; digest_ok && i < path.len; ++i) {
+        printf("%s%u", i ? "/" : "", (unsigned int)path.parts[i]);
+    }
+    printf("\n");
+    if (digest_ok) {
+        print_hex_value("digest", digest, sizeof(digest));
+    }
+    if (tx_ok) {
+        print_hex_value("raw_tx", serialized_tx, serialized_tx_len);
+    }
+
+    wally_bzero(multisig_payload, sizeof(multisig_payload));
+    wally_bzero(prevout_script, sizeof(prevout_script));
+    wally_bzero(witness_program, sizeof(witness_program));
+    wally_bzero(compact_signatures, sizeof(compact_signatures));
+    wally_bzero(&multisig, sizeof(multisig));
+    wally_bzero(&policy, sizeof(policy));
+    wally_bzero(&state, sizeof(state));
+    wally_bzero(&confirm, sizeof(confirm));
+    wally_bzero(&path, sizeof(path));
+    wally_bzero(digest, sizeof(digest));
+    wally_bzero(serialized_tx, sizeof(serialized_tx));
+    g_host_real_multisig_hashes = false;
+    return summary_ok && digest_ok && tx_ok ? 0 : 2;
+}
+
 static int dump_oracle_vectors(void)
 {
     uint8_t eth_address[ETHEREUM_ADDRESS_LEN];
@@ -2709,6 +3274,9 @@ int main(int argc, char** argv)
     }
     if (argc == 5 && argv && argv[1] && strcmp(argv[1], "--trezor-multisig-normalizer") == 0) {
         return run_trezor_multisig_normalizer(argv[2], argv[3], argv[4]);
+    }
+    if ((argc == 7 || argc == 8) && argv && argv[1] && strcmp(argv[1], "--trezor-multisig-tx") == 0) {
+        return run_trezor_multisig_tx_gate(argv[2], argv[3], argv[4], argv[5], argv[6], argc == 8 ? argv[7] : "valid");
     }
 
     CHECK(PRIVATE_KEY_ONE[EC_PRIVATE_KEY_LEN - 1] == 1);
@@ -4171,9 +4739,21 @@ int main(int argc, char** argv)
     CHECK(!trezor_bitcoin_policy_is_basic(&trezor_btc_multisig_capture_state));
 
     trezor_bitcoin_signing_state_t trezor_btc_multisig_preview_state = trezor_btc_multisig_capture_state;
+    trezor_btc_multisig_preview_state.inputs[0].address_n_len = ARRAY_LEN(btc_p2wsh_account_path) + 2U;
+    memcpy(
+        trezor_btc_multisig_preview_state.inputs[0].address_n, btc_p2wsh_account_path, sizeof(btc_p2wsh_account_path));
+    trezor_btc_multisig_preview_state.inputs[0].address_n[ARRAY_LEN(btc_p2wsh_account_path)] = 0;
+    trezor_btc_multisig_preview_state.inputs[0].address_n[ARRAY_LEN(btc_p2wsh_account_path) + 1U] = 0;
     trezor_btc_multisig_preview_state.request.outputs_count = 2;
     trezor_btc_multisig_preview_state.outputs_len = 2;
     trezor_btc_multisig_preview_state.outputs[1] = trezor_btc_multisig_preview_state.outputs[0];
+    trezor_btc_multisig_preview_state.outputs[1].address_n_len = ARRAY_LEN(btc_p2wsh_account_path) + 2U;
+    memcpy(
+        trezor_btc_multisig_preview_state.outputs[1].address_n, btc_p2wsh_account_path, sizeof(btc_p2wsh_account_path));
+    trezor_btc_multisig_preview_state.outputs[1].address_n[ARRAY_LEN(btc_p2wsh_account_path)] = 1;
+    trezor_btc_multisig_preview_state.outputs[1].address_n[ARRAY_LEN(btc_p2wsh_account_path) + 1U] = 0;
+    host_multisig_policy_to_summary(
+        &trezor_btc_multisig_p2wsh_policy, &trezor_btc_multisig_preview_state.outputs[1].multisig);
     trezor_btc_multisig_preview_state.output_has_multisig_fingerprint[1]
         = trezor_btc_multisig_preview_state.output_has_multisig_fingerprint[0];
     memcpy(trezor_btc_multisig_preview_state.output_multisig_fingerprints[1],
