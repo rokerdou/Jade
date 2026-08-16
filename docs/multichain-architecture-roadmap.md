@@ -193,6 +193,9 @@ main/
   多签找零识别。matcher 带 `read_only` 防护，开始判断 output 后不能再追加 input。
   当前它仍未接入真实 `SignTx.multisig`，因为还需要先设计不膨胀 signing state 的
   policy object/normalizer 输出通道。
+- BTC `SignTx.multisig` 仍保持关闭，并有 host gate 明确覆盖：现有 singlesig
+  basic signing policy 必须拒绝 `has_multisig` 的 input/output，避免多签地址/xpub
+  兼容工作误把多签签名路径打开。
 - Sparrow/lark 的 singlesig xpub 导入会用默认 `SPENDADDRESS` 调
   `GetPublicKey(m/49'...)` / `GetPublicKey(m/84'...)`。固件现在只在账户级 public-node
   导出路径把这个默认值视为客户端兼容占位，并按 BIP purpose 推断 ypub/zpub；

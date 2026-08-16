@@ -21,6 +21,7 @@
 #include "crypto/keccak256.h"
 #include "protocols/trezor/bitcoin/messages.h"
 #include "protocols/trezor/bitcoin/multisig.h"
+#include "protocols/trezor/bitcoin/policy.h"
 #include "protocols/trezor/bitcoin/prev_tx_verifier.h"
 #include "protocols/trezor/bitcoin/protocol.h"
 #include "protocols/trezor/bitcoin/public_node.h"
@@ -499,6 +500,69 @@ static bool test_trezor_bitcoin_multisig_matcher(void)
         return false;
     }
     return true;
+}
+
+static void test_init_basic_btc_policy_state(trezor_bitcoin_signing_state_t* const state)
+{
+    const uint32_t path[] = { chain_path_harden(84), chain_path_harden(1), chain_path_harden(0), 0, 0 };
+
+    wally_bzero(state, sizeof(*state));
+    state->phase = TREZOR_BITCOIN_SIGNING_PHASE_READY;
+    state->request.inputs_count = 1;
+    state->request.outputs_count = 1;
+    state->request.has_coin_name = true;
+    memcpy(state->request.coin_name, "Testnet", sizeof("Testnet"));
+    state->request.serialize = true;
+    state->inputs_len = 1;
+    state->outputs_len = 1;
+    state->inputs[0].address_n_len = ARRAY_LEN(path);
+    memcpy(state->inputs[0].address_n, path, sizeof(path));
+    state->inputs[0].script_type = BITCOIN_P2WPKH_SPENDWITNESS;
+    state->inputs[0].has_prev_hash = true;
+    state->inputs[0].has_prev_index = true;
+    state->inputs[0].has_amount = true;
+    state->inputs[0].amount = 100000;
+    state->outputs[0].has_address = true;
+    memcpy(state->outputs[0].address, "tb1qgatemultisigguard0000000000000000000000000",
+        sizeof("tb1qgatemultisigguard0000000000000000000000000"));
+    state->outputs[0].has_amount = true;
+    state->outputs[0].amount = 99000;
+    state->outputs[0].script_type = BITCOIN_PAYTOADDRESS;
+    state->total_input = 100000;
+    state->total_output = 99000;
+    state->fee = 1000;
+    state->fee_rate_sats_per_vbyte = 5;
+}
+
+static bool test_trezor_bitcoin_multisig_signing_stays_rejected(void)
+{
+    trezor_bitcoin_signing_state_t state;
+
+    test_init_basic_btc_policy_state(&state);
+    if (!trezor_bitcoin_policy_is_basic(&state)) {
+        return false;
+    }
+
+    state.inputs[0].has_multisig = true;
+    state.inputs[0].multisig.variant = MULTI_P2WSH;
+    state.inputs[0].multisig.threshold = 2;
+    state.inputs[0].multisig.num_pubkeys = 3;
+    state.inputs[0].multisig.script_pubkey_len = WALLY_SCRIPTPUBKEY_P2WSH_LEN;
+    state.inputs[0].multisig.script_pubkey[0] = 0;
+    state.inputs[0].multisig.script_pubkey[1] = SHA256_LEN;
+    if (trezor_bitcoin_policy_is_basic(&state)) {
+        return false;
+    }
+
+    test_init_basic_btc_policy_state(&state);
+    state.outputs[0].has_multisig = true;
+    state.outputs[0].multisig.variant = MULTI_P2WSH;
+    state.outputs[0].multisig.threshold = 2;
+    state.outputs[0].multisig.num_pubkeys = 3;
+    state.outputs[0].multisig.script_pubkey_len = WALLY_SCRIPTPUBKEY_P2WSH_LEN;
+    state.outputs[0].multisig.script_pubkey[0] = 0;
+    state.outputs[0].multisig.script_pubkey[1] = SHA256_LEN;
+    return !trezor_bitcoin_policy_is_basic(&state);
 }
 
 static bool trezor_test_get_eth_address(
@@ -2547,6 +2611,7 @@ int main(int argc, char** argv)
     CHECK(test_protobuf_rejects_malformed_inputs());
     CHECK(test_fake_ui_rejects_unrenderable_summary());
     CHECK(test_trezor_bitcoin_multisig_matcher());
+    CHECK(test_trezor_bitcoin_multisig_signing_stays_rejected());
 
     trezor_protobuf_reader_t eof_reader;
     uint32_t eof_field_number = 1;
