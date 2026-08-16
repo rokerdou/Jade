@@ -1464,9 +1464,27 @@ def assert_btc_verified_multisig_signs(
     redeem_script: bytes,
     script_type: messages.InputScriptType,
 ) -> None:
+    from embit import script
+    from embit.transaction import Transaction, TransactionInput, TransactionOutput
+
     prevout_script = c_gate_fake_multisig_script_pubkey(script_type, redeem_script)
     prev_hash = btc_prev_txid_for_single_input_two_outputs(prevout0_script_pubkey=prevout_script)
-    responses = run_local_wire_script(gate, btc_verified_multisig_signing_calls(multisig, redeem_script, script_type))
+    unsigned_tx = Transaction(
+        version=2,
+        vin=[TransactionInput(prev_hash, 0, sequence=0xFFFFFFFF)],
+        vout=[TransactionOutput(90_000, script.Script(btc_p2wpkh_script_pubkey()))],
+        locktime=0,
+    )
+    digest = (
+        unsigned_tx.sighash_legacy(0, script.Script(redeem_script), sighash=1)
+        if script_type == messages.InputScriptType.SPENDMULTISIG
+        else unsigned_tx.sighash_segwit(0, script.Script(redeem_script), 100_000, sighash=1)
+    )
+    responses = run_local_wire_script(
+        gate,
+        btc_verified_multisig_signing_calls(multisig, redeem_script, script_type),
+        btc_compact_signatures=[btc_sign_digest_compact(digest)],
+    )
     assert_btc_tx_request(responses[0], messages.RequestType.TXMETA)
     assert_btc_tx_request(responses[1], messages.RequestType.TXINPUT, request_index=0)
     assert_btc_tx_request(responses[2], messages.RequestType.TXOUTPUT, request_index=0)
@@ -1480,6 +1498,12 @@ def assert_btc_verified_multisig_signs(
     signature = tx_request.serialized.signature if tx_request.serialized else None
     if not signature or signature[0] != 0x30:
         raise AssertionError("BTC multisig partial signature is not DER encoded")
+    assert_multisig_psbt_accepts_partial_signature(
+        script_type=script_type,
+        prev_hash=prev_hash,
+        redeem_script=redeem_script,
+        local_der_signature=signature,
+    )
 
 
 def assert_btc_verified_multisig_rejects_mismatched_change(
@@ -2037,6 +2061,153 @@ def parse_push_only_script(raw: bytes) -> list[bytes]:
         items.append(raw[offset : offset + item_len])
         offset += item_len
     return items
+
+
+def encode_push_only_script(items: list[bytes]) -> bytes:
+    raw = bytearray()
+    for item in items:
+        if len(item) == 0:
+            raw.append(0)
+        elif len(item) <= 75:
+            raw.append(len(item))
+            raw += item
+        elif len(item) <= 0xFF:
+            raw += b"\x4c" + bytes([len(item)]) + item
+        elif len(item) <= 0xFFFF:
+            raw += b"\x4d" + len(item).to_bytes(2, "little") + item
+        else:
+            raise AssertionError("push-only script item too large")
+    if parse_push_only_script(bytes(raw)) != items:
+        raise AssertionError("push-only script encoding round-trip failed")
+    return bytes(raw)
+
+
+def trezor_multisig_other_private_key(index: int = 0):
+    from embit import bip32
+
+    seeds = [bytes([0x22]) * 32, bytes([0x33]) * 32]
+    if index >= len(seeds):
+        raise AssertionError("unsupported multisig private-key fixture index")
+    return bip32.HDKey.from_seed(seeds[index]).derive("m/48h/1h/0h/2h/0/0").key
+
+
+def assert_multisig_psbt_accepts_partial_signature(
+    *,
+    script_type: messages.InputScriptType,
+    prev_hash: bytes,
+    redeem_script: bytes,
+    local_der_signature: bytes,
+) -> None:
+    """Verify returned Trezor partial sig can be consumed by an independent PSBT coordinator."""
+    from embit import ec, psbt, script
+    from embit.transaction import Transaction, TransactionInput, TransactionOutput
+    from embit.script import Witness
+
+    local_pubkey = ec.PublicKey.parse(BTC_TEST_COMPRESSED_PUBKEY)
+    other_key = trezor_multisig_other_private_key()
+    other_pubkey = other_key.get_public_key()
+    witness_program = b"\x00\x20" + hashlib.sha256(redeem_script).digest()
+
+    if script_type == messages.InputScriptType.SPENDMULTISIG:
+        prevout_script = b"\xa9\x14" + hash160(redeem_script) + b"\x87"
+    elif script_type == messages.InputScriptType.SPENDWITNESS:
+        prevout_script = witness_program
+    elif script_type == messages.InputScriptType.SPENDP2SHWITNESS:
+        prevout_script = b"\xa9\x14" + hash160(witness_program) + b"\x87"
+    else:
+        raise AssertionError(f"unsupported multisig PSBT script type: {script_type}")
+
+    unsigned_tx = Transaction(
+        version=2,
+        vin=[TransactionInput(prev_hash, 0, sequence=0xFFFFFFFF)],
+        vout=[TransactionOutput(90_000, script.Script(btc_p2wpkh_script_pubkey()))],
+        locktime=0,
+    )
+    packet = psbt.PSBT(unsigned_tx)
+    if script_type == messages.InputScriptType.SPENDMULTISIG:
+        packet.inputs[0].non_witness_utxo = Transaction(
+            version=2,
+            vin=[TransactionInput(bytes.fromhex("aa" * 32), 7, script.Script(b"\x51"), sequence=0xFFFFFFFE)],
+            vout=[
+                TransactionOutput(100_000, script.Script(prevout_script)),
+                TransactionOutput(1_000, script.Script(btc_p2wpkh_script_pubkey())),
+            ],
+            locktime=0,
+        )
+        packet.inputs[0].redeem_script = script.Script(redeem_script)
+        expected_digest = unsigned_tx.sighash_legacy(0, script.Script(redeem_script), sighash=1)
+    else:
+        packet.inputs[0].witness_utxo = TransactionOutput(100_000, script.Script(prevout_script))
+        packet.inputs[0].witness_script = script.Script(redeem_script)
+        if script_type == messages.InputScriptType.SPENDP2SHWITNESS:
+            packet.inputs[0].redeem_script = script.Script(witness_program)
+        expected_digest = unsigned_tx.sighash_segwit(0, script.Script(redeem_script), 100_000, sighash=1)
+
+    local_sig = ec.Signature.parse(local_der_signature)
+    if not local_pubkey.verify(local_sig, expected_digest):
+        raise AssertionError("PSBT oracle rejected local partial signature")
+    other_sig = other_key.sign(expected_digest)
+    if not other_pubkey.verify(other_sig, expected_digest):
+        raise AssertionError("PSBT oracle rejected other cosigner signature")
+
+    packet.inputs[0].partial_sigs[local_pubkey] = local_sig.serialize() + b"\x01"
+    packet.inputs[0].partial_sigs[other_pubkey] = other_sig.serialize() + b"\x01"
+    parsed = psbt.PSBT.parse(packet.serialize())
+    partial_sigs = parsed.inputs[0].partial_sigs
+    if partial_sigs.get(local_pubkey) != local_sig.serialize() + b"\x01":
+        raise AssertionError("PSBT oracle lost local partial signature")
+    if partial_sigs.get(other_pubkey) != other_sig.serialize() + b"\x01":
+        raise AssertionError("PSBT oracle lost other partial signature")
+    if parsed.tx.vout[0].value != 90_000 or parsed.tx.vout[0].script_pubkey.data != btc_p2wpkh_script_pubkey():
+        raise AssertionError("PSBT oracle output no longer matches review summary")
+
+    final_items = [b"", partial_sigs[local_pubkey], partial_sigs[other_pubkey], redeem_script]
+    if script_type == messages.InputScriptType.SPENDMULTISIG:
+        final_input = TransactionInput(
+            prev_hash,
+            0,
+            script.Script(encode_push_only_script(final_items)),
+            sequence=0xFFFFFFFF,
+        )
+    elif script_type == messages.InputScriptType.SPENDWITNESS:
+        final_input = TransactionInput(
+            prev_hash,
+            0,
+            script.Script(b""),
+            sequence=0xFFFFFFFF,
+            witness=Witness(final_items),
+        )
+    else:
+        final_input = TransactionInput(
+            prev_hash,
+            0,
+            script.Script(encode_push_only_script([witness_program])),
+            sequence=0xFFFFFFFF,
+            witness=Witness(final_items),
+        )
+
+    final_tx = Transaction(version=2, vin=[final_input], vout=parsed.tx.vout, locktime=0)
+    final_raw = final_tx.serialize()
+    reparsed = Transaction.parse(final_raw)
+    if reparsed.serialize() != final_raw:
+        raise AssertionError("PSBT-finalized multisig tx failed round-trip parse")
+    if reparsed.vout[0].value != 90_000 or reparsed.vout[0].script_pubkey.data != btc_p2wpkh_script_pubkey():
+        raise AssertionError("PSBT-finalized multisig output mismatch")
+    if script_type == messages.InputScriptType.SPENDMULTISIG:
+        if parse_push_only_script(reparsed.vin[0].script_sig.data) != final_items:
+            raise AssertionError("PSBT-finalized P2SH multisig scriptSig mismatch")
+        if reparsed.vin[0].witness.items:
+            raise AssertionError("PSBT-finalized P2SH multisig must not contain witness")
+    elif script_type == messages.InputScriptType.SPENDWITNESS:
+        if reparsed.vin[0].script_sig.data:
+            raise AssertionError("PSBT-finalized P2WSH multisig must have empty scriptSig")
+        if reparsed.vin[0].witness.items != final_items:
+            raise AssertionError("PSBT-finalized P2WSH multisig witness mismatch")
+    else:
+        if parse_push_only_script(reparsed.vin[0].script_sig.data) != [witness_program]:
+            raise AssertionError("PSBT-finalized P2SH-P2WSH multisig scriptSig mismatch")
+        if reparsed.vin[0].witness.items != final_items:
+            raise AssertionError("PSBT-finalized P2SH-P2WSH multisig witness mismatch")
 
 
 def check_trezor_multisig_tx_structure_oracle(gate: Path) -> None:

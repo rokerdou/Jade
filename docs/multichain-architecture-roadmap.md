@@ -174,16 +174,17 @@ main/
 - BTC `GetPublicKey` 已支持多签 xpub-only 导入路径：
   BIP45 `m/45'` 返回 `xpub/tpub`，BIP48 `m/48'/coin'/account'/1'` 返回
   `Ypub/Upub`，BIP48 `m/48'/coin'/account'/2'` 返回 `Zpub/Vpub`。这只表示
-  Sparrow/OneKey 可以获取 cosigner public node，不表示多签签名已经开放。
+  Sparrow/OneKey 可以获取 cosigner public node；真实签名只开放受限 partial-signing，
+  设备不组合完整多签交易。
 - BTC `GetAddress.multisig` 已开放 P2SH、P2WSH、P2SH-P2WSH 三种 Trezor
   multisig 地址请求。实现遵循 OneKey/Trezor 的安全原则：先把
   `MultisigRedeemScriptType` 归一化成内部 policy/redeem script/scriptPubKey，
   再派生本机公钥并确认它属于该 policy，最后才返回/展示地址。若 policy 不包含
   本机公钥，地址请求会拒绝。
-- BTC 多签签名前置 gate 已开始补齐：`script_policy` 能验证 `TxInput.multisig`
+- BTC 多签签名前置 gate 已补齐核心路径：`script_policy` 能验证 `TxInput.multisig`
   的轻量 summary scriptPubKey 与 prev_tx verifier 返回的 prevout scriptPubKey 是否一致，
   并检查 Trezor `script_type` 与内部 `MULTI_P2SH/MULTI_P2WSH/MULTI_P2WSH_P2SH`
-  variant 是否匹配。该 gate 不开放签名，只为后续 descriptor/policy 绑定铺路。
+  variant 是否匹配。这是进入受限 partial-signing 之前的资金安全门禁。
 - BTC `MultisigRedeemScriptType` normalizer 已生成 OneKey/Trezor 风格 policy fingerprint
   并有 host gate 覆盖。fingerprint 目前只存在完整 policy/normalizer 层，不进入
   `TxInputType`/`TxOutputType` 的长期 summary，避免扩大 signing state 内存面。
@@ -207,11 +208,13 @@ main/
   verified prevout script 和 fingerprint；外部 output 必须是 address，找零 output
   必须是同 policy multisig；所有 input 还必须使用相同钱包路径前缀和脚本 variant，
   change 必须与 input 绑定到同一 BIP45/BIP48 钱包前缀，并使用分支 1。当前只允许一个外部付款输出，以适配现有
-  `bitcoin_confirm_request_t` UI 摘要结构。该路径只生成确认摘要，不接 signer。
+  `bitcoin_confirm_request_t` UI 摘要结构。该路径会先生成确认摘要，确认后才进入
+  partial-signing digest 构造。
 - BTC 多签 `SignTx` 状态机现在把任何 multisig input 都纳入 prev_tx 验证流程。
   只有 prevout scriptPubKey 与 multisig policy 绑定通过后，才会生成 UI preview。
-  UI 摘要会显示非敏感 `Policy` 文本，例如 `2-of-3 P2WSH`。用户确认后仍然返回
-  `Bitcoin multisig signing disabled`，不会构造 digest，也不会调用 signer。
+  UI 摘要会显示非敏感 `Policy` 文本，例如 `2-of-3 P2WSH`。用户确认后只返回本机
+  cosigner 对每个 input 的 partial signature，不返回完整 xpub policy、不读取私钥、
+  不在设备端组合多签 raw tx。
 - BTC 多签 SignTx host oracle 已覆盖 `SPENDMULTISIG`/P2SH、`SPENDWITNESS`/P2WSH、
   `SPENDP2SHWITNESS`/P2SH-P2WSH 三种输入变体的完整 prev_tx 请求链。门禁还覆盖
   prevout scriptPubKey 不匹配拒绝，以及 P2WSH input 搭配 P2SH multisig 找零时
@@ -234,6 +237,9 @@ main/
   P2SH/P2WSH/P2SH-P2WSH 都有正向门禁；错误 prevout、错误 witness program、签名数量不足、
   外部分支冒充找零、账户/coin/script-purpose 不匹配、索引越界都有拒绝门禁。
   fake signatures 只用于 raw-tx 结构测试；slot-aware partial gate 验证公开签名槽规则。
+  标准 `SignTx/TxAck` 多签路径还会把设备返回的真实 DER partial signature 写入
+  `embit.psbt`，由第三方 PSBT round-trip 和独立 finalization 检查签名、公钥 slot、
+  redeem/witness script、output 金额与最终 raw tx 结构。
 - BTC Trezor-compatible USB session 已开放受限 multisig partial signing：pending `SignTx`
   包含 multisig input/output 时，会先走受限 preview/confirm，然后用保存的公开 redeem script
   重新校验本机 signer path、公钥 slot、prevout script hash、金额、fee 和找零 policy，再调用
@@ -514,22 +520,21 @@ trezorlib / Safe CLI 兼容路径：
 - Sparrow/OneKey 完整导入兼容：`GetPublicKey`、`GetAddress`、`show_display`、
   `ignore_xpub_magic`、model/version/internal_model、firmware range 仍需真实客户端矩阵测试。
 - P2WSH/P2SH multisig 的 xpub-only 导入和 `GetAddress.multisig` 已开放；
-  多签签名仍暂不开放。它们不是简单 xpub 版本字节问题，还需要
-  descriptor/multisig/pubkey order/witnessScript/change policy/fee review 的完整门禁；
-  当前固件必须继续拒绝 `SPENDMULTISIG` 和未知 witness script 签名请求。
+  标准 Trezor `SignTx/TxAck` 路径已开放受限 multisig partial-signing。它们不是简单 xpub
+  版本字节问题，必须继续维护 descriptor/multisig/pubkey order/witnessScript/change
+  policy/fee review 门禁；未知 witness script、policy 不绑定、prevout 不匹配仍必须拒绝。
 - Trezor `MultisigRedeemScriptType` normalizer 已开始落地：能解析 old-style
   `pubkeys[]` 与 new-style `nodes[] + address_n`，拒绝 `HDNodeType.private_key`、
   hardened suffix、`m > n`，并转换为内部 multisig policy/redeem script/scriptPubKey。
   这仍是前置安全层，不等于开放 multisig 地址或签名。
 - BTC `GetAddress`、`TxInputType`、`TxOutputType` 的 `multisig` 字段已接入 decode：
   合法 multisig 请求会完成 normalizer。`GetAddress` 会额外保留完整 policy 供本机 signer
-  membership 校验；`TxInputType`/`TxOutputType` 仍只保存小型 summary，并在签名策略层
-  明确拒绝。协议状态不会把完整 multisig pubkey/policy 嵌入每个 input/output，以避免
+  membership 校验；`TxInputType`/`TxOutputType` 仍只保存小型 summary，签名阶段只额外按需
+  保存公开 redeem script。协议状态不会把完整 multisig pubkey/policy 嵌入每个 input/output，以避免
   T-Display-S3/ESP32-S3 上的栈和状态内存膨胀。
 - `script_policy` 已能用 `TxInput.multisig` summary 校验 prevout scriptPubKey：
   P2SH、P2WSH、P2SH-P2WSH 都覆盖正向路径，且会拒绝 threshold 无效、script_type/variant
-  错配、prevout script 不一致。这个能力仍停留在 policy gate，不会让 multisig input
-  进入实际签名。
+  错配、prevout script 不一致。这个能力现在是受限 multisig partial-signing 的前置安全层。
 - `multisig_policy_t` 已带 policy fingerprint，host gate 按 OneKey 的
   `MultisigFingerprintChecker` material 规则验证 old-style/new-style 一致性、pubkey order
   mode 不影响 fingerprint、threshold 变化会改变 fingerprint。该字段不写入 input/output
@@ -562,7 +567,7 @@ trezorlib / Safe CLI 兼容路径：
 
 暂不做：
 
-- multisig 真签名开放
+- 设备端组合完整 multisig raw tx 或替代 Sparrow/PSBT 协调器
 - raw PSBT / OneKey `SignPsbt` 开放
 - Taproot/BIP86 地址和 Schnorr 真签名开放
 - external input / payjoin / replacement tx
@@ -581,11 +586,12 @@ trezorlib / Safe CLI 兼容路径：
      PSBT 策略，不让 raw PSBT parser 直接靠近 signer。
    - 当前策略：先完善标准 `SignTx/TxAck` 覆盖 Sparrow 常规 PSBT 流；只有真实客户端明确需要
      OneKey `SignPsbt` 时，再加“安全拒绝 -> host parser gate -> policy -> UI -> signer”的小步链路。
-   - 当前代码只实现到“安全拒绝”阶段：10052 `SignPsbt` 可被 trace 识别，但固定返回
-     `Failure/DataError`。
+   - 当前代码只实现到 OneKey raw `SignPsbt` 的“安全拒绝”阶段：10052 `SignPsbt` 可被 trace
+     识别，但固定返回 `Failure/DataError`。
    - Host gate 已用第三方 `embit.psbt` 构造并 round-trip 解析最小 PSBT，随后通过本机
      Trezor wire oracle 验证 OneKey `SignPsbt` 扩展消息必须返回 `Failure/DataError`。
-     这保证 PSBT/raw bytes 不会在没有 adapter policy 的情况下进入签名路径。
+     标准 Trezor `SignTx/TxAck` 多签路径还会把设备 partial signature 写入 `embit.psbt`
+     并独立 finalization，验证 PSBT 协调器能消费该签名；raw PSBT payload 仍不会进入 signer。
 
 2. multisig
    - 必须参考 OneKey/Trezor 的 `MultisigRedeemScriptType` 与原版 Jade descriptor/multisig
@@ -616,13 +622,14 @@ trezorlib / Safe CLI 兼容路径：
      执行；host oracle 用已派生 child xpub + 空 suffix 避免 fake derivation 自测。
    - Host gate 已新增 BTC signing state 结构尺寸门禁，防止后续把完整 multisig 结构塞进
      每个 input/output，造成 ESP32 栈/堆压力。
-   - 未完成 descriptor/xpub/path/change 绑定前，只能开放 public-node 导入和
-     `GetAddress.multisig` 地址确认；签名必须明确拒绝，不能半支持。
+   - descriptor/xpub/path/change 绑定完成前，只能开放 public-node 导入和
+     `GetAddress.multisig` 地址确认。当前受限 signing 只允许已通过这些门禁的
+     P2SH/P2WSH/P2SH-P2WSH partial signature。
    - 当前 gate 已覆盖 `GetAddress` multisig 正向路径、policy 不包含本机公钥的拒绝路径、
      `SignTx` multisig input/output 的拒绝路径，并新增 normalizer 级 policy/redeem
      script 门禁、`script_policy` prevout scriptPubKey 绑定门禁，以及 P2SH/P2WSH/
-     P2SH-P2WSH digest/raw-tx 结构 oracle。session 仍不接 signer；下一阶段必须先设计
-     多 owner 部分签名槽位、真实 ECDSA oracle 和硬件确认/取消回归，才能开放签名。
+     P2SH-P2WSH digest/raw-tx 结构 oracle。session 已接入受限 partial signer；后续重点是
+     硬件确认/取消回归、Sparrow/OneKey 实测和更多恶意 TxAck 状态机门禁。
 
 3. Taproot / BIP86
    - OneKey/Trezor proto 的 `SPENDTAPROOT=5`、`PAYTOTAPROOT=6` 只是协议入口，不等于可签名。
@@ -801,7 +808,8 @@ tools/
 
 - 不引入 Python/MicroPython 到固件运行时。
 - 不直接导入 OneKey 私有 proto 扩展作为 MetaMask/Trezor Connect 主协议。
-- 不开放 multisig/PSBT/Taproot 真签名，直到 descriptor/path/script policy、UI 摘要、
-  raw tx/PSBT oracle 和真实硬件测试都完成。
+- 不开放 raw PSBT/Taproot 真签名，直到 descriptor/path/script policy、UI 摘要、
+  raw tx/PSBT oracle 和真实硬件测试都完成。BTC multisig 当前只开放标准
+  `SignTx/TxAck` 下的受限 cosigner partial signature。
 - 不让 Ledger APDU 影响 chain core。Ledger 只能作为 adapter。
 - 不让 USB 层直接调用 wallet_core signer；最终必须经 app service / chain policy / UI review。
