@@ -450,6 +450,57 @@ static bool test_fake_ui_rejects_unrenderable_summary(void)
     return true;
 }
 
+static bool test_trezor_bitcoin_multisig_matcher(void)
+{
+    trezor_bitcoin_multisig_matcher_t matcher;
+    uint8_t fingerprint_a[SHA256_LEN];
+    uint8_t fingerprint_b[SHA256_LEN];
+    memset(fingerprint_a, 0x11, sizeof(fingerprint_a));
+    memset(fingerprint_b, 0x22, sizeof(fingerprint_b));
+
+    trezor_bitcoin_multisig_matcher_reset(NULL);
+    trezor_bitcoin_multisig_matcher_reset(&matcher);
+    if (matcher.has_fingerprint || matcher.mismatched || matcher.read_only) {
+        return false;
+    }
+    if (trezor_bitcoin_multisig_matcher_add(NULL, fingerprint_a, sizeof(fingerprint_a))
+        || trezor_bitcoin_multisig_matcher_add(&matcher, NULL, sizeof(fingerprint_a))
+        || trezor_bitcoin_multisig_matcher_add(&matcher, fingerprint_a, sizeof(fingerprint_a) - 1U)
+        || trezor_bitcoin_multisig_matcher_check(&matcher, fingerprint_a, sizeof(fingerprint_a))) {
+        return false;
+    }
+
+    if (!trezor_bitcoin_multisig_matcher_add(&matcher, fingerprint_a, sizeof(fingerprint_a))
+        || !matcher.has_fingerprint || matcher.mismatched
+        || !trezor_bitcoin_multisig_matcher_add(&matcher, fingerprint_a, sizeof(fingerprint_a))
+        || !trezor_bitcoin_multisig_matcher_check(&matcher, fingerprint_a, sizeof(fingerprint_a))
+        || trezor_bitcoin_multisig_matcher_check(&matcher, fingerprint_b, sizeof(fingerprint_b))
+        || !trezor_bitcoin_multisig_matcher_output_matches(&matcher, fingerprint_a, sizeof(fingerprint_a))
+        || !matcher.read_only
+        || trezor_bitcoin_multisig_matcher_add(&matcher, fingerprint_a, sizeof(fingerprint_a))) {
+        return false;
+    }
+
+    trezor_bitcoin_multisig_matcher_reset(&matcher);
+    if (!trezor_bitcoin_multisig_matcher_add(&matcher, fingerprint_a, sizeof(fingerprint_a))
+        || !trezor_bitcoin_multisig_matcher_add(&matcher, fingerprint_b, sizeof(fingerprint_b))
+        || !matcher.mismatched || matcher.has_fingerprint
+        || !trezor_bitcoin_multisig_matcher_check(&matcher, fingerprint_a, sizeof(fingerprint_a))
+        || trezor_bitcoin_multisig_matcher_output_matches(&matcher, fingerprint_a, sizeof(fingerprint_a))
+        || !matcher.read_only
+        || trezor_bitcoin_multisig_matcher_add(&matcher, fingerprint_b, sizeof(fingerprint_b))) {
+        return false;
+    }
+
+    trezor_bitcoin_multisig_matcher_reset(&matcher);
+    if (trezor_bitcoin_multisig_matcher_output_matches(&matcher, fingerprint_a, sizeof(fingerprint_a))
+        || !matcher.read_only
+        || trezor_bitcoin_multisig_matcher_add(&matcher, fingerprint_a, sizeof(fingerprint_a))) {
+        return false;
+    }
+    return true;
+}
+
 static bool trezor_test_get_eth_address(
     void* ctx, const trezor_ethereum_get_address_t* const request, char* const address, const size_t address_len)
 {
@@ -2495,6 +2546,7 @@ int main(int argc, char** argv)
     CHECK(sizeof(trezor_bitcoin_signing_state_t) <= 8192);
     CHECK(test_protobuf_rejects_malformed_inputs());
     CHECK(test_fake_ui_rejects_unrenderable_summary());
+    CHECK(test_trezor_bitcoin_multisig_matcher());
 
     trezor_protobuf_reader_t eof_reader;
     uint32_t eof_field_number = 1;

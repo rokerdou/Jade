@@ -187,6 +187,12 @@ main/
 - BTC `MultisigRedeemScriptType` normalizer 已生成 OneKey/Trezor 风格 policy fingerprint
   并有 host gate 覆盖。fingerprint 目前只存在完整 policy/normalizer 层，不进入
   `TxInputType`/`TxOutputType` 的长期 summary，避免扩大 signing state 内存面。
+- BTC 多签 policy fingerprint matcher 已作为独立策略原语落地，语义参考 OneKey
+  `MultisigFingerprintChecker`：所有内部 input 的 fingerprint 一致时，匹配同一
+  fingerprint 的 output 才可作为找零；一旦 input fingerprint 混合或缺失，就禁止
+  多签找零识别。matcher 带 `read_only` 防护，开始判断 output 后不能再追加 input。
+  当前它仍未接入真实 `SignTx.multisig`，因为还需要先设计不膨胀 signing state 的
+  policy object/normalizer 输出通道。
 - Sparrow/lark 的 singlesig xpub 导入会用默认 `SPENDADDRESS` 调
   `GetPublicKey(m/49'...)` / `GetPublicKey(m/84'...)`。固件现在只在账户级 public-node
   导出路径把这个默认值视为客户端兼容占位，并按 BIP purpose 推断 ypub/zpub；

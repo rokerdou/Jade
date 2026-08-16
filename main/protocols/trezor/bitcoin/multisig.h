@@ -71,11 +71,25 @@ typedef struct {
     size_t script_pubkey_len;
 } trezor_bitcoin_multisig_summary_t;
 
+typedef struct {
+    bool has_fingerprint;
+    bool mismatched;
+    bool read_only;
+    uint8_t fingerprint[SHA256_LEN];
+} trezor_bitcoin_multisig_matcher_t;
+
 bool trezor_bitcoin_multisig_decode(const uint8_t* payload, size_t payload_len, trezor_bitcoin_multisig_t* output);
 bool trezor_bitcoin_multisig_normalize(const trezor_bitcoin_multisig_t* multisig, uint32_t script_type,
     trezor_bitcoin_multisig_policy_t* output);
 bool trezor_bitcoin_multisig_fingerprint(const trezor_bitcoin_multisig_t* multisig, uint8_t fingerprint[SHA256_LEN]);
 bool trezor_bitcoin_multisig_script_pubkey_matches(const trezor_bitcoin_multisig_policy_t* policy,
     const uint8_t* script_pubkey, size_t script_pubkey_len);
+void trezor_bitcoin_multisig_matcher_reset(trezor_bitcoin_multisig_matcher_t* matcher);
+bool trezor_bitcoin_multisig_matcher_add(
+    trezor_bitcoin_multisig_matcher_t* matcher, const uint8_t fingerprint[SHA256_LEN], size_t fingerprint_len);
+bool trezor_bitcoin_multisig_matcher_check(
+    const trezor_bitcoin_multisig_matcher_t* matcher, const uint8_t fingerprint[SHA256_LEN], size_t fingerprint_len);
+bool trezor_bitcoin_multisig_matcher_output_matches(
+    trezor_bitcoin_multisig_matcher_t* matcher, const uint8_t fingerprint[SHA256_LEN], size_t fingerprint_len);
 
 #endif /* TREZOR_BITCOIN_MULTISIG_H_ */

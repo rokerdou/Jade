@@ -502,4 +502,62 @@ bool trezor_bitcoin_multisig_script_pubkey_matches(const trezor_bitcoin_multisig
     return policy && script_pubkey && policy->script_pubkey_len == script_pubkey_len
         && memcmp(policy->script_pubkey, script_pubkey, script_pubkey_len) == 0;
 }
+
+static bool matcher_fingerprint_valid(const uint8_t* const fingerprint, const size_t fingerprint_len)
+{
+    return fingerprint && fingerprint_len == SHA256_LEN;
+}
+
+void trezor_bitcoin_multisig_matcher_reset(trezor_bitcoin_multisig_matcher_t* const matcher)
+{
+    if (matcher) {
+        wally_bzero(matcher, sizeof(*matcher));
+    }
+}
+
+bool trezor_bitcoin_multisig_matcher_add(
+    trezor_bitcoin_multisig_matcher_t* const matcher, const uint8_t fingerprint[SHA256_LEN],
+    const size_t fingerprint_len)
+{
+    if (!matcher || !matcher_fingerprint_valid(fingerprint, fingerprint_len) || matcher->read_only) {
+        return false;
+    }
+    if (matcher->mismatched) {
+        return true;
+    }
+    if (!matcher->has_fingerprint) {
+        memcpy(matcher->fingerprint, fingerprint, SHA256_LEN);
+        matcher->has_fingerprint = true;
+        return true;
+    }
+    if (memcmp(matcher->fingerprint, fingerprint, SHA256_LEN) != 0) {
+        wally_bzero(matcher->fingerprint, sizeof(matcher->fingerprint));
+        matcher->has_fingerprint = false;
+        matcher->mismatched = true;
+    }
+    return true;
+}
+
+bool trezor_bitcoin_multisig_matcher_check(const trezor_bitcoin_multisig_matcher_t* const matcher,
+    const uint8_t fingerprint[SHA256_LEN], const size_t fingerprint_len)
+{
+    if (!matcher || !matcher_fingerprint_valid(fingerprint, fingerprint_len)) {
+        return false;
+    }
+    if (matcher->mismatched) {
+        return true;
+    }
+    return matcher->has_fingerprint && memcmp(matcher->fingerprint, fingerprint, SHA256_LEN) == 0;
+}
+
+bool trezor_bitcoin_multisig_matcher_output_matches(trezor_bitcoin_multisig_matcher_t* const matcher,
+    const uint8_t fingerprint[SHA256_LEN], const size_t fingerprint_len)
+{
+    if (!matcher || !matcher_fingerprint_valid(fingerprint, fingerprint_len)) {
+        return false;
+    }
+    matcher->read_only = true;
+    return matcher->has_fingerprint && !matcher->mismatched
+        && memcmp(matcher->fingerprint, fingerprint, SHA256_LEN) == 0;
+}
 #endif /* AMALGAMATED_BUILD */
