@@ -18,6 +18,7 @@
 #include "trace.h"
 #include "wire.h"
 
+#include <stdlib.h>
 #include <string.h>
 #include <wally_crypto.h>
 
@@ -735,33 +736,39 @@ static bool trezor_session_handle_payload_ex(const trezor_session_t* const sessi
                 response_type, response_payload, response_payload_len, response_payload_written);
         }
 
-        trezor_ethereum_safe_tx_ack_t ack;
+        trezor_ethereum_safe_tx_ack_t* const ack = malloc(sizeof(*ack));
         uint8_t signing_hash[ETHEREUM_TX_SIGNING_HASH_LEN];
         ethereum_safe_tx_summary_t summary;
-        wally_bzero(&ack, sizeof(ack));
+        if (!ack) {
+            trezor_session_clear_pending(session->state);
+            return trezor_session_failure_payload(TREZOR_FAILURE_DATA_ERROR, "SafeTx memory unavailable", response_type,
+                response_payload, response_payload_len, response_payload_written);
+        }
+        wally_bzero(ack, sizeof(*ack));
         wally_bzero(signing_hash, sizeof(signing_hash));
         wally_bzero(&summary, sizeof(summary));
         trezor_trace_set_stage("safe:ack_decode");
         trezor_ethereum_typed_data_signature_t signature;
         wally_bzero(&signature, sizeof(signature));
 
-        bool ok = trezor_ethereum_safe_tx_ack_decode(request_payload, request_payload_len, &ack);
+        bool ok = trezor_ethereum_safe_tx_ack_decode(request_payload, request_payload_len, ack);
         trezor_trace_set_stage(ok ? "safe:bind" : "safe:ack_decode_fail");
         ok = ok
             && trezor_ethereum_safe_typed_hash_bind(
-                &session->state->pending_eth_safe_typed_hash, &ack.tx, signing_hash, &summary);
+                &session->state->pending_eth_safe_typed_hash, &ack->tx, signing_hash, &summary);
         trezor_trace_set_stage(ok ? "safe:bound" : "safe:bind_fail");
         if (ok) {
             trezor_trace_set_stage("safe:sign");
             ok = session->sign_eth_safe_tx
                 && session->sign_eth_safe_tx(session->sign_eth_safe_tx_ctx,
-                    &session->state->pending_eth_safe_typed_hash, &ack.tx, &summary, signing_hash, &signature);
+                    &session->state->pending_eth_safe_typed_hash, &ack->tx, &summary, signing_hash, &signature);
             trezor_trace_set_stage(ok ? "safe:signed" : "safe:sign_fail");
         }
         session->state->has_pending_eth_safe_typed_hash = false;
         wally_bzero(&session->state->pending_eth_safe_typed_hash,
             sizeof(session->state->pending_eth_safe_typed_hash));
-        wally_bzero(&ack, sizeof(ack));
+        wally_bzero(ack, sizeof(*ack));
+        free(ack);
         wally_bzero(signing_hash, sizeof(signing_hash));
         wally_bzero(&summary, sizeof(summary));
         if (!ok) {
@@ -862,14 +869,19 @@ static bool trezor_session_handle_payload_ex(const trezor_session_t* const sessi
     if (request_type == TREZOR_MSG_TX_ACK) {
         trezor_trace_set_stage("btcsign:ack");
         if (session->state && session->state->has_pending_btc_signed_tx) {
-            trezor_bitcoin_transaction_t discard_tx_ack;
-            if (!trezor_bitcoin_tx_ack_decode(request_payload, request_payload_len, &discard_tx_ack)) {
+            trezor_bitcoin_transaction_t* const discard_tx_ack = malloc(sizeof(*discard_tx_ack));
+            if (!discard_tx_ack || !trezor_bitcoin_tx_ack_decode(request_payload, request_payload_len, discard_tx_ack)) {
+                if (discard_tx_ack) {
+                    wally_bzero(discard_tx_ack, sizeof(*discard_tx_ack));
+                    free(discard_tx_ack);
+                }
                 trezor_session_clear_pending(session->state);
                 trezor_trace_set_stage("btcsign:emit_ack_fail");
                 return trezor_session_failure_payload(TREZOR_FAILURE_DATA_ERROR, "Invalid Bitcoin transaction data",
                     response_type, response_payload, response_payload_len, response_payload_written);
             }
-            wally_bzero(&discard_tx_ack, sizeof(discard_tx_ack));
+            wally_bzero(discard_tx_ack, sizeof(*discard_tx_ack));
+            free(discard_tx_ack);
             return trezor_session_btc_signed_tx_continue(
                 session, response_type, response_payload, response_payload_len, response_payload_written,
                 response_event);

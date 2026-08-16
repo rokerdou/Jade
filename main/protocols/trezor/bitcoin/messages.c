@@ -98,40 +98,43 @@ static bool trezor_bitcoin_normalize_multisig_payload_with_fingerprint(const uin
         return false;
     }
 
-    trezor_bitcoin_multisig_t multisig;
-    trezor_bitcoin_multisig_policy_t policy;
-    wally_bzero(&multisig, sizeof(multisig));
-    wally_bzero(&policy, sizeof(policy));
-    bool ok = trezor_bitcoin_multisig_decode(payload, payload_len, &multisig)
-        && trezor_bitcoin_multisig_normalize(&multisig, script_type, &policy)
-        && policy.num_pubkeys <= UINT8_MAX && policy.script_pubkey_len <= sizeof(summary->script_pubkey);
+    trezor_bitcoin_multisig_t* const multisig = malloc(sizeof(*multisig));
+    trezor_bitcoin_multisig_policy_t* const policy = malloc(sizeof(*policy));
+    if (!multisig || !policy) {
+        free(multisig);
+        free(policy);
+        return false;
+    }
+    wally_bzero(multisig, sizeof(*multisig));
+    wally_bzero(policy, sizeof(*policy));
+    bool ok = trezor_bitcoin_multisig_decode(payload, payload_len, multisig)
+        && trezor_bitcoin_multisig_normalize(multisig, script_type, policy)
+        && policy->num_pubkeys <= UINT8_MAX && policy->script_pubkey_len <= sizeof(summary->script_pubkey);
     if (ok && has_redeem_script) {
-        ok = policy.redeem_script_len > 0 && policy.redeem_script_len <= UINT16_MAX
-            && policy.redeem_script_len <= TREZOR_BITCOIN_MULTISIG_REDEEM_SCRIPT_MAX_LEN;
+        ok = policy->redeem_script_len > 0 && policy->redeem_script_len <= UINT16_MAX
+            && policy->redeem_script_len <= TREZOR_BITCOIN_MULTISIG_REDEEM_SCRIPT_MAX_LEN;
         if (ok) {
-            *redeem_script = malloc(policy.redeem_script_len);
+            *redeem_script = malloc(policy->redeem_script_len);
             ok = *redeem_script != NULL;
         }
     }
     if (ok) {
-        summary->variant = policy.variant;
-        summary->threshold = policy.threshold;
-        summary->num_pubkeys = (uint8_t)policy.num_pubkeys;
-        summary->sorted = policy.sorted;
-        memcpy(summary->script_pubkey, policy.script_pubkey, policy.script_pubkey_len);
-        summary->script_pubkey_len = policy.script_pubkey_len;
+        summary->variant = policy->variant;
+        summary->threshold = policy->threshold;
+        summary->num_pubkeys = (uint8_t)policy->num_pubkeys;
+        summary->sorted = policy->sorted;
+        memcpy(summary->script_pubkey, policy->script_pubkey, policy->script_pubkey_len);
+        summary->script_pubkey_len = policy->script_pubkey_len;
         if (has_fingerprint) {
-            memcpy(fingerprint, policy.fingerprint, SHA256_LEN);
+            memcpy(fingerprint, policy->fingerprint, SHA256_LEN);
             *has_fingerprint = true;
         }
         if (has_redeem_script) {
-            memcpy(*redeem_script, policy.redeem_script, policy.redeem_script_len);
-            *redeem_script_written = (uint16_t)policy.redeem_script_len;
+            memcpy(*redeem_script, policy->redeem_script, policy->redeem_script_len);
+            *redeem_script_written = (uint16_t)policy->redeem_script_len;
             *has_redeem_script = true;
         }
     }
-    wally_bzero(&multisig, sizeof(multisig));
-    wally_bzero(&policy, sizeof(policy));
     if (!ok) {
         wally_bzero(summary, sizeof(*summary));
         if (fingerprint) {
@@ -144,7 +147,7 @@ static bool trezor_bitcoin_normalize_multisig_payload_with_fingerprint(const uin
             *has_redeem_script = false;
         }
         if (redeem_script && *redeem_script) {
-            wally_bzero(*redeem_script, policy.redeem_script_len);
+            wally_bzero(*redeem_script, policy->redeem_script_len);
             free(*redeem_script);
             *redeem_script = NULL;
         }
@@ -152,6 +155,10 @@ static bool trezor_bitcoin_normalize_multisig_payload_with_fingerprint(const uin
             *redeem_script_written = 0;
         }
     }
+    wally_bzero(multisig, sizeof(*multisig));
+    wally_bzero(policy, sizeof(*policy));
+    free(multisig);
+    free(policy);
     return ok;
 }
 
@@ -188,12 +195,16 @@ static bool trezor_bitcoin_normalize_multisig_payload_with_policy(const uint8_t*
         return false;
     }
 
-    trezor_bitcoin_multisig_t multisig;
-    wally_bzero(&multisig, sizeof(multisig));
-    const bool ok = trezor_bitcoin_multisig_decode(payload, payload_len, &multisig)
-        && trezor_bitcoin_multisig_normalize(&multisig, script_type, policy)
+    trezor_bitcoin_multisig_t* const multisig = malloc(sizeof(*multisig));
+    if (!multisig) {
+        return false;
+    }
+    wally_bzero(multisig, sizeof(*multisig));
+    const bool ok = trezor_bitcoin_multisig_decode(payload, payload_len, multisig)
+        && trezor_bitcoin_multisig_normalize(multisig, script_type, policy)
         && trezor_bitcoin_multisig_summary_from_policy(policy, summary);
-    wally_bzero(&multisig, sizeof(multisig));
+    wally_bzero(multisig, sizeof(*multisig));
+    free(multisig);
     if (!ok) {
         wally_bzero(summary, sizeof(*summary));
         wally_bzero(policy, sizeof(*policy));
