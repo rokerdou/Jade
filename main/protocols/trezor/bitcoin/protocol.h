@@ -114,6 +114,13 @@ typedef struct {
 } trezor_bitcoin_transaction_t;
 
 typedef struct {
+    bool input_has_multisig_fingerprint[TREZOR_BITCOIN_TX_INPUTS_MAX];
+    uint8_t input_multisig_fingerprints[TREZOR_BITCOIN_TX_INPUTS_MAX][SHA256_LEN];
+    bool output_has_multisig_fingerprint[TREZOR_BITCOIN_TX_OUTPUTS_MAX];
+    uint8_t output_multisig_fingerprints[TREZOR_BITCOIN_TX_OUTPUTS_MAX][SHA256_LEN];
+} trezor_bitcoin_tx_ack_multisig_fingerprints_t;
+
+typedef struct {
     bool has_prev_hash;
     uint8_t prev_hash[SHA256_LEN];
     bool has_prev_index;
@@ -163,6 +170,10 @@ typedef struct {
     trezor_bitcoin_sign_tx_t request;
     trezor_bitcoin_tx_input_t inputs[TREZOR_BITCOIN_TX_INPUTS_MAX];
     trezor_bitcoin_tx_output_t outputs[TREZOR_BITCOIN_TX_OUTPUTS_MAX];
+    bool input_has_multisig_fingerprint[TREZOR_BITCOIN_TX_INPUTS_MAX];
+    uint8_t input_multisig_fingerprints[TREZOR_BITCOIN_TX_INPUTS_MAX][SHA256_LEN];
+    bool output_has_multisig_fingerprint[TREZOR_BITCOIN_TX_OUTPUTS_MAX];
+    uint8_t output_multisig_fingerprints[TREZOR_BITCOIN_TX_OUTPUTS_MAX][SHA256_LEN];
     size_t inputs_len;
     size_t outputs_len;
     size_t prev_tx_input_index;

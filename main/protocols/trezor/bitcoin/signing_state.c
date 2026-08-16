@@ -98,13 +98,24 @@ bool trezor_bitcoin_signing_apply_tx_ack(
 
     if (state->phase == TREZOR_BITCOIN_SIGNING_PHASE_EXPECT_INPUT) {
         trezor_bitcoin_transaction_t tx_ack;
-        if (!trezor_bitcoin_tx_ack_decode(payload, payload_len, &tx_ack)) {
+        trezor_bitcoin_tx_ack_multisig_fingerprints_t fingerprints;
+        wally_bzero(&fingerprints, sizeof(fingerprints));
+        if (!trezor_bitcoin_tx_ack_decode_with_multisig_fingerprints(
+                payload, payload_len, &tx_ack, &fingerprints)) {
             return false;
         }
         if (tx_ack.inputs_len != 1 || tx_ack.outputs_len != 0 || state->inputs_len >= state->request.inputs_count) {
+            wally_bzero(&fingerprints, sizeof(fingerprints));
             return false;
         }
-        state->inputs[state->inputs_len++] = tx_ack.inputs[0];
+        const size_t input_index = state->inputs_len++;
+        state->inputs[input_index] = tx_ack.inputs[0];
+        state->input_has_multisig_fingerprint[input_index] = fingerprints.input_has_multisig_fingerprint[0];
+        if (fingerprints.input_has_multisig_fingerprint[0]) {
+            memcpy(state->input_multisig_fingerprints[input_index], fingerprints.input_multisig_fingerprints[0],
+                sizeof(state->input_multisig_fingerprints[input_index]));
+        }
+        wally_bzero(&fingerprints, sizeof(fingerprints));
         if (state->inputs_len < state->request.inputs_count) {
             return true;
         }
@@ -114,13 +125,24 @@ bool trezor_bitcoin_signing_apply_tx_ack(
 
     if (state->phase == TREZOR_BITCOIN_SIGNING_PHASE_EXPECT_OUTPUT) {
         trezor_bitcoin_transaction_t tx_ack;
-        if (!trezor_bitcoin_tx_ack_decode(payload, payload_len, &tx_ack)) {
+        trezor_bitcoin_tx_ack_multisig_fingerprints_t fingerprints;
+        wally_bzero(&fingerprints, sizeof(fingerprints));
+        if (!trezor_bitcoin_tx_ack_decode_with_multisig_fingerprints(
+                payload, payload_len, &tx_ack, &fingerprints)) {
             return false;
         }
         if (tx_ack.inputs_len != 0 || tx_ack.outputs_len != 1 || state->outputs_len >= state->request.outputs_count) {
+            wally_bzero(&fingerprints, sizeof(fingerprints));
             return false;
         }
-        state->outputs[state->outputs_len++] = tx_ack.outputs[0];
+        const size_t output_index = state->outputs_len++;
+        state->outputs[output_index] = tx_ack.outputs[0];
+        state->output_has_multisig_fingerprint[output_index] = fingerprints.output_has_multisig_fingerprint[0];
+        if (fingerprints.output_has_multisig_fingerprint[0]) {
+            memcpy(state->output_multisig_fingerprints[output_index], fingerprints.output_multisig_fingerprints[0],
+                sizeof(state->output_multisig_fingerprints[output_index]));
+        }
+        wally_bzero(&fingerprints, sizeof(fingerprints));
         if (state->outputs_len < state->request.outputs_count) {
             return true;
         }

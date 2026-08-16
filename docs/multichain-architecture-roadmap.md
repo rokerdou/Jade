@@ -191,8 +191,9 @@ main/
   `MultisigFingerprintChecker`：所有内部 input 的 fingerprint 一致时，匹配同一
   fingerprint 的 output 才可作为找零；一旦 input fingerprint 混合或缺失，就禁止
   多签找零识别。matcher 带 `read_only` 防护，开始判断 output 后不能再追加 input。
-  当前它仍未接入真实 `SignTx.multisig`，因为还需要先设计不膨胀 signing state 的
-  policy object/normalizer 输出通道。
+  `TxAck` 解码器现在可以通过旁路结构返回 input/output 的 multisig fingerprint，
+  `signing_state` 会保存这些 32 字节摘要；它不保存完整 multisig policy、xpub
+  或 redeem script，避免扩大长期状态里的攻击面。
 - BTC `SignTx.multisig` 仍保持关闭，并有 host gate 明确覆盖：现有 singlesig
   basic signing policy 必须拒绝 `has_multisig` 的 input/output，避免多签地址/xpub
   兼容工作误把多签签名路径打开。
