@@ -509,6 +509,10 @@ const char* trezor_trace_message_name(const uint16_t message_type)
         return "OneKeySignPsbt";
     case TREZOR_MSG_ONEKEY_SIGNED_PSBT:
         return "OneKeySignedPsbt";
+    case TREZOR_MSG_ETHEREUM_GNOSIS_SAFE_TX_ACK:
+        return "EthereumGnosisSafeTxAck";
+    case TREZOR_MSG_ETHEREUM_GNOSIS_SAFE_TX_REQUEST:
+        return "EthereumGnosisSafeTxRequest";
     default:
         return "Unknown";
     }
@@ -597,6 +601,10 @@ static const char* trezor_trace_message_short_name(const uint16_t message_type)
         return "EthTypedSig";
     case TREZOR_MSG_ETHEREUM_SIGN_TYPED_HASH:
         return "EthTyped?";
+    case TREZOR_MSG_ETHEREUM_GNOSIS_SAFE_TX_ACK:
+        return "SafeAck";
+    case TREZOR_MSG_ETHEREUM_GNOSIS_SAFE_TX_REQUEST:
+        return "SafeReq";
     default:
         return "Unknown";
     }

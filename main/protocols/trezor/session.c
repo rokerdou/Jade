@@ -7,6 +7,7 @@
 #include "bitcoin/signing_state.h"
 #include "dispatcher.h"
 #include "ethereum/normalizer.h"
+#include "ethereum/safe_normalizer.h"
 #include "failure.h"
 #include "messages.h"
 #include "protobuf.h"
@@ -611,7 +612,7 @@ static bool trezor_session_handle_payload_ex(const trezor_session_t* const sessi
     if (request_type == TREZOR_MSG_ETHEREUM_SIGN_TYPED_HASH) {
         trezor_ethereum_sign_typed_hash_t request;
         trezor_trace_set_stage("ethtyped:decode");
-        if (!trezor_ethereum_sign_typed_hash_decode(request_payload, request_payload_len, &request)) {
+        if (!session->state || !trezor_ethereum_sign_typed_hash_decode(request_payload, request_payload_len, &request)) {
             trezor_trace_set_stage("ethtyped:decode_fail");
             return trezor_session_failure_payload(TREZOR_FAILURE_DATA_ERROR, "Invalid Ethereum typed hash request",
                 response_type, response_payload, response_payload_len, response_payload_written);
@@ -619,20 +620,60 @@ static bool trezor_session_handle_payload_ex(const trezor_session_t* const sessi
 
         const bool has_message_hash = request.has_message_hash;
         const bool has_encoded_network = request.has_encoded_network;
-        wally_bzero(&request, sizeof(request));
         if (!has_message_hash) {
+            wally_bzero(&request, sizeof(request));
             trezor_trace_set_stage("ethtyped:missing_msg");
             return trezor_session_failure_payload(TREZOR_FAILURE_DATA_ERROR, "Typed hash missing message hash",
                 response_type, response_payload, response_payload_len, response_payload_written);
         }
         if (has_encoded_network) {
+            wally_bzero(&request, sizeof(request));
             trezor_trace_set_stage("ethtyped:network_defs");
             return trezor_session_failure_payload(TREZOR_FAILURE_DATA_ERROR, "Typed hash network definitions unsupported",
                 response_type, response_payload, response_payload_len, response_payload_written);
         }
 
-        trezor_trace_set_stage("ethtyped:hash_only");
-        return trezor_session_failure_payload(TREZOR_FAILURE_DATA_ERROR, "SafeTx payload required for typed hash signing",
+        trezor_session_clear_pending(session->state);
+        session->state->pending_eth_safe_typed_hash = request;
+        session->state->has_pending_eth_safe_typed_hash = true;
+        wally_bzero(&request, sizeof(request));
+        trezor_trace_set_stage("safe:req");
+        *response_type = TREZOR_MSG_ETHEREUM_GNOSIS_SAFE_TX_REQUEST;
+        return trezor_ethereum_safe_tx_request_encode(
+            response_payload, response_payload_len, response_payload_written);
+    }
+
+    if (request_type == TREZOR_MSG_ETHEREUM_GNOSIS_SAFE_TX_ACK) {
+        if (!session->state || !session->state->has_pending_eth_safe_typed_hash) {
+            trezor_trace_set_stage("safe:unexpected_ack");
+            return trezor_session_failure_payload(TREZOR_FAILURE_UNEXPECTED_MESSAGE, "SafeTx payload not expected",
+                response_type, response_payload, response_payload_len, response_payload_written);
+        }
+
+        trezor_ethereum_safe_tx_ack_t ack;
+        uint8_t signing_hash[ETHEREUM_TX_SIGNING_HASH_LEN];
+        ethereum_safe_tx_summary_t summary;
+        wally_bzero(&ack, sizeof(ack));
+        wally_bzero(signing_hash, sizeof(signing_hash));
+        wally_bzero(&summary, sizeof(summary));
+        trezor_trace_set_stage("safe:ack_decode");
+        bool ok = trezor_ethereum_safe_tx_ack_decode(request_payload, request_payload_len, &ack);
+        trezor_trace_set_stage(ok ? "safe:bind" : "safe:ack_decode_fail");
+        ok = ok
+            && trezor_ethereum_safe_typed_hash_bind(
+                &session->state->pending_eth_safe_typed_hash, &ack.tx, signing_hash, &summary);
+        trezor_trace_set_stage(ok ? "safe:bound" : "safe:bind_fail");
+        session->state->has_pending_eth_safe_typed_hash = false;
+        wally_bzero(&session->state->pending_eth_safe_typed_hash,
+            sizeof(session->state->pending_eth_safe_typed_hash));
+        wally_bzero(&ack, sizeof(ack));
+        wally_bzero(signing_hash, sizeof(signing_hash));
+        wally_bzero(&summary, sizeof(summary));
+        if (!ok) {
+            return trezor_session_failure_payload(TREZOR_FAILURE_DATA_ERROR, "Invalid SafeTx payload", response_type,
+                response_payload, response_payload_len, response_payload_written);
+        }
+        return trezor_session_failure_payload(TREZOR_FAILURE_DATA_ERROR, "SafeTx UI/signing not enabled",
             response_type, response_payload, response_payload_len, response_payload_written);
     }
 

@@ -942,6 +942,43 @@ static ethereum_safe_tx_t make_safe_usdt_transfer(uint8_t data[EVM_ABI_ADDRESS_U
     return tx;
 }
 
+static bool make_trezor_safe_tx_ack_payload(const uint8_t* const data, const size_t data_len, uint8_t* const output,
+    const size_t output_len, size_t* const written)
+{
+    static const char safe_to[] = "0xdAC17F958D2ee523a2206206994597C13D831ec7";
+    static const char zero_address[] = "0x0000000000000000000000000000000000000000";
+    static const char safe_address[] = "0x1234567890abcdef1234567890abcdef12345678";
+    static const uint8_t safe_tx_gas[] = { 0xc3, 0x50 };
+    static const uint8_t base_gas[] = { 0x52, 0x08 };
+    static const uint8_t gas_price[] = { 0x3b, 0x9a, 0xca, 0x00 };
+    static const uint8_t nonce[] = { 0x07 };
+
+    if (!output || !written || (!data && data_len)) {
+        return false;
+    }
+
+    trezor_protobuf_writer_t writer;
+    trezor_protobuf_writer_init(&writer, output, output_len);
+    if (!trezor_protobuf_write_string_field(&writer, 1, safe_to)
+        || !trezor_protobuf_write_bytes_field(&writer, 2, NULL, 0)
+        || !trezor_protobuf_write_bytes_field(&writer, 3, data, data_len)
+        || !trezor_protobuf_write_varint_field(&writer, 4, ETHEREUM_SAFE_TX_OPERATION_CALL)
+        || !trezor_protobuf_write_bytes_field(&writer, 5, safe_tx_gas, sizeof(safe_tx_gas))
+        || !trezor_protobuf_write_bytes_field(&writer, 6, base_gas, sizeof(base_gas))
+        || !trezor_protobuf_write_bytes_field(&writer, 7, gas_price, sizeof(gas_price))
+        || !trezor_protobuf_write_string_field(&writer, 8, zero_address)
+        || !trezor_protobuf_write_string_field(&writer, 9, zero_address)
+        || !trezor_protobuf_write_bytes_field(&writer, 10, nonce, sizeof(nonce))
+        || !trezor_protobuf_write_varint_field(&writer, 11, 1)
+        || !trezor_protobuf_write_string_field(&writer, 12, safe_address)) {
+        wally_bzero(output, output_len);
+        return false;
+    }
+
+    *written = writer.len;
+    return true;
+}
+
 static bool make_signed_eth_token_definition(const uint8_t address[ETHEREUM_ADDRESS_LEN], const uint64_t chain_id,
     const char* const symbol, const uint32_t decimals, const char* const name, const bool valid_signature,
     uint8_t* const output, const size_t output_len, size_t* const written)
@@ -2324,6 +2361,39 @@ int main(int argc, char** argv)
     CHECK(memcmp(safe_summary.token_contract, SAFE_TEST_USDT_ADDRESS, sizeof(SAFE_TEST_USDT_ADDRESS)) == 0);
     CHECK(memcmp(safe_summary.token_recipient, SAFE_TEST_RECIPIENT, sizeof(SAFE_TEST_RECIPIENT)) == 0);
     CHECK(memcmp(safe_summary.calldata_hash, EXPECTED_SAFE_CALLDATA_HASH, sizeof(EXPECTED_SAFE_CALLDATA_HASH)) == 0);
+
+    uint8_t safe_ack_payload[512];
+    size_t safe_ack_payload_len = 0;
+    trezor_ethereum_safe_tx_ack_t safe_ack;
+    CHECK(make_trezor_safe_tx_ack_payload(
+        safe_transfer_data, sizeof(safe_transfer_data), safe_ack_payload, sizeof(safe_ack_payload), &safe_ack_payload_len));
+    CHECK(trezor_ethereum_safe_tx_ack_decode(safe_ack_payload, safe_ack_payload_len, &safe_ack));
+    CHECK(safe_ack.tx.chain_id == safe_tx.chain_id);
+    CHECK(memcmp(safe_ack.tx.verifying_contract, safe_tx.verifying_contract, sizeof(safe_tx.verifying_contract)) == 0);
+    CHECK(memcmp(safe_ack.tx.to, safe_tx.to, sizeof(safe_tx.to)) == 0);
+    CHECK(safe_ack.tx.data_len == safe_tx.data_len);
+    CHECK(memcmp(safe_ack.data, safe_transfer_data, sizeof(safe_transfer_data)) == 0);
+    CHECK(memcmp(safe_ack.tx.safe_tx_gas, safe_tx.safe_tx_gas, sizeof(safe_tx.safe_tx_gas)) == 0);
+    CHECK(memcmp(safe_ack.tx.base_gas, safe_tx.base_gas, sizeof(safe_tx.base_gas)) == 0);
+    CHECK(memcmp(safe_ack.tx.gas_price, safe_tx.gas_price, sizeof(safe_tx.gas_price)) == 0);
+    CHECK(memcmp(safe_ack.tx.nonce, safe_tx.nonce, sizeof(safe_tx.nonce)) == 0);
+
+    uint8_t bad_safe_ack_payload[512];
+    trezor_protobuf_writer_t safe_ack_writer;
+    trezor_protobuf_writer_init(&safe_ack_writer, bad_safe_ack_payload, sizeof(bad_safe_ack_payload));
+    CHECK(trezor_protobuf_write_string_field(&safe_ack_writer, 1, "0x1234"));
+    CHECK(!trezor_ethereum_safe_tx_ack_decode(bad_safe_ack_payload, safe_ack_writer.len, &safe_ack));
+
+    trezor_protobuf_writer_init(&safe_ack_writer, bad_safe_ack_payload, sizeof(bad_safe_ack_payload));
+    CHECK(trezor_protobuf_write_string_field(&safe_ack_writer, 1, "0xdAC17F958D2ee523a2206206994597C13D831ec7"));
+    CHECK(trezor_protobuf_write_string_field(&safe_ack_writer, 1, "0xdAC17F958D2ee523a2206206994597C13D831ec7"));
+    CHECK(!trezor_ethereum_safe_tx_ack_decode(bad_safe_ack_payload, safe_ack_writer.len, &safe_ack));
+
+    static const uint8_t leading_zero_u256[] = { 0x00, 0x01 };
+    trezor_protobuf_writer_init(&safe_ack_writer, bad_safe_ack_payload, sizeof(bad_safe_ack_payload));
+    CHECK(trezor_protobuf_write_string_field(&safe_ack_writer, 1, "0xdAC17F958D2ee523a2206206994597C13D831ec7"));
+    CHECK(trezor_protobuf_write_bytes_field(&safe_ack_writer, 2, leading_zero_u256, sizeof(leading_zero_u256)));
+    CHECK(!trezor_ethereum_safe_tx_ack_decode(bad_safe_ack_payload, safe_ack_writer.len, &safe_ack));
 
     trezor_ethereum_sign_typed_hash_t safe_typed_hash;
     wally_bzero(&safe_typed_hash, sizeof(safe_typed_hash));
@@ -4938,12 +5008,29 @@ int main(int argc, char** argv)
     CHECK(session_response_event == TREZOR_SESSION_RESPONSE_EVENT_NONE);
     CHECK(trezor_wire_decode_message(session_response_chunks, session_response_len, &session_response_type,
         session_response_payload, sizeof(session_response_payload), &session_response_payload_len));
-    CHECK(session_response_type == TREZOR_MSG_FAILURE);
-    CHECK(trezor_payload_has_varint(session_response_payload, session_response_payload_len, 1, TREZOR_FAILURE_DATA_ERROR));
+    CHECK(session_response_type == TREZOR_MSG_ETHEREUM_GNOSIS_SAFE_TX_REQUEST);
+    CHECK(session_response_payload_len == 0);
     CHECK(!trezor_session_state.has_pending_eth_signing);
+    CHECK(trezor_session_state.has_pending_eth_safe_typed_hash);
     CHECK(g_trezor_eth_sign_calls == trezor_eth_sign_calls_before_typed_hash);
     CHECK(trezor_trace_format_latest(trace_text, sizeof(trace_text)));
     CHECK(strstr(trace_text, "EthereumSignTypedHash") != NULL);
+    CHECK(strstr(trace_text, "EthereumGnosisSafeTxRequest") != NULL);
+
+    CHECK(trezor_wire_encode_message(TREZOR_MSG_ETHEREUM_GNOSIS_SAFE_TX_ACK, safe_ack_payload, safe_ack_payload_len,
+        session_request_chunks, sizeof(session_request_chunks), &session_request_len));
+    session_response_event = TREZOR_SESSION_RESPONSE_EVENT_SIGNED_RESULT;
+    CHECK(trezor_session_handle_wire_ex(&trezor_session, session_request_chunks, session_request_len,
+        session_response_chunks, sizeof(session_response_chunks), &session_response_len, &session_response_event));
+    CHECK(session_response_event == TREZOR_SESSION_RESPONSE_EVENT_NONE);
+    CHECK(trezor_wire_decode_message(session_response_chunks, session_response_len, &session_response_type,
+        session_response_payload, sizeof(session_response_payload), &session_response_payload_len));
+    CHECK(session_response_type == TREZOR_MSG_FAILURE);
+    CHECK(trezor_payload_has_varint(session_response_payload, session_response_payload_len, 1, TREZOR_FAILURE_DATA_ERROR));
+    CHECK(!trezor_session_state.has_pending_eth_safe_typed_hash);
+    CHECK(g_trezor_eth_sign_calls == trezor_eth_sign_calls_before_typed_hash);
+    CHECK(trezor_trace_format_latest(trace_text, sizeof(trace_text)));
+    CHECK(strstr(trace_text, "EthereumGnosisSafeTxAck") != NULL);
     CHECK(strstr(trace_text, "DataError") != NULL);
 
     CHECK(trezor_wire_encode_message(TREZOR_MSG_ETHEREUM_SIGN_TX, NULL, 0, session_request_chunks,
@@ -4969,8 +5056,8 @@ int main(int argc, char** argv)
     CHECK(strstr(trace_text, "wire=bad") != NULL);
     CHECK(trezor_trace_format_history(trace_text, sizeof(trace_text)));
     CHECK(strstr(trace_text, "Recent USB messages") != NULL);
-    CHECK(strstr(trace_text, "EthSign>EthTxReq") != NULL);
-    CHECK(strstr(trace_text, "EthSign>Fail") != NULL);
+    CHECK(strstr(trace_text, "EthTyped?>SafeReq") != NULL);
+    CHECK(strstr(trace_text, "SafeAck>Fail") != NULL);
     CHECK(strstr(trace_text, "BadWire>Fail") != NULL);
     CHECK(strstr(trace_text, "xpub-test-only") == NULL);
     CHECK(strstr(trace_text, "mrCDrCybB6J1vRfbwM5hemdJz73FwDBC8r") == NULL);
@@ -5090,6 +5177,7 @@ int main(int argc, char** argv)
     CHECK(trezor_dispatcher_message_allowed(TREZOR_MSG_ETHEREUM_SIGN_TX));
     CHECK(trezor_dispatcher_message_allowed(TREZOR_MSG_ETHEREUM_SIGN_TX_EIP1559));
     CHECK(trezor_dispatcher_message_allowed(TREZOR_MSG_ETHEREUM_SIGN_TYPED_HASH));
+    CHECK(trezor_dispatcher_message_allowed(TREZOR_MSG_ETHEREUM_GNOSIS_SAFE_TX_ACK));
     CHECK(trezor_dispatcher_message_allowed(TREZOR_MSG_ETHEREUM_TX_ACK));
     CHECK(trezor_dispatcher_message_allowed(TREZOR_MSG_SIGN_TX));
     CHECK(trezor_dispatcher_message_allowed(TREZOR_MSG_TX_ACK));

@@ -250,10 +250,21 @@ trezorlib / Safe CLI 兼容路径：
   - `domain_separator_hash`
   - `message_hash`
   - optional `encoded_network`
-  设备应返回 `EthereumTypedDataSignature(address, signature)`。
+  官方 Trezor 设备在 hash-only 模式下可返回
+  `EthereumTypedDataSignature(address, signature)`，但这不能让设备展示
+  SafeTx 收款人、USDT 金额等关键资金信息。
+- 为避免盲签，SafeTx 首版采用 OneKey 风格二阶段扩展：
+  1. host 发官方 `EthereumSignTypedHash`。
+  2. 设备返回 `EthereumGnosisSafeTxRequest`（message id 20119，空
+     payload），要求 host 提供 SafeTx 明文字段。
+  3. host 回 `EthereumGnosisSafeTxAck`（message id 20118），字段按
+     OneKey proto：
+     `to/value/data/operation/safeTxGas/baseGas/gasPrice/gasToken/refundReceiver/nonce/chain_id/verifyingContract`。
+  4. 设备重新计算 `domain_hash/message_hash/signing_hash`，和第 1 步的
+     typed-hash 入参逐字节绑定；不一致直接拒绝。
 - 因此首版硬件通信优先级是：
-  1. 实现 `EthereumSignTypedHash`，兼容 Safe CLI / trezorlib 的 SafeTx
-     签名路径。
+  1. 实现 `EthereumSignTypedHash -> EthereumGnosisSafeTxRequest ->
+     EthereumGnosisSafeTxAck` 的非盲签二阶段流程。
   2. 在 host gate 中用 `safe-cli` 生成 SafeTx hash，用设备/本机 harness
      返回签名，再用第三方库 recover signer。
   3. 后续再实现完整 `EthereumSignTypedData` 的
@@ -292,7 +303,9 @@ trezorlib / Safe CLI 兼容路径：
   独立计算 EIP-712 hash、ABI decode、signature recover，避免只用 Safe
   Python 栈自测。
 - Trezor protocol host harness：
-  模拟 `EthereumSignTypedHash` 或 `EthereumSignTypedData` 请求，验证
+  模拟 `EthereumSignTypedHash -> EthereumGnosisSafeTxRequest ->
+  EthereumGnosisSafeTxAck`，验证 hash-only 不会直接签名，SafeTx Ack
+  必须完成字段解析和 hash 绑定；后续接签名后再验证
   `EthereumTypedDataSignature` 返回格式、address、signature recover。
 - UI 摘要门禁：
   Safe 地址、owner 地址、chain id、nonce、operation、to/value、
@@ -325,16 +338,19 @@ trezorlib / Safe CLI 兼容路径：
   `safe-cli` 底层 `safe-eth-py` 与 `eth_account.encode_typed_data` 双 oracle
   交叉校验。
 - Trezor `EthereumSignTypedHash` message id 470 已接入 parser、dispatcher、
-  trace 和 trezorlib host harness。当前默认返回
-  `Failure(DataError, "SafeTx payload required...")`，不会触发本机解锁、UI、
-  私钥或签名路径。
+  trace 和 trezorlib host harness。当前返回
+  `EthereumGnosisSafeTxRequest`，进入 SafeTx payload 二阶段流程，不会
+  触发本机解锁、UI、私钥或签名路径。
 - `protocols/trezor/ethereum/safe_normalizer.*` 已补 SafeTx payload 绑定
   模型：host 提供结构化 SafeTx 字段，固件重新计算
   `domain_hash/message_hash/signing_hash` 并与 `EthereumSignTypedHash`
   入参逐字节绑定；chainId/hash/encoded_network/delegatecall/超长 calldata
   负向门禁已覆盖。
-- 下一步是设计 SafeTx payload 在 Trezor-compatible transport 中如何传递，
-  绑定通过后才允许进入 UI 和 `wallet_core_sign_digest_ecdsa_recoverable()`。
+- `EthereumGnosisSafeTxAck` parser 已按 OneKey 字段布局实现，缺字段、
+  重复字段、未知字段、错误地址、畸形 uint256/leading zero、超长 data
+  均拒绝。
+- 下一步是 SafeTx 结构化 UI 摘要和真实签名。绑定通过后才允许进入 UI 和
+  `wallet_core_sign_digest_ecdsa_recoverable()`。
 
 ### Phase 1: 拆 BTC 协议层大文件
 
