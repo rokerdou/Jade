@@ -161,6 +161,32 @@ bool trezor_bitcoin_policy_signing_coin(
     return state && state->request.has_coin_name && trezor_bitcoin_coin_from_name(state->request.coin_name, coin);
 }
 
+bool trezor_bitcoin_policy_multisig_output_matches_inputs(
+    const trezor_bitcoin_signing_state_t* const state, const size_t output_index)
+{
+    if (!state || state->inputs_len == 0 || output_index >= state->outputs_len
+        || state->inputs_len > TREZOR_BITCOIN_TX_INPUTS_MAX || state->outputs_len > TREZOR_BITCOIN_TX_OUTPUTS_MAX
+        || !state->outputs[output_index].has_multisig || !state->output_has_multisig_fingerprint[output_index]) {
+        return false;
+    }
+
+    trezor_bitcoin_multisig_matcher_t matcher;
+    trezor_bitcoin_multisig_matcher_reset(&matcher);
+    for (size_t i = 0; i < state->inputs_len; ++i) {
+        if (!state->inputs[i].has_multisig || !state->input_has_multisig_fingerprint[i]
+            || !trezor_bitcoin_multisig_matcher_add(
+                &matcher, state->input_multisig_fingerprints[i], sizeof(state->input_multisig_fingerprints[i]))) {
+            trezor_bitcoin_multisig_matcher_reset(&matcher);
+            return false;
+        }
+    }
+
+    const bool ok = trezor_bitcoin_multisig_matcher_output_matches(&matcher,
+        state->output_multisig_fingerprints[output_index], sizeof(state->output_multisig_fingerprints[output_index]));
+    trezor_bitcoin_multisig_matcher_reset(&matcher);
+    return ok;
+}
+
 static bool trezor_bitcoin_policy_input_is_supported_without_prev_tx_verification(
     const trezor_bitcoin_tx_input_t* const input, const bool testnet)
 {

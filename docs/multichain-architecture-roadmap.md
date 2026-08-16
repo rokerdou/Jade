@@ -194,6 +194,10 @@ main/
   `TxAck` 解码器现在可以通过旁路结构返回 input/output 的 multisig fingerprint，
   `signing_state` 会保存这些 32 字节摘要；它不保存完整 multisig policy、xpub
   或 redeem script，避免扩大长期状态里的攻击面。
+- BTC 策略层已有 `trezor_bitcoin_policy_multisig_output_matches_inputs()` 原语，
+  用保存的 fingerprint 判断某个 multisig output 是否与所有 multisig inputs
+  属于同一 policy。当前实现故意保守：混合 singlesig/multisig、缺 fingerprint、
+  input fingerprint 不一致、output fingerprint 不匹配都会返回 false。
 - BTC `SignTx.multisig` 仍保持关闭，并有 host gate 明确覆盖：现有 singlesig
   basic signing policy 必须拒绝 `has_multisig` 的 input/output，避免多签地址/xpub
   兼容工作误把多签签名路径打开。

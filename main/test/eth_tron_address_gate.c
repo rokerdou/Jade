@@ -4066,6 +4066,23 @@ int main(int argc, char** argv)
     CHECK(memcmp(trezor_btc_multisig_capture_state.output_multisig_fingerprints[0],
               trezor_btc_multisig_p2sh_policy.fingerprint, SHA256_LEN)
         == 0);
+    CHECK(trezor_bitcoin_policy_multisig_output_matches_inputs(&trezor_btc_multisig_capture_state, 0));
+    CHECK(!trezor_bitcoin_policy_multisig_output_matches_inputs(&trezor_btc_multisig_capture_state, 1));
+    trezor_btc_multisig_capture_state.output_multisig_fingerprints[0][0] ^= 0x01;
+    CHECK(!trezor_bitcoin_policy_multisig_output_matches_inputs(&trezor_btc_multisig_capture_state, 0));
+    trezor_btc_multisig_capture_state.output_multisig_fingerprints[0][0] ^= 0x01;
+    trezor_btc_multisig_capture_state.inputs_len = 2;
+    trezor_btc_multisig_capture_state.inputs[1] = trezor_btc_multisig_capture_state.inputs[0];
+    trezor_btc_multisig_capture_state.input_has_multisig_fingerprint[1] = true;
+    memcpy(trezor_btc_multisig_capture_state.input_multisig_fingerprints[1],
+        trezor_btc_multisig_capture_state.input_multisig_fingerprints[0],
+        sizeof(trezor_btc_multisig_capture_state.input_multisig_fingerprints[1]));
+    trezor_btc_multisig_capture_state.input_multisig_fingerprints[1][0] ^= 0x01;
+    CHECK(!trezor_bitcoin_policy_multisig_output_matches_inputs(&trezor_btc_multisig_capture_state, 0));
+    trezor_btc_multisig_capture_state.input_multisig_fingerprints[1][0] ^= 0x01;
+    trezor_btc_multisig_capture_state.inputs[1].has_multisig = false;
+    CHECK(!trezor_bitcoin_policy_multisig_output_matches_inputs(&trezor_btc_multisig_capture_state, 0));
+    trezor_btc_multisig_capture_state.inputs_len = 1;
     CHECK(!trezor_bitcoin_policy_is_basic(&trezor_btc_multisig_capture_state));
 
     uint8_t trezor_btc_tx_request_payload[64];
