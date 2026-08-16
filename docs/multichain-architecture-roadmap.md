@@ -328,10 +328,13 @@ trezorlib / Safe CLI 兼容路径：
   trace 和 trezorlib host harness。当前默认返回
   `Failure(DataError, "SafeTx payload required...")`，不会触发本机解锁、UI、
   私钥或签名路径。
-- 下一步必须补 SafeTx payload normalizer：host 提供结构化 SafeTx 字段，
-  固件重新计算 `domain_hash/message_hash` 并与 `EthereumSignTypedHash`
-  入参逐字节绑定，绑定通过后才允许进入 UI 和
-  `wallet_core_sign_digest_ecdsa_recoverable()`。
+- `protocols/trezor/ethereum/safe_normalizer.*` 已补 SafeTx payload 绑定
+  模型：host 提供结构化 SafeTx 字段，固件重新计算
+  `domain_hash/message_hash/signing_hash` 并与 `EthereumSignTypedHash`
+  入参逐字节绑定；chainId/hash/encoded_network/delegatecall/超长 calldata
+  负向门禁已覆盖。
+- 下一步是设计 SafeTx payload 在 Trezor-compatible transport 中如何传递，
+  绑定通过后才允许进入 UI 和 `wallet_core_sign_digest_ecdsa_recoverable()`。
 
 ### Phase 1: 拆 BTC 协议层大文件
 

@@ -30,6 +30,7 @@
 #include "protocols/trezor/dispatcher.h"
 #include "protocols/trezor/ethereum/protocol.h"
 #include "protocols/trezor/ethereum/definitions.h"
+#include "protocols/trezor/ethereum/safe_normalizer.h"
 #include "protocols/trezor/failure.h"
 #include "protocols/trezor/features.h"
 #include "protocols/trezor/protobuf.h"
@@ -2323,12 +2324,40 @@ int main(int argc, char** argv)
     CHECK(memcmp(safe_summary.token_contract, SAFE_TEST_USDT_ADDRESS, sizeof(SAFE_TEST_USDT_ADDRESS)) == 0);
     CHECK(memcmp(safe_summary.token_recipient, SAFE_TEST_RECIPIENT, sizeof(SAFE_TEST_RECIPIENT)) == 0);
     CHECK(memcmp(safe_summary.calldata_hash, EXPECTED_SAFE_CALLDATA_HASH, sizeof(EXPECTED_SAFE_CALLDATA_HASH)) == 0);
+
+    trezor_ethereum_sign_typed_hash_t safe_typed_hash;
+    wally_bzero(&safe_typed_hash, sizeof(safe_typed_hash));
+    memcpy(safe_typed_hash.address_n, eth_bip44, sizeof(eth_bip44));
+    safe_typed_hash.address_n_len = ARRAY_LEN(eth_bip44);
+    memcpy(safe_typed_hash.domain_separator_hash, EXPECTED_SAFE_DOMAIN_HASH, sizeof(EXPECTED_SAFE_DOMAIN_HASH));
+    safe_typed_hash.has_domain_separator_hash = true;
+    memcpy(safe_typed_hash.message_hash, EXPECTED_SAFE_MESSAGE_HASH, sizeof(EXPECTED_SAFE_MESSAGE_HASH));
+    safe_typed_hash.has_message_hash = true;
+    uint8_t safe_signing_hash[ETHEREUM_TX_SIGNING_HASH_LEN];
+    CHECK(trezor_ethereum_safe_typed_hash_bind(&safe_typed_hash, &safe_tx, safe_signing_hash, &safe_summary));
+    CHECK(memcmp(safe_signing_hash, EXPECTED_SAFE_SIGNING_HASH, sizeof(EXPECTED_SAFE_SIGNING_HASH)) == 0);
+    CHECK(safe_summary.type == ETHEREUM_SAFE_TX_SUMMARY_ERC20_TRANSFER);
+
+    safe_typed_hash.message_hash[0] ^= 0x01;
+    CHECK(!trezor_ethereum_safe_typed_hash_bind(&safe_typed_hash, &safe_tx, safe_signing_hash, &safe_summary));
+    safe_typed_hash.message_hash[0] ^= 0x01;
+
+    safe_tx.chain_id = 2;
+    CHECK(!trezor_ethereum_safe_typed_hash_bind(&safe_typed_hash, &safe_tx, safe_signing_hash, &safe_summary));
+    safe_tx.chain_id = 1;
+
+    safe_typed_hash.has_encoded_network = true;
+    CHECK(!trezor_ethereum_safe_typed_hash_bind(&safe_typed_hash, &safe_tx, safe_signing_hash, &safe_summary));
+    safe_typed_hash.has_encoded_network = false;
+
     safe_tx.operation = ETHEREUM_SAFE_TX_OPERATION_DELEGATE_CALL;
     CHECK(ethereum_safe_tx_validate(&safe_tx));
     CHECK(!ethereum_safe_tx_preflight(&safe_tx, &safe_summary));
+    CHECK(!trezor_ethereum_safe_typed_hash_bind(&safe_typed_hash, &safe_tx, safe_signing_hash, &safe_summary));
     safe_tx.operation = ETHEREUM_SAFE_TX_OPERATION_CALL;
     safe_tx.data_len = ETHEREUM_SAFE_TX_MAX_DATA_LEN + 1U;
     CHECK(!ethereum_safe_tx_validate(&safe_tx));
+    CHECK(!trezor_ethereum_safe_typed_hash_bind(&safe_typed_hash, &safe_tx, safe_signing_hash, &safe_summary));
 
     const uint32_t btc_state_path[]
         = { chain_path_harden(44), chain_path_harden(1), chain_path_harden(0), 0, 0 };
