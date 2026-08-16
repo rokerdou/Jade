@@ -416,6 +416,10 @@ trezorlib / Safe CLI 兼容路径：
   current transaction `TXMETA/TXINPUT/TXOUTPUT` 与 prev_tx
   `TXMETA/TXORIGINPUT/TXORIGOUTPUT` 状态。
 - `messages.c/h` 已独立，集中 BTC Trezor protobuf decode/encode，包括 `GetAddress`、`SignTx`、`TxAck`、prev input/output、Address response。
+- `script_builder.c/h` 已独立，集中 BTC Trezor-compatible 路径里的 external output
+  scriptPubKey、change scriptPubKey、legacy P2PKH scriptSig、P2SH-P2WPKH scriptSig
+  和 signing scriptCode 构造。它只取公钥，不读取私钥，为后续 `normalizer.c/h`
+  拆分和 raw tx oracle 对齐做准备。
 
 下一步建议顺序：
 
