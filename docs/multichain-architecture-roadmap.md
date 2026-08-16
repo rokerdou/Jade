@@ -166,6 +166,11 @@ main/
 - BTC legacy/P2PKH 与 P2SH-P2WPKH 的真实硬件 trezorlib 测试入口已补到
   `tools/run_btc_hardware_protocol_tests.py --include-legacy`，但仍需在设备解锁后
   跑实测确认 USB transport、UI 确认和真实 `wallet_core` 签名路径。
+- BTC multisig 真实硬件 trezorlib 测试入口已补到
+  `tools/run_btc_hardware_protocol_tests.py --include-multisig`：覆盖 BIP45/P2SH、
+  BIP48/P2SH-P2WSH、BIP48/P2WSH 的 xpub 导入、标准 `SignTx/TxAck` prev_tx
+  请求链、设备 UI 确认、真实 `wallet_core` partial signature 返回，并用 `embit`
+  独立验签。Sparrow/OneKey GUI 仍需人工矩阵确认协调器是否接受 partial signature。
 - OneKey `SignPsbt` 消息号已登记到 trace，并在 session 层明确返回 DataError；
   当前不解析 PSBT payload，不触碰 signer。
 - BTC `GetPublicKey` 已支持账户级 BIP44/P2PKH、BIP49/P2SH-P2WPKH、BIP84/P2WPKH，
@@ -785,6 +790,8 @@ tools/
    - 分别测试 BIP44/P2PKH、BIP49/P2SH-P2WPKH、BIP84/P2WPKH、BIP45/P2SH multisig、
      BIP48/P2SH-P2WSH、BIP48/P2WSH 的账户 xpub 导入。
    - 覆盖 `ignore_xpub_magic=true/false`、`show_display=false`、model/version/internal_model。
+   - trezorlib 硬件矩阵先用 `--include-legacy --include-multisig` 做底层协议确认；
+     Sparrow/OneKey GUI 再验证真实协调器导入、PSBT partial signature 回填和最终状态。
 
 3. PSBT/multisig/Taproot 先做 host gate 和安全拒绝
    - 标准 Trezor `SignTx/TxAck` 优先于 OneKey `SignPsbt` 扩展。

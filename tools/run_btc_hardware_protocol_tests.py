@@ -9,6 +9,7 @@ sighash calculation, and ECDSA signature verification.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import inspect
 import sys
 from dataclasses import dataclass
@@ -82,6 +83,16 @@ def bip45_multisig_account_path() -> list[int]:
 def bip48_multisig_account_path(*, testnet: bool, account: int = 0, script_flag: int) -> list[int]:
     coin_type = 1 if testnet else 0
     return [h(48), h(coin_type), h(account), h(script_flag)]
+
+
+def bip45_multisig_signing_path(*, cosigner: int = 0, change: int = 0, index: int = 0) -> list[int]:
+    return [h(45), cosigner, change, index]
+
+
+def bip48_multisig_signing_path(
+    *, testnet: bool, account: int = 0, script_flag: int, change: int = 0, index: int = 0
+) -> list[int]:
+    return bip48_multisig_account_path(testnet=testnet, account=account, script_flag=script_flag) + [change, index]
 
 
 @dataclass(frozen=True)
@@ -170,6 +181,104 @@ def account_xpub(
         )
     bip32.HDKey.from_base58(xpub)
     return xpub
+
+
+def public_node_xpub(
+    session: Any,
+    *,
+    coin_name: str,
+    path: list[int],
+    script_type: messages.InputScriptType,
+    expected_prefix: str | None = None,
+) -> str:
+    response = btc.get_public_node(
+        session,
+        path,
+        show_display=False,
+        coin_name=coin_name,
+        script_type=script_type,
+    )
+    xpub = getattr(response, "xpub", None)
+    if not xpub:
+        raise AssertionError("GetPublicKey did not return xpub")
+    if expected_prefix is not None and not xpub.startswith(expected_prefix):
+        raise AssertionError(f"{coin_name} public node prefix mismatch: expected {expected_prefix}, got {xpub[:4]}")
+    bip32.HDKey.from_base58(xpub)
+    return xpub
+
+
+def hdnode_type_from_xpub(xpub: str) -> messages.HDNodeType:
+    raw = base58.b58decode_check(xpub)
+    if len(raw) != 78:
+        raise AssertionError(f"unexpected xpub payload length: {len(raw)}")
+    return messages.HDNodeType(
+        depth=raw[4],
+        fingerprint=int.from_bytes(raw[5:9], "big"),
+        child_num=int.from_bytes(raw[9:13], "big"),
+        chain_code=raw[13:45],
+        public_key=raw[45:78],
+    )
+
+
+def seeded_account_xpub(path: str) -> str:
+    return str(bip32.HDKey.from_seed(bytes([0x22]) * 32).derive(path).to_public())
+
+
+def multisig_script_label(script_type: messages.InputScriptType) -> str:
+    if script_type == MULTISIG_SCRIPT_TYPE:
+        return "P2SH"
+    if script_type == P2WPKH_SCRIPT_TYPE:
+        return "P2WSH"
+    if script_type == P2SH_P2WPKH_SCRIPT_TYPE:
+        return "P2SH-P2WSH"
+    raise ValueError(f"unsupported multisig script type: {script_type}")
+
+
+def multisig_prevout_script(script_type: messages.InputScriptType, redeem_script: script.Script) -> script.Script:
+    if script_type == MULTISIG_SCRIPT_TYPE:
+        return script.p2sh(redeem_script)
+    if script_type == P2WPKH_SCRIPT_TYPE:
+        return script.p2wsh(redeem_script)
+    if script_type == P2SH_P2WPKH_SCRIPT_TYPE:
+        return script.p2sh(script.p2wsh(redeem_script))
+    raise ValueError(f"unsupported multisig script type: {script_type}")
+
+
+def multisig_redeem_script(multisig: messages.MultisigRedeemScriptType) -> script.Script:
+    pubkeys: list[ec.PublicKey] = []
+    if multisig.nodes:
+        for node in multisig.nodes:
+            key = bip32.HDKey.from_base58(base58.b58encode_check(
+                b"\x04\x88\xb2\x1e"
+                + bytes([node.depth])
+                + int(node.fingerprint).to_bytes(4, "big")
+                + int(node.child_num).to_bytes(4, "big")
+                + bytes(node.chain_code)
+                + bytes(node.public_key)
+            ).decode())
+            for part in multisig.address_n or []:
+                if part & HARDENED:
+                    raise AssertionError("multisig suffix must not be hardened")
+                key = key.child(part)
+            pubkeys.append(key.get_public_key())
+    elif multisig.pubkeys:
+        for item in multisig.pubkeys:
+            key = bip32.HDKey.from_base58(base58.b58encode_check(
+                b"\x04\x88\xb2\x1e"
+                + bytes([item.node.depth])
+                + int(item.node.fingerprint).to_bytes(4, "big")
+                + int(item.node.child_num).to_bytes(4, "big")
+                + bytes(item.node.chain_code)
+                + bytes(item.node.public_key)
+            ).decode())
+            for part in item.address_n or []:
+                if part & HARDENED:
+                    raise AssertionError("multisig pubkey suffix must not be hardened")
+                key = key.child(part)
+            pubkeys.append(key.get_public_key())
+    if multisig.pubkeys_order == messages.MultisigPubkeysOrder.LEXICOGRAPHIC:
+        pubkeys = sorted(pubkeys, key=lambda pubkey: pubkey.sec())
+    return script.multisig(int(multisig.m), pubkeys)
 
 
 def p2wpkh_address_from_xpub(xpub: str, *, testnet: bool, change: int, index: int) -> str:
@@ -444,6 +553,159 @@ def assert_p2sh_p2wpkh_signed_tx(
         expected_script = script.address_to_scriptpubkey(expected_output.address).data
         if txout.script_pubkey.data != expected_script:
             raise AssertionError(f"P2SH-P2WPKH output scriptPubKey mismatch: {txout.script_pubkey.data.hex()}")
+
+
+def assert_multisig_partial_signature(
+    *,
+    signature: bytes | None,
+    script_type: messages.InputScriptType,
+    prev_hash: bytes,
+    prev_index: int,
+    amount: int,
+    redeem_script: script.Script,
+    local_pubkey: ec.PublicKey,
+    output: ExpectedOutput,
+) -> None:
+    if not signature or len(signature) < 8:
+        raise AssertionError("multisig partial signature is missing")
+    parsed_signature = ec.Signature.parse(signature)
+    tx = Transaction(
+        version=2,
+        vin=[TransactionInput(prev_hash, prev_index, sequence=0xFFFFFFFF)],
+        vout=[TransactionOutput(output.amount, script.address_to_scriptpubkey(output.address))],
+        locktime=0,
+    )
+    digest = (
+        tx.sighash_legacy(0, redeem_script, sighash=1)
+        if script_type == MULTISIG_SCRIPT_TYPE
+        else tx.sighash_segwit(0, redeem_script, amount, sighash=1)
+    )
+    if not local_pubkey.verify(parsed_signature, digest):
+        raise AssertionError(f"{multisig_script_label(script_type)} partial signature verification failed")
+
+
+def build_multisig_case(
+    session: Any,
+    *,
+    coin_name: str,
+    testnet: bool,
+    script_type: messages.InputScriptType,
+) -> tuple[list[int], messages.MultisigRedeemScriptType, ec.PublicKey, script.Script, script.Script]:
+    if script_type == MULTISIG_SCRIPT_TYPE:
+        local_account_path = bip45_multisig_account_path()
+        local_signing_path = bip45_multisig_signing_path()
+        local_xpub = public_node_xpub(
+            session,
+            coin_name=coin_name,
+            path=local_account_path,
+            script_type=MULTISIG_SCRIPT_TYPE,
+            expected_prefix="tpub" if testnet else "xpub",
+        )
+        other_xpub = seeded_account_xpub("m/45h")
+        suffix = [0, 0, 0]
+    elif script_type == P2SH_P2WPKH_SCRIPT_TYPE:
+        local_account_path = bip48_multisig_account_path(testnet=testnet, script_flag=1)
+        local_signing_path = bip48_multisig_signing_path(testnet=testnet, script_flag=1)
+        local_xpub = public_node_xpub(
+            session,
+            coin_name=coin_name,
+            path=local_account_path,
+            script_type=MULTISIG_SCRIPT_TYPE,
+            expected_prefix="Upub" if testnet else "Ypub",
+        )
+        coin = 1 if testnet else 0
+        other_xpub = seeded_account_xpub(f"m/48h/{coin}h/0h/1h")
+        suffix = [0, 0]
+    elif script_type == P2WPKH_SCRIPT_TYPE:
+        local_account_path = bip48_multisig_account_path(testnet=testnet, script_flag=2)
+        local_signing_path = bip48_multisig_signing_path(testnet=testnet, script_flag=2)
+        local_xpub = public_node_xpub(
+            session,
+            coin_name=coin_name,
+            path=local_account_path,
+            script_type=MULTISIG_SCRIPT_TYPE,
+            expected_prefix="Vpub" if testnet else "Zpub",
+        )
+        coin = 1 if testnet else 0
+        other_xpub = seeded_account_xpub(f"m/48h/{coin}h/0h/2h")
+        suffix = [0, 0]
+    else:
+        raise ValueError(f"unsupported multisig case: {script_type}")
+
+    local_key = bip32.HDKey.from_base58(local_xpub)
+    for part in suffix:
+        local_key = local_key.child(part)
+    local_pubkey = local_key.get_public_key()
+    multisig = messages.MultisigRedeemScriptType(
+        nodes=[hdnode_type_from_xpub(local_xpub), hdnode_type_from_xpub(other_xpub)],
+        address_n=suffix,
+        signatures=[b"", b""],
+        m=2,
+        pubkeys_order=messages.MultisigPubkeysOrder.PRESERVED,
+    )
+    redeem_script = multisig_redeem_script(multisig)
+    prevout_script = multisig_prevout_script(script_type, redeem_script)
+    return local_signing_path, multisig, local_pubkey, redeem_script, prevout_script
+
+
+def test_multisig_partial_signing(session: Any, *, coin_name: str, testnet: bool) -> None:
+    network_name = "testnet" if testnet else "mainnet"
+    output_address = (
+        "tb1qw508d6qejxtdg4y5r3zarvary0c5xw7kxpjzsx"
+        if testnet
+        else "bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4"
+    )
+    for script_type in (MULTISIG_SCRIPT_TYPE, P2SH_P2WPKH_SCRIPT_TYPE, P2WPKH_SCRIPT_TYPE):
+        label = multisig_script_label(script_type)
+        print(f"RUN {network_name} multisig partial signing {label}", flush=True)
+        signing_path, multisig, local_pubkey, redeem_script, prevout_script = build_multisig_case(
+            session,
+            coin_name=coin_name,
+            testnet=testnet,
+            script_type=script_type,
+        )
+        prev_tx = prev_tx_from_outputs(
+            [
+                PrevOutput(amount=100_000, script_pubkey=prevout_script.data),
+                PrevOutput(amount=1_000, script_pubkey=script.address_to_scriptpubkey(output_address).data),
+            ]
+        )
+        inputs = [
+            messages.TxInputType(
+                address_n=signing_path,
+                prev_hash=prev_tx.txid,
+                prev_index=0,
+                script_type=script_type,
+                amount=100_000,
+                sequence=0xFFFFFFFF,
+                multisig=multisig,
+            )
+        ]
+        outputs = [messages.TxOutputType(address=output_address, amount=90_000, script_type=PAYTOADDRESS)]
+        signatures, raw_tx = sign_btc(
+            session,
+            coin_name=coin_name,
+            inputs=inputs,
+            outputs=outputs,
+            prev_txs={prev_tx.txid: prev_tx},
+        )
+        if raw_tx:
+            raise AssertionError("multisig partial signing must not return a complete raw transaction")
+        assert_multisig_partial_signature(
+            signature=signatures[0],
+            script_type=script_type,
+            prev_hash=prev_tx.txid,
+            prev_index=0,
+            amount=100_000,
+            redeem_script=redeem_script,
+            local_pubkey=local_pubkey,
+            output=ExpectedOutput(output_address, 90_000),
+        )
+        print(
+            f"PASS {network_name} multisig {label}: sig_len={len(signatures[0] or b'')} "
+            f"to={output_address} amount=90000",
+            flush=True,
+        )
 
 
 def enum_name(value: Any) -> str:
@@ -936,6 +1198,11 @@ def main() -> int:
     )
     parser.add_argument("--skip-rejections", action="store_true", help="Skip negative protocol tests.")
     parser.add_argument("--include-legacy", action="store_true", help="Run real-device P2PKH/P2SH-P2WPKH tests.")
+    parser.add_argument(
+        "--include-multisig",
+        action="store_true",
+        help="Run real-device BIP45/BIP48 P2SH/P2WSH/P2SH-P2WSH multisig partial-signing tests.",
+    )
     args = parser.parse_args()
 
     session = get_session("codex-btc-hardware")
@@ -1000,6 +1267,14 @@ def main() -> int:
             close_session(session)
     else:
         print("SKIP legacy/P2SH-P2WPKH signing; pass --include-legacy to enable", flush=True)
+    if args.include_multisig:
+        session = get_session("codex-btc-multisig-testnet")
+        try:
+            test_multisig_partial_signing(session, coin_name="Testnet", testnet=True)
+        finally:
+            close_session(session)
+    else:
+        print("SKIP multisig partial signing; pass --include-multisig to enable", flush=True)
     if not args.skip_rejections:
         test_rejections()
     print("PASS btc_hardware_protocol_tests", flush=True)
