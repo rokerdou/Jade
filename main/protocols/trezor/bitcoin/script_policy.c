@@ -116,12 +116,46 @@ static bool trezor_bitcoin_script_policy_build_p2sh_p2wpkh(
     return ok;
 }
 
+static bool trezor_bitcoin_script_policy_multisig_variant_matches_script_type(
+    const trezor_bitcoin_tx_input_t* const input)
+{
+    if (!input || !input->has_multisig || input->multisig.threshold == 0
+        || input->multisig.num_pubkeys == 0 || input->multisig.threshold > input->multisig.num_pubkeys
+        || input->multisig.num_pubkeys > TREZOR_BITCOIN_MULTISIG_MAX_SIGNERS) {
+        return false;
+    }
+    if (input->script_type == BITCOIN_MULTISIG_SPENDMULTISIG) {
+        return input->multisig.variant == MULTI_P2SH;
+    }
+    if (input->script_type == BITCOIN_P2WPKH_SPENDWITNESS) {
+        return input->multisig.variant == MULTI_P2WSH;
+    }
+    if (input->script_type == BITCOIN_P2SH_P2WPKH_SPENDP2SHWITNESS) {
+        return input->multisig.variant == MULTI_P2WSH_P2SH;
+    }
+    return false;
+}
+
+static bool trezor_bitcoin_script_policy_multisig_prevout_matches_input(
+    const trezor_bitcoin_tx_input_t* const input, const uint8_t* const script_pubkey, const size_t script_pubkey_len)
+{
+    return input && script_pubkey && script_pubkey_len > 0
+        && trezor_bitcoin_script_policy_multisig_variant_matches_script_type(input)
+        && input->multisig.script_pubkey_len == script_pubkey_len
+        && input->multisig.script_pubkey_len <= sizeof(input->multisig.script_pubkey)
+        && memcmp(input->multisig.script_pubkey, script_pubkey, script_pubkey_len) == 0;
+}
+
 bool trezor_bitcoin_script_policy_prevout_matches_input(const trezor_bitcoin_tx_input_t* const input,
     const trezor_bitcoin_coin_t coin, const uint8_t* const script_pubkey, const size_t script_pubkey_len)
 {
-    if (!input || input->has_multisig || !script_pubkey || script_pubkey_len == 0
+    if (!input || !script_pubkey || script_pubkey_len == 0
         || script_pubkey_len > TREZOR_BITCOIN_STANDARD_PREVOUT_SCRIPT_MAX_LEN) {
         return false;
+    }
+    if (input->has_multisig) {
+        (void)coin;
+        return trezor_bitcoin_script_policy_multisig_prevout_matches_input(input, script_pubkey, script_pubkey_len);
     }
 
     const bool testnet = trezor_bitcoin_coin_is_testnet(coin);

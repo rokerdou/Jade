@@ -180,6 +180,10 @@ main/
   `MultisigRedeemScriptType` 归一化成内部 policy/redeem script/scriptPubKey，
   再派生本机公钥并确认它属于该 policy，最后才返回/展示地址。若 policy 不包含
   本机公钥，地址请求会拒绝。
+- BTC 多签签名前置 gate 已开始补齐：`script_policy` 能验证 `TxInput.multisig`
+  的轻量 summary scriptPubKey 与 prev_tx verifier 返回的 prevout scriptPubKey 是否一致，
+  并检查 Trezor `script_type` 与内部 `MULTI_P2SH/MULTI_P2WSH/MULTI_P2WSH_P2SH`
+  variant 是否匹配。该 gate 不开放签名，只为后续 descriptor/policy 绑定铺路。
 - Sparrow/lark 的 singlesig xpub 导入会用默认 `SPENDADDRESS` 调
   `GetPublicKey(m/49'...)` / `GetPublicKey(m/84'...)`。固件现在只在账户级 public-node
   导出路径把这个默认值视为客户端兼容占位，并按 BIP purpose 推断 ypub/zpub；
@@ -453,6 +457,10 @@ trezorlib / Safe CLI 兼容路径：
   membership 校验；`TxInputType`/`TxOutputType` 仍只保存小型 summary，并在签名策略层
   明确拒绝。协议状态不会把完整 multisig pubkey/policy 嵌入每个 input/output，以避免
   T-Display-S3/ESP32-S3 上的栈和状态内存膨胀。
+- `script_policy` 已能用 `TxInput.multisig` summary 校验 prevout scriptPubKey：
+  P2SH、P2WSH、P2SH-P2WSH 都覆盖正向路径，且会拒绝 threshold 无效、script_type/variant
+  错配、prevout script 不一致。这个能力仍停留在 policy gate，不会让 multisig input
+  进入实际签名。
 
 4. P2SH-P2WPKH 已实验性开放。
    - P2SH-P2WPKH 继续使用 segwit v0/BIP143 sighash。
@@ -535,7 +543,8 @@ trezorlib / Safe CLI 兼容路径：
      `GetAddress.multisig` 地址确认；签名必须明确拒绝，不能半支持。
    - 当前 gate 已覆盖 `GetAddress` multisig 正向路径、policy 不包含本机公钥的拒绝路径、
      `SignTx` multisig input/output 的拒绝路径，并新增 normalizer 级 policy/redeem
-     script 门禁。签名请求仍必须停在协议/normalizer 边界，不能进入 signing policy。
+     script 门禁和 `script_policy` prevout scriptPubKey 绑定门禁。签名请求仍必须停在
+     协议/normalizer 边界，不能进入 signing policy。
 
 3. Taproot / BIP86
    - OneKey/Trezor proto 的 `SPENDTAPROOT=5`、`PAYTOTAPROOT=6` 只是协议入口，不等于可签名。

@@ -2869,6 +2869,55 @@ int main(int argc, char** argv)
         EXPECTED_BTC_P2WPKH_SCRIPTPUBKEY, sizeof(EXPECTED_BTC_P2WPKH_SCRIPTPUBKEY)));
     memset(&script_policy_input, 0, sizeof(script_policy_input));
 
+    const uint8_t btc_multisig_p2sh_script[] = { 0xa9, 0x14, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07,
+        0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f, 0x10, 0x11, 0x12, 0x13, 0x14, 0x87 };
+    script_policy_input.has_multisig = true;
+    script_policy_input.script_type = BITCOIN_MULTISIG_SPENDMULTISIG;
+    script_policy_input.multisig.variant = MULTI_P2SH;
+    script_policy_input.multisig.threshold = 2;
+    script_policy_input.multisig.num_pubkeys = 3;
+    memcpy(script_policy_input.multisig.script_pubkey, btc_multisig_p2sh_script, sizeof(btc_multisig_p2sh_script));
+    script_policy_input.multisig.script_pubkey_len = sizeof(btc_multisig_p2sh_script);
+    CHECK(trezor_bitcoin_script_policy_prevout_matches_input(&script_policy_input, TREZOR_BITCOIN_COIN_TESTNET,
+        btc_multisig_p2sh_script, sizeof(btc_multisig_p2sh_script)));
+    CHECK(!trezor_bitcoin_script_policy_prevout_matches_input(&script_policy_input, TREZOR_BITCOIN_COIN_TESTNET,
+        btc_p2sh_p2wpkh_script, sizeof(btc_p2sh_p2wpkh_script)));
+    script_policy_input.script_type = BITCOIN_P2WPKH_SPENDWITNESS;
+    CHECK(!trezor_bitcoin_script_policy_prevout_matches_input(&script_policy_input, TREZOR_BITCOIN_COIN_TESTNET,
+        btc_multisig_p2sh_script, sizeof(btc_multisig_p2sh_script)));
+    memset(&script_policy_input, 0, sizeof(script_policy_input));
+
+    uint8_t btc_multisig_p2wsh_script[WALLY_SCRIPTPUBKEY_P2WSH_LEN];
+    memset(btc_multisig_p2wsh_script, 0x22, sizeof(btc_multisig_p2wsh_script));
+    btc_multisig_p2wsh_script[0] = 0x00;
+    btc_multisig_p2wsh_script[1] = SHA256_LEN;
+    script_policy_input.has_multisig = true;
+    script_policy_input.script_type = BITCOIN_P2WPKH_SPENDWITNESS;
+    script_policy_input.multisig.variant = MULTI_P2WSH;
+    script_policy_input.multisig.threshold = 2;
+    script_policy_input.multisig.num_pubkeys = 3;
+    memcpy(script_policy_input.multisig.script_pubkey, btc_multisig_p2wsh_script, sizeof(btc_multisig_p2wsh_script));
+    script_policy_input.multisig.script_pubkey_len = sizeof(btc_multisig_p2wsh_script);
+    CHECK(trezor_bitcoin_script_policy_prevout_matches_input(&script_policy_input, TREZOR_BITCOIN_COIN_TESTNET,
+        btc_multisig_p2wsh_script, sizeof(btc_multisig_p2wsh_script)));
+    script_policy_input.multisig.threshold = 4;
+    CHECK(!trezor_bitcoin_script_policy_prevout_matches_input(&script_policy_input, TREZOR_BITCOIN_COIN_TESTNET,
+        btc_multisig_p2wsh_script, sizeof(btc_multisig_p2wsh_script)));
+    memset(&script_policy_input, 0, sizeof(script_policy_input));
+
+    const uint8_t btc_multisig_nested_script[] = { 0xa9, 0x14, 0x21, 0x22, 0x23, 0x24, 0x25, 0x26, 0x27,
+        0x28, 0x29, 0x2a, 0x2b, 0x2c, 0x2d, 0x2e, 0x2f, 0x30, 0x31, 0x32, 0x33, 0x34, 0x87 };
+    script_policy_input.has_multisig = true;
+    script_policy_input.script_type = BITCOIN_P2SH_P2WPKH_SPENDP2SHWITNESS;
+    script_policy_input.multisig.variant = MULTI_P2WSH_P2SH;
+    script_policy_input.multisig.threshold = 2;
+    script_policy_input.multisig.num_pubkeys = 3;
+    memcpy(script_policy_input.multisig.script_pubkey, btc_multisig_nested_script, sizeof(btc_multisig_nested_script));
+    script_policy_input.multisig.script_pubkey_len = sizeof(btc_multisig_nested_script);
+    CHECK(trezor_bitcoin_script_policy_prevout_matches_input(&script_policy_input, TREZOR_BITCOIN_COIN_TESTNET,
+        btc_multisig_nested_script, sizeof(btc_multisig_nested_script)));
+    memset(&script_policy_input, 0, sizeof(script_policy_input));
+
     const uint32_t tron_external[] = { chain_path_harden(44), chain_path_harden(195), chain_path_harden(0), 0, 0 };
     const uint32_t tron_change[] = { chain_path_harden(44), chain_path_harden(195), chain_path_harden(0), 1, 0 };
     const uint32_t tron_wrong_coin[] = { chain_path_harden(44), chain_path_harden(60), chain_path_harden(0), 0, 0 };
