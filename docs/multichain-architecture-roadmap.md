@@ -221,13 +221,20 @@ main/
   它会再次校验 redeem script/pubkey 顺序、P2SH/P2WSH hash 绑定、verified prevout、
   policy fingerprint、同 policy 找零、金额与 fee/UI 摘要，再使用 libwally 构造
   legacy sighash、BIP143 sighash、scriptSig/witness 和 raw tx。
+- BTC 多签 partial-signing 的 slot 语义已有 host gate：实现遵循 Trezor/OneKey
+  `MultisigRedeemScriptType.signatures` 规则，signatures 数组按 multisig pubkey slot
+  对齐，空项表示该 cosigner 未签。本机只会在自己的 pubkey slot 为空、已有签名未达到
+  threshold、已有签名都是 canonical DER 时，才允许把本机 DER 签名填入该 slot。该门禁
+  覆盖 `PRESERVED` 和 `LEXICOGRAPHIC` pubkey order，并拒绝本机 slot 已签、threshold
+  已满足、畸形 DER 的输入。该模块只处理公钥、脚本、已有签名和本机签名结果，不读取私钥。
 - 第三方 oracle 使用 `trezorlib` 构造 multisig protobuf、使用 `embit` 重新计算
   P2SH legacy digest 与 P2WSH/P2SH-P2WSH BIP143 digest，并独立解析 raw tx，核对
   DER+SIGHASH_ALL 签名位置、redeem/witness script、outpoint、sequence、付款金额、
   multisig 找零、fee、完整 signer path 和 UI summary。BIP45 legacy 与主网/测试网 BIP48
   P2SH/P2WSH/P2SH-P2WSH 都有正向门禁；错误 prevout、错误 witness program、签名数量不足、
   外部分支冒充找零、账户/coin/script-purpose 不匹配、索引越界都有拒绝门禁。
-  fake signatures 只用于结构测试，不代表真签名已开放。
+  fake signatures 只用于结构测试；slot-aware partial gate 也只验证公开签名槽规则，
+  不代表 USB session 的 multisig 真签名已开放。
 - BTC fee-rate 估算已补保守 multisig 估算：只使用 threshold、signer count 和
   P2SH/P2WSH/P2SH-P2WSH variant，不读取 redeem script、xpub、signature 或私钥材料。
 - BTC `SignTx.multisig` 仍保持关闭，并有 host gate 明确覆盖：现有 singlesig

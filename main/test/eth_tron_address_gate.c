@@ -1912,6 +1912,57 @@ int wally_ec_sig_to_der(
     return WALLY_OK;
 }
 
+static bool host_der_integer_to_fixed32(
+    const uint8_t* const value, const size_t value_len, uint8_t output[ETHEREUM_SIGNATURE_R_LEN])
+{
+    if (!value || !output || value_len == 0 || value_len > ETHEREUM_SIGNATURE_R_LEN + 1U
+        || (value[0] & 0x80U) != 0) {
+        return false;
+    }
+    size_t offset = 0;
+    size_t len = value_len;
+    if (value_len > 1U && value[0] == 0) {
+        if ((value[1] & 0x80U) == 0) {
+            return false;
+        }
+        offset = 1U;
+        len = value_len - 1U;
+    }
+    if (len > ETHEREUM_SIGNATURE_R_LEN) {
+        return false;
+    }
+    memset(output, 0, ETHEREUM_SIGNATURE_R_LEN);
+    memcpy(output + (ETHEREUM_SIGNATURE_R_LEN - len), value + offset, len);
+    return true;
+}
+
+int wally_ec_sig_from_der(
+    const unsigned char* bytes, size_t bytes_len, unsigned char* bytes_out, size_t len)
+{
+    if (!bytes || !bytes_out || len != EC_SIGNATURE_LEN || bytes_len < 8U || bytes_len > EC_SIGNATURE_DER_MAX_LEN
+        || bytes[0] != 0x30 || bytes[1] != bytes_len - 2U) {
+        return WALLY_EINVAL;
+    }
+    size_t pos = 2U;
+    for (size_t i = 0; i < 2; ++i) {
+        if (pos + 2U > bytes_len || bytes[pos++] != 0x02) {
+            return WALLY_EINVAL;
+        }
+        const size_t value_len = bytes[pos++];
+        if (value_len == 0 || value_len > bytes_len - pos
+            || !host_der_integer_to_fixed32(bytes + pos, value_len, bytes_out + (i * ETHEREUM_SIGNATURE_R_LEN))) {
+            memset(bytes_out, 0, len);
+            return WALLY_EINVAL;
+        }
+        pos += value_len;
+    }
+    if (pos != bytes_len) {
+        memset(bytes_out, 0, len);
+        return WALLY_EINVAL;
+    }
+    return WALLY_OK;
+}
+
 static bool host_script_push(const uint8_t* const value, const size_t value_len, uint8_t* const output,
     const size_t output_len, size_t* const written)
 {
@@ -2903,6 +2954,81 @@ static int run_trezor_multisig_normalizer(
     return matched ? 0 : 2;
 }
 
+static int run_trezor_multisig_partial_gate(
+    const char* const multisig_hex, const char* const script_type_str, const char* const local_compact_signature_hex)
+{
+    uint8_t multisig_payload[2048];
+    size_t multisig_payload_len = 0;
+    uint8_t local_compact_signature[EC_SIGNATURE_LEN];
+    size_t local_compact_signature_len = 0;
+    uint8_t local_der_signature[EC_SIGNATURE_DER_MAX_LEN];
+    size_t local_der_signature_len = 0;
+    uint8_t final_compact_signatures[TREZOR_BITCOIN_MULTISIG_MAX_SIGNERS * EC_SIGNATURE_LEN];
+    size_t final_compact_signatures_len = 0;
+    size_t final_signatures_count = 0;
+    unsigned int parsed_script_type = 0;
+    trezor_bitcoin_multisig_t multisig;
+    trezor_bitcoin_multisig_partial_t partial;
+    wally_bzero(multisig_payload, sizeof(multisig_payload));
+    wally_bzero(local_compact_signature, sizeof(local_compact_signature));
+    wally_bzero(local_der_signature, sizeof(local_der_signature));
+    wally_bzero(final_compact_signatures, sizeof(final_compact_signatures));
+    wally_bzero(&multisig, sizeof(multisig));
+    wally_bzero(&partial, sizeof(partial));
+
+    const bool args_ok = multisig_hex && script_type_str && local_compact_signature_hex
+        && parse_hex_bytes(multisig_hex, multisig_payload, sizeof(multisig_payload), &multisig_payload_len)
+        && parse_hex_bytes(local_compact_signature_hex, local_compact_signature, sizeof(local_compact_signature),
+            &local_compact_signature_len)
+        && local_compact_signature_len == sizeof(local_compact_signature)
+        && sscanf(script_type_str, "%u", &parsed_script_type) == 1 && parsed_script_type <= UINT32_MAX;
+    const bool der_ok = args_ok
+        && wally_ec_sig_to_der(local_compact_signature, sizeof(local_compact_signature), local_der_signature,
+               sizeof(local_der_signature), &local_der_signature_len)
+            == WALLY_OK;
+    const bool decoded = der_ok && trezor_bitcoin_multisig_decode(multisig_payload, multisig_payload_len, &multisig);
+    const bool prepared = decoded
+        && trezor_bitcoin_multisig_partial_prepare(&multisig, (uint32_t)parsed_script_type,
+            PRIVATE_KEY_ONE_COMPRESSED_PUBKEY, sizeof(PRIVATE_KEY_ONE_COMPRESSED_PUBKEY), &partial);
+    const bool added = prepared
+        && trezor_bitcoin_multisig_partial_add_local_signature(&partial, local_der_signature, local_der_signature_len);
+    const bool compacted = added
+        && trezor_bitcoin_multisig_partial_compact_signatures(&partial, final_compact_signatures,
+            sizeof(final_compact_signatures), &final_compact_signatures_len, &final_signatures_count);
+    if (!compacted) {
+        printf("args_ok=%u\n", args_ok ? 1U : 0U);
+        printf("der_ok=%u\n", der_ok ? 1U : 0U);
+        printf("decoded=%u\n", decoded ? 1U : 0U);
+        printf("prepared=%u\n", prepared ? 1U : 0U);
+        printf("added=%u\n", added ? 1U : 0U);
+        printf("compacted=%u\n", compacted ? 1U : 0U);
+        wally_bzero(multisig_payload, sizeof(multisig_payload));
+        wally_bzero(local_compact_signature, sizeof(local_compact_signature));
+        wally_bzero(local_der_signature, sizeof(local_der_signature));
+        wally_bzero(final_compact_signatures, sizeof(final_compact_signatures));
+        wally_bzero(&multisig, sizeof(multisig));
+        wally_bzero(&partial, sizeof(partial));
+        return 1;
+    }
+
+    printf("partial_ok=1\n");
+    printf("local_slot=%u\n", (unsigned int)partial.local_slot);
+    printf("existing_signatures=%u\n", (unsigned int)(partial.existing_signatures - 1U));
+    printf("final_signatures=%u\n", (unsigned int)final_signatures_count);
+    printf("threshold=%u\n", (unsigned int)partial.policy.threshold);
+    printf("num_pubkeys=%u\n", (unsigned int)partial.policy.num_pubkeys);
+    print_hex_value("local_der_signature", local_der_signature, local_der_signature_len);
+    print_hex_value("final_compact_signatures", final_compact_signatures, final_compact_signatures_len);
+
+    wally_bzero(multisig_payload, sizeof(multisig_payload));
+    wally_bzero(local_compact_signature, sizeof(local_compact_signature));
+    wally_bzero(local_der_signature, sizeof(local_der_signature));
+    wally_bzero(final_compact_signatures, sizeof(final_compact_signatures));
+    wally_bzero(&multisig, sizeof(multisig));
+    wally_bzero(&partial, sizeof(partial));
+    return 0;
+}
+
 static void host_multisig_policy_to_summary(
     const trezor_bitcoin_multisig_policy_t* const policy, trezor_bitcoin_multisig_summary_t* const summary)
 {
@@ -3274,6 +3400,9 @@ int main(int argc, char** argv)
     }
     if (argc == 5 && argv && argv[1] && strcmp(argv[1], "--trezor-multisig-normalizer") == 0) {
         return run_trezor_multisig_normalizer(argv[2], argv[3], argv[4]);
+    }
+    if (argc == 5 && argv && argv[1] && strcmp(argv[1], "--trezor-multisig-partial") == 0) {
+        return run_trezor_multisig_partial_gate(argv[2], argv[3], argv[4]);
     }
     if ((argc == 7 || argc == 8) && argv && argv[1] && strcmp(argv[1], "--trezor-multisig-tx") == 0) {
         return run_trezor_multisig_tx_gate(argv[2], argv[3], argv[4], argv[5], argv[6], argc == 8 ? argv[7] : "valid");

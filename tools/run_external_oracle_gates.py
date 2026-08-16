@@ -1824,6 +1824,164 @@ def check_trezor_multisig_normalizer_oracle(gate: Path) -> None:
     )
 
 
+def compact_signature_to_der(compact_signature: bytes) -> bytes:
+    if len(compact_signature) != 64:
+        raise AssertionError("compact signature fixture must be 64 bytes")
+    return ecdsa_util.sigencode_der(
+        int.from_bytes(compact_signature[:32], "big"),
+        int.from_bytes(compact_signature[32:], "big"),
+        SECP256k1.order,
+    )
+
+
+def run_multisig_partial_gate(
+    gate: Path,
+    multisig: messages.MultisigRedeemScriptType,
+    script_type: messages.InputScriptType,
+    local_compact_signature: bytes,
+) -> dict[str, str]:
+    output = subprocess.check_output(
+        [
+            str(gate),
+            "--trezor-multisig-partial",
+            message_payload(multisig).hex(),
+            str(int(script_type)),
+            local_compact_signature.hex(),
+        ],
+        text=True,
+    )
+    return parse_vectors(output)
+
+
+def assert_multisig_partial_rejects(
+    gate: Path,
+    multisig: messages.MultisigRedeemScriptType,
+    script_type: messages.InputScriptType,
+    local_compact_signature: bytes,
+    label: str,
+) -> None:
+    result = subprocess.run(
+        [
+            str(gate),
+            "--trezor-multisig-partial",
+            message_payload(multisig).hex(),
+            str(int(script_type)),
+            local_compact_signature.hex(),
+        ],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        check=False,
+    )
+    if result.returncode == 0:
+        raise AssertionError(f"multisig partial gate accepted invalid {label}")
+
+
+def check_trezor_multisig_partial_oracle(gate: Path) -> None:
+    """Verify Trezor-style multisig slot semantics before enabling real signing."""
+
+    child_hd_nodes, child_pubkeys, _, _ = trezor_multisig_fixture()
+    local_compact = b"\x11" * 64
+    other_compact = b"\x22" * 64
+    local_der = compact_signature_to_der(local_compact)
+    other_der = compact_signature_to_der(other_compact)
+
+    sorted_pubkeys = sorted(pubkey.sec() for pubkey in child_pubkeys)
+    sorted_local_slot = sorted_pubkeys.index(BTC_TEST_COMPRESSED_PUBKEY)
+    sorted_signatures = [b"", b"", b""]
+    sorted_other_slot = 1 if sorted_local_slot != 1 else 2
+    sorted_signatures[sorted_other_slot] = other_der
+    sorted_expected = []
+    for slot in range(len(sorted_pubkeys)):
+        if slot == sorted_local_slot:
+            sorted_expected.append(local_compact)
+        elif slot == sorted_other_slot:
+            sorted_expected.append(other_compact)
+
+    cases = [
+        (
+            "preserved",
+            messages.MultisigPubkeysOrder.PRESERVED,
+            [b"", other_der, b""],
+            0,
+            [local_compact, other_compact],
+        ),
+        (
+            "sorted",
+            messages.MultisigPubkeysOrder.LEXICOGRAPHIC,
+            sorted_signatures,
+            sorted_local_slot,
+            sorted_expected,
+        ),
+    ]
+
+    for label, order, signatures, expected_slot, expected_compacts in cases:
+        multisig = messages.MultisigRedeemScriptType(
+            nodes=child_hd_nodes,
+            address_n=[],
+            signatures=signatures,
+            m=2,
+            pubkeys_order=order,
+        )
+        parsed = run_multisig_partial_gate(gate, multisig, messages.InputScriptType.SPENDWITNESS, local_compact)
+        if (
+            parsed.get("partial_ok") != "1"
+            or parsed.get("local_slot") != str(expected_slot)
+            or parsed.get("existing_signatures") != "1"
+            or parsed.get("final_signatures") != "2"
+            or parsed.get("threshold") != "2"
+            or parsed.get("num_pubkeys") != "3"
+            or bytes.fromhex(parsed["local_der_signature"]) != local_der
+            or bytes.fromhex(parsed["final_compact_signatures"]) != b"".join(expected_compacts)
+        ):
+            raise AssertionError(f"multisig partial slot oracle mismatch for {label}: {parsed}")
+
+    local_already_signed = messages.MultisigRedeemScriptType(
+        nodes=child_hd_nodes,
+        address_n=[],
+        signatures=[local_der, b"", b""],
+        m=2,
+        pubkeys_order=messages.MultisigPubkeysOrder.PRESERVED,
+    )
+    assert_multisig_partial_rejects(
+        gate,
+        local_already_signed,
+        messages.InputScriptType.SPENDWITNESS,
+        local_compact,
+        "local slot already signed",
+    )
+
+    threshold_already_met = messages.MultisigRedeemScriptType(
+        nodes=child_hd_nodes,
+        address_n=[],
+        signatures=[b"", other_der, compact_signature_to_der(b"\x33" * 64)],
+        m=2,
+        pubkeys_order=messages.MultisigPubkeysOrder.PRESERVED,
+    )
+    assert_multisig_partial_rejects(
+        gate,
+        threshold_already_met,
+        messages.InputScriptType.SPENDWITNESS,
+        local_compact,
+        "threshold already met",
+    )
+
+    malformed_existing = messages.MultisigRedeemScriptType(
+        nodes=child_hd_nodes,
+        address_n=[],
+        signatures=[b"", b"\x30\x01\x01", b""],
+        m=2,
+        pubkeys_order=messages.MultisigPubkeysOrder.PRESERVED,
+    )
+    assert_multisig_partial_rejects(
+        gate,
+        malformed_existing,
+        messages.InputScriptType.SPENDWITNESS,
+        local_compact,
+        "malformed existing signature",
+    )
+
+
 def parse_push_only_script(raw: bytes) -> list[bytes]:
     """Parse the strict push-only subset used by multisig scriptSig."""
     items: list[bytes] = []
@@ -3429,6 +3587,7 @@ def main() -> int:
     check_trezorlib_btc_signtx_host_flow_oracle()
     check_embit_psbt_oracle()
     check_trezor_multisig_normalizer_oracle(gate)
+    check_trezor_multisig_partial_oracle(gate)
     check_trezor_multisig_tx_structure_oracle(gate)
     check_local_btc_signtx_wire_script_oracle(gate)
     check_trezorlib_protocol_oracle(gate, local)

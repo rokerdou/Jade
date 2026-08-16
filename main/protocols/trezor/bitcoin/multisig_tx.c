@@ -11,6 +11,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <wally_map.h>
+#include <wally_crypto.h>
 #include <wally_script.h>
 #include <wally_transaction.h>
 
@@ -95,6 +96,119 @@ static bool script_hashes_match_policy(const trezor_bitcoin_multisig_policy_t* c
     wally_bzero(expected_script, sizeof(expected_script));
     wally_bzero(witness_program, sizeof(witness_program));
     return ok;
+}
+
+static bool der_signature_is_valid(const uint8_t* const signature, const size_t signature_len)
+{
+    uint8_t compact[EC_SIGNATURE_LEN];
+    wally_bzero(compact, sizeof(compact));
+    const bool ok = signature && signature_len >= 8U && signature_len <= EC_SIGNATURE_DER_MAX_LEN
+        && wally_ec_sig_from_der(signature, signature_len, compact, sizeof(compact)) == WALLY_OK;
+    wally_bzero(compact, sizeof(compact));
+    return ok;
+}
+
+static bool policy_pubkey_slot(const trezor_bitcoin_multisig_policy_t* const policy,
+    const uint8_t* const pubkey, const size_t pubkey_len, size_t* const slot)
+{
+    if (!policy || !pubkey || pubkey_len != EC_PUBLIC_KEY_LEN || !slot || policy->num_pubkeys == 0
+        || policy->num_pubkeys > TREZOR_BITCOIN_MULTISIG_MAX_SIGNERS) {
+        return false;
+    }
+    for (size_t i = 0; i < policy->num_pubkeys; ++i) {
+        const uint8_t* const candidate = policy->pubkeys + (i * EC_PUBLIC_KEY_LEN);
+        if (memcmp(candidate, pubkey, EC_PUBLIC_KEY_LEN) == 0) {
+            *slot = i;
+            return true;
+        }
+    }
+    return false;
+}
+
+bool trezor_bitcoin_multisig_partial_prepare(const trezor_bitcoin_multisig_t* const multisig,
+    const uint32_t script_type, const uint8_t* const local_pubkey, const size_t local_pubkey_len,
+    trezor_bitcoin_multisig_partial_t* const output)
+{
+    if (!multisig || !local_pubkey || local_pubkey_len != EC_PUBLIC_KEY_LEN || !output) {
+        return false;
+    }
+
+    wally_bzero(output, sizeof(*output));
+    if (!trezor_bitcoin_multisig_normalize(multisig, script_type, &output->policy)
+        || output->policy.threshold == 0 || output->policy.num_pubkeys == 0
+        || output->policy.threshold > output->policy.num_pubkeys
+        || output->policy.num_pubkeys > TREZOR_BITCOIN_MULTISIG_MAX_SIGNERS
+        || multisig->signatures_len > output->policy.num_pubkeys
+        || !policy_pubkey_slot(&output->policy, local_pubkey, local_pubkey_len, &output->local_slot)) {
+        wally_bzero(output, sizeof(*output));
+        return false;
+    }
+
+    for (size_t i = 0; i < multisig->signatures_len; ++i) {
+        const size_t signature_len = multisig->signature_lens[i];
+        if (signature_len == 0) {
+            continue;
+        }
+        if (i == output->local_slot || !der_signature_is_valid(multisig->signatures[i], signature_len)
+            || output->existing_signatures >= output->policy.threshold) {
+            wally_bzero(output, sizeof(*output));
+            return false;
+        }
+        memcpy(output->slot_signatures[i], multisig->signatures[i], signature_len);
+        output->slot_signature_lens[i] = signature_len;
+        output->slot_has_signature[i] = true;
+        ++output->existing_signatures;
+    }
+    return true;
+}
+
+bool trezor_bitcoin_multisig_partial_add_local_signature(trezor_bitcoin_multisig_partial_t* const partial,
+    const uint8_t* const der_signature, const size_t der_signature_len)
+{
+    if (!partial || !der_signature_is_valid(der_signature, der_signature_len)
+        || partial->policy.num_pubkeys == 0 || partial->policy.num_pubkeys > TREZOR_BITCOIN_MULTISIG_MAX_SIGNERS
+        || partial->local_slot >= partial->policy.num_pubkeys || partial->slot_has_signature[partial->local_slot]
+        || partial->existing_signatures >= partial->policy.threshold) {
+        return false;
+    }
+
+    memcpy(partial->slot_signatures[partial->local_slot], der_signature, der_signature_len);
+    partial->slot_signature_lens[partial->local_slot] = der_signature_len;
+    partial->slot_has_signature[partial->local_slot] = true;
+    ++partial->existing_signatures;
+    return true;
+}
+
+bool trezor_bitcoin_multisig_partial_compact_signatures(const trezor_bitcoin_multisig_partial_t* const partial,
+    uint8_t* const compact_signatures, const size_t compact_signatures_len, size_t* const compact_signatures_written,
+    size_t* const signatures_count)
+{
+    if (!partial || !compact_signatures || !compact_signatures_written || !signatures_count
+        || partial->policy.num_pubkeys == 0 || partial->policy.num_pubkeys > TREZOR_BITCOIN_MULTISIG_MAX_SIGNERS
+        || partial->existing_signatures == 0 || partial->existing_signatures > partial->policy.threshold
+        || compact_signatures_len < partial->existing_signatures * EC_SIGNATURE_LEN) {
+        return false;
+    }
+
+    *compact_signatures_written = 0;
+    *signatures_count = 0;
+    for (size_t i = 0; i < partial->policy.num_pubkeys; ++i) {
+        if (!partial->slot_has_signature[i]) {
+            continue;
+        }
+        if (wally_ec_sig_from_der(partial->slot_signatures[i], partial->slot_signature_lens[i],
+                compact_signatures + *compact_signatures_written, EC_SIGNATURE_LEN)
+            != WALLY_OK) {
+            wally_bzero(compact_signatures, compact_signatures_len);
+            *compact_signatures_written = 0;
+            *signatures_count = 0;
+            return false;
+        }
+        *compact_signatures_written += EC_SIGNATURE_LEN;
+        ++*signatures_count;
+    }
+    return *compact_signatures_written == *signatures_count * EC_SIGNATURE_LEN
+        && *signatures_count == partial->existing_signatures;
 }
 
 static bool policy_matches_input(const trezor_bitcoin_signing_state_t* const state, const size_t input_index,

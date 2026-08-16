@@ -411,6 +411,22 @@ static bool build_multisig_script_pubkey(trezor_bitcoin_multisig_policy_t* const
         return false;
     }
 
+    if (policy->sorted) {
+        uint8_t tmp[EC_PUBLIC_KEY_LEN];
+        for (size_t i = 0; i < policy->num_pubkeys; ++i) {
+            for (size_t j = i + 1U; j < policy->num_pubkeys; ++j) {
+                uint8_t* const left = policy->pubkeys + (i * EC_PUBLIC_KEY_LEN);
+                uint8_t* const right = policy->pubkeys + (j * EC_PUBLIC_KEY_LEN);
+                if (memcmp(left, right, EC_PUBLIC_KEY_LEN) > 0) {
+                    memcpy(tmp, left, sizeof(tmp));
+                    memcpy(left, right, sizeof(tmp));
+                    memcpy(right, tmp, sizeof(tmp));
+                }
+            }
+        }
+        wally_bzero(tmp, sizeof(tmp));
+    }
+
     const uint32_t flags = policy->sorted ? WALLY_SCRIPT_MULTISIG_SORTED : 0;
     if (wally_scriptpubkey_multisig_from_bytes(policy->pubkeys, policy->num_pubkeys * EC_PUBLIC_KEY_LEN,
             policy->threshold, flags, policy->redeem_script, sizeof(policy->redeem_script),
