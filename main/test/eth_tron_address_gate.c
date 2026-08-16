@@ -5295,6 +5295,34 @@ int main(int argc, char** argv)
         session_response_payload, session_response_payload_len, 1, TREZOR_FAILURE_ACTION_CANCELLED));
     g_ui_accept = true;
 
+    wally_bzero(&trezor_session_state, sizeof(trezor_session_state));
+    g_trezor_btc_confirm_calls = 0;
+    g_trezor_btc_sign_calls = 0;
+    CHECK(trezor_session_handle_payload(&trezor_session, TREZOR_MSG_SIGN_TX, trezor_valid_sign_tx_payload,
+        trezor_valid_sign_tx_payload_len, &session_response_type, session_response_payload, sizeof(session_response_payload),
+        &session_response_payload_len));
+    CHECK(session_response_type == TREZOR_MSG_TX_REQUEST);
+    CHECK(trezor_session_handle_payload(&trezor_session, TREZOR_MSG_TX_ACK, trezor_btc_meta_ack_payload,
+        trezor_btc_meta_ack_payload_len, &session_response_type, session_response_payload, sizeof(session_response_payload),
+        &session_response_payload_len));
+    CHECK(session_response_type == TREZOR_MSG_TX_REQUEST);
+    CHECK(trezor_session_handle_payload(&trezor_session, TREZOR_MSG_TX_ACK, trezor_btc_multisig_input_ack_payload,
+        trezor_btc_multisig_input_ack_payload_len, &session_response_type, session_response_payload,
+        sizeof(session_response_payload), &session_response_payload_len));
+    CHECK(session_response_type == TREZOR_MSG_TX_REQUEST);
+    CHECK(trezor_session_handle_payload(&trezor_session, TREZOR_MSG_TX_ACK, trezor_btc_multisig_output_ack_payload,
+        trezor_btc_multisig_output_ack_payload_len, &session_response_type, session_response_payload,
+        sizeof(session_response_payload), &session_response_payload_len));
+    CHECK(session_response_type == TREZOR_MSG_FAILURE);
+    CHECK(!trezor_session_state.has_pending_btc_signing);
+    CHECK(!trezor_session_state.has_pending_btc_signed_tx);
+    CHECK(g_trezor_btc_confirm_calls == 0);
+    CHECK(g_trezor_btc_sign_calls == 0);
+    CHECK(trezor_payload_has_varint(
+        session_response_payload, session_response_payload_len, 1, TREZOR_FAILURE_DATA_ERROR));
+    CHECK(trezor_payload_contains_bytes(session_response_payload, session_response_payload_len,
+        (const uint8_t*)"Bitcoin multisig signing disabled", strlen("Bitcoin multisig signing disabled")));
+
     trezor_protobuf_writer_init(&trezor_bitcoin_writer, trezor_bitcoin_payload, sizeof(trezor_bitcoin_payload));
     for (size_t i = 0; i < ARRAY_LEN(btc_state_path); ++i) {
         CHECK(trezor_protobuf_write_varint_field(&trezor_bitcoin_writer, 1, btc_state_path[i]));
