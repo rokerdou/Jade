@@ -205,6 +205,9 @@ main/
 - BTC `SignTx.multisig` 仍保持关闭，并有 host gate 明确覆盖：现有 singlesig
   basic signing policy 必须拒绝 `has_multisig` 的 input/output，避免多签地址/xpub
   兼容工作误把多签签名路径打开。
+- BTC session ready 分支已补显式 multisig gate：一旦 pending `SignTx`
+  状态包含 multisig input/output，直接返回 `Bitcoin multisig signing disabled`，
+  不进入 UI 确认、不进入 digest 构造、不调用 `wallet_core` 签名。
 - Sparrow/lark 的 singlesig xpub 导入会用默认 `SPENDADDRESS` 调
   `GetPublicKey(m/49'...)` / `GetPublicKey(m/84'...)`。固件现在只在账户级 public-node
   导出路径把这个默认值视为客户端兼容占位，并按 BIP purpose 推断 ypub/zpub；

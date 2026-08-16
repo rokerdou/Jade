@@ -162,6 +162,25 @@ bool trezor_bitcoin_policy_signing_coin(
     return state && state->request.has_coin_name && trezor_bitcoin_coin_from_name(state->request.coin_name, coin);
 }
 
+bool trezor_bitcoin_policy_has_multisig(const trezor_bitcoin_signing_state_t* const state)
+{
+    if (!state || state->inputs_len > TREZOR_BITCOIN_TX_INPUTS_MAX
+        || state->outputs_len > TREZOR_BITCOIN_TX_OUTPUTS_MAX) {
+        return false;
+    }
+    for (size_t i = 0; i < state->inputs_len; ++i) {
+        if (state->inputs[i].has_multisig) {
+            return true;
+        }
+    }
+    for (size_t i = 0; i < state->outputs_len; ++i) {
+        if (state->outputs[i].has_multisig) {
+            return true;
+        }
+    }
+    return false;
+}
+
 bool trezor_bitcoin_policy_multisig_output_matches_inputs(
     const trezor_bitcoin_signing_state_t* const state, const size_t output_index)
 {

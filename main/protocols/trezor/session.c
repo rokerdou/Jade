@@ -2,6 +2,7 @@
 #include "session.h"
 
 #include "bitcoin/messages.h"
+#include "bitcoin/policy.h"
 #include "bitcoin/protocol.h"
 #include "bitcoin/requests.h"
 #include "bitcoin/signing_state.h"
@@ -322,6 +323,14 @@ static bool trezor_session_btc_signing_continue(const trezor_session_t* const se
     }
 
     if (trezor_bitcoin_signing_ready(&session->state->pending_btc_signing)) {
+        if (trezor_bitcoin_policy_has_multisig(&session->state->pending_btc_signing)) {
+            trezor_trace_set_stage("btcsign:multisig_disabled");
+            trezor_bitcoin_signing_reset(&session->state->pending_btc_signing);
+            session->state->has_pending_btc_signing = false;
+            return trezor_session_failure_payload(TREZOR_FAILURE_DATA_ERROR, "Bitcoin multisig signing disabled",
+                response_type, response_payload, response_payload_len, response_payload_written);
+        }
+
         bitcoin_confirm_request_t confirm_request;
         wally_bzero(&confirm_request, sizeof(confirm_request));
         const bool confirm_request_ok

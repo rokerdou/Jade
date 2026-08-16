@@ -550,7 +550,11 @@ static bool test_trezor_bitcoin_multisig_signing_stays_rejected(void)
     state.inputs[0].multisig.script_pubkey_len = WALLY_SCRIPTPUBKEY_P2WSH_LEN;
     state.inputs[0].multisig.script_pubkey[0] = 0;
     state.inputs[0].multisig.script_pubkey[1] = SHA256_LEN;
-    if (trezor_bitcoin_policy_is_basic(&state)) {
+    if (!trezor_bitcoin_policy_has_multisig(&state) || trezor_bitcoin_policy_is_basic(&state)) {
+        return false;
+    }
+    state.inputs_len = TREZOR_BITCOIN_TX_INPUTS_MAX + 1U;
+    if (trezor_bitcoin_policy_has_multisig(&state)) {
         return false;
     }
 
@@ -562,7 +566,11 @@ static bool test_trezor_bitcoin_multisig_signing_stays_rejected(void)
     state.outputs[0].multisig.script_pubkey_len = WALLY_SCRIPTPUBKEY_P2WSH_LEN;
     state.outputs[0].multisig.script_pubkey[0] = 0;
     state.outputs[0].multisig.script_pubkey[1] = SHA256_LEN;
-    return !trezor_bitcoin_policy_is_basic(&state);
+    if (!trezor_bitcoin_policy_has_multisig(&state) || trezor_bitcoin_policy_is_basic(&state)) {
+        return false;
+    }
+    state.outputs_len = TREZOR_BITCOIN_TX_OUTPUTS_MAX + 1U;
+    return !trezor_bitcoin_policy_has_multisig(&state);
 }
 
 static bool write_test_trezor_hd_node(trezor_protobuf_writer_t* const writer, const uint32_t fingerprint,
