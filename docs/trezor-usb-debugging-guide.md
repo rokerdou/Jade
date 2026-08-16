@@ -581,6 +581,80 @@ Audit findings for this incident:
   signatures, full raw transaction payloads, or signing digests while being
   diagnosed.
 
+### HID Task Stack Exhaustion Audit
+
+Bug class: Trezor/WebUSB requests run inside the `trezor_hid` FreeRTOS task.
+Protocol objects that are safe in a desktop process can exhaust this task stack
+on ESP32-S3 if they are allocated as local variables.
+
+Observed signature:
+
+```text
+reset_last=usb:write_after reset_hwm=4 reset_note=off=192 wr=0
+```
+
+Interpretation:
+
+- `reset_hwm` close to zero means stack high-water mark was exhausted or nearly
+  exhausted. Treat this as a stack/memory-layout bug before blaming UI or USB
+  cable quality.
+- `usb:write_after` means the signing result had already reached USB response
+  sending. The failure happened after confirmation/signing, while writing the
+  response or immediately after a deep call chain returned.
+- `wr=0` can be an ordinary TinyUSB backpressure value, but combined with
+  `reset_hwm=4` it is strong evidence of stack pressure.
+
+Root cause found:
+
+- BTC signing had `trezor_bitcoin_signed_tx_t` on the HID task stack. The struct
+  reserves room for up to 8 signatures plus an 1800-byte serialized raw
+  transaction buffer.
+- `TxRequest.serialized` encoding also used an approximately 1.9KB nested
+  protobuf scratch buffer on the stack.
+- Additional similar risks were found in `TxAck` decoding, multisig payload
+  normalization, and SafeTx ACK decoding. Trezor multisig payloads can carry up
+  to 15 signers, so their normalized C structs are much larger than a single
+  transaction would suggest.
+
+Fix pattern:
+
+- Keep large request/response state in static session state or heap objects, not
+  on the HID task stack.
+- For host-triggered protocol paths, allocation failure must return a protocol
+  failure; do not assert and reboot.
+- Zero temporary protocol objects before freeing them with `wally_bzero()`.
+- Do not move private keys, seeds, mnemonics, xprivs, PINs, signatures, full raw
+  tx payloads, or signing digests into logs while diagnosing stack pressure.
+
+Current remediations:
+
+- BTC signed transaction response state reuses `pending_btc_signed_tx` instead
+  of a local `trezor_bitcoin_signed_tx_t`.
+- BTC signed-response protobuf scratch is heap allocated and cleared before
+  free.
+- `trezor_bitcoin_transaction_t` temporary `TxAck` objects are heap allocated.
+- Large multisig decode temporaries are heap allocated.
+- SafeTx ACK, which contains `data[6144]`, is heap allocated.
+- `btcsign:` stages are persisted so post-reboot diagnostics retain the BTC
+  signing phase.
+
+Periodic review checklist:
+
+- Search for local variables of these high-risk types before every BTC/ETH/Safe
+  protocol change:
+  `trezor_bitcoin_signed_tx_t`, `trezor_bitcoin_transaction_t`,
+  `trezor_bitcoin_multisig_t`, `trezor_bitcoin_multisig_policy_t`,
+  `trezor_ethereum_safe_tx_ack_t`, arrays sized by
+  `TREZOR_BITCOIN_SIGNED_TX_MAX_LEN`, `ETHEREUM_TX_MAX_PREFLIGHT_DATA_LEN`, or
+  `ETHEREUM_SAFE_TX_MAX_DATA_LEN`.
+- New USB/protobuf handlers must document whether large buffers live in static
+  session state, heap, or a bounded small stack object.
+- Hardware regressions should record `reset_last`, `reset_hwm`, and the latest
+  non-sensitive `btcsign:`/`ethsign:`/`safe:` stage before changing code.
+- A successful fix should be validated by host gates, ESP-IDF build, and a real
+  hardware signing run where `reset_hwm` has meaningful headroom after the USB
+  signed response is sent.
+
 ### Locked Wallet Local PIN Unlock
 
 Expected Trezor USB flow when the wallet is initialized but locked:

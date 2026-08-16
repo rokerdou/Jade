@@ -10,6 +10,9 @@
 - 小步重构。每次只拆一块，先加门禁，后迁移调用，再删旧代码。
 - 兼容 Jade 工程约束。新增 `.c` 文件要同时考虑 ESP-IDF `SRC_DIRS`、host gate 手工源列表、`main/amalgamated.c`。
 - 兼容 T-Display-S3 硬件约束。交易确认摘要必须符合现有 LCD 行数、按键导航、Activity 生命周期和 FreeRTOS 栈限制。
+- USB/protobuf 任务栈是安全边界的一部分。主机可触发的大协议对象不得作为 `trezor_hid`
+  局部变量放在栈上；大型 TxAck、multisig、SafeTx、raw tx/protobuf scratch 必须使用
+  static session state 或 heap，并在失败/释放前清零。
 - 协议规范优先级：链官方规范和 BIP/EIP/TRON 文档 > Trezor official common/protob / Connect 行为 > OneKey 实践参考。
 - OneKey 只作架构和流程参考，不直接复制实现。OneKey 私有 proto 扩展必须放在
   单独 adapter/feature gate 下，不能假装成 Trezor/MetaMask 标准兼容。
@@ -808,6 +811,12 @@ tools/
 - 是否影响 `main/amalgamated.c`。
 - 是否影响 host gate 手工源文件列表。
 - 是否影响 T-Display-S3 屏幕行数和双按键确认流程。
+- 是否新增 `trezor_hid` 可达的大栈对象，尤其是 `trezor_bitcoin_signed_tx_t`、
+  `trezor_bitcoin_transaction_t`、`trezor_bitcoin_multisig_t`、
+  `trezor_bitcoin_multisig_policy_t`、`trezor_ethereum_safe_tx_ack_t`，或按
+  `TREZOR_BITCOIN_SIGNED_TX_MAX_LEN` / `ETHEREUM_TX_MAX_PREFLIGHT_DATA_LEN`
+  / `ETHEREUM_SAFE_TX_MAX_DATA_LEN` 分配的局部数组。
+- 如果出现复位，是否先检查 `reset_hwm`；`reset_hwm` 接近 0 时优先按栈耗尽/大局部对象排查。
 - 是否保持 Secure Boot / Flash Encryption 关闭。
 - 是否有第三方/官方 oracle 验证关键资金安全结果。
 
