@@ -3,6 +3,7 @@
 
 #include "../protobuf.h"
 
+#include <stdlib.h>
 #include <wally_crypto.h>
 
 bool trezor_bitcoin_tx_request_encode(const trezor_bitcoin_request_type_t request_type, const bool has_request_index,
@@ -60,14 +61,19 @@ static bool trezor_bitcoin_tx_request_encode_signed_part(const trezor_bitcoin_re
         return false;
     }
 
-    uint8_t serialized[TREZOR_BITCOIN_SIGNED_TX_MAX_LEN + TREZOR_BITCOIN_SIGNATURE_MAX_LEN + 16U];
+    uint8_t* const serialized = malloc(TREZOR_BITCOIN_SIGNED_TX_MAX_LEN + TREZOR_BITCOIN_SIGNATURE_MAX_LEN + 16U);
+    if (!serialized) {
+        return false;
+    }
     trezor_protobuf_writer_t serialized_writer;
-    trezor_protobuf_writer_init(&serialized_writer, serialized, sizeof(serialized));
+    trezor_protobuf_writer_init(
+        &serialized_writer, serialized, TREZOR_BITCOIN_SIGNED_TX_MAX_LEN + TREZOR_BITCOIN_SIGNATURE_MAX_LEN + 16U);
     if (!trezor_protobuf_write_varint_field(&serialized_writer, 1, signature_index)
         || !trezor_protobuf_write_bytes_field(&serialized_writer, 2, signature, signature_len)
         || (serialized_tx_len
             && !trezor_protobuf_write_bytes_field(&serialized_writer, 3, serialized_tx, serialized_tx_len))) {
-        wally_bzero(serialized, sizeof(serialized));
+        wally_bzero(serialized, TREZOR_BITCOIN_SIGNED_TX_MAX_LEN + TREZOR_BITCOIN_SIGNATURE_MAX_LEN + 16U);
+        free(serialized);
         return false;
     }
 
@@ -77,7 +83,8 @@ static bool trezor_bitcoin_tx_request_encode_signed_part(const trezor_bitcoin_re
         && (request_type == TREZOR_BITCOIN_REQUEST_TXFINISHED
             || trezor_protobuf_write_bytes_field(&writer, 2, NULL, 0))
         && trezor_protobuf_write_bytes_field(&writer, 3, serialized, serialized_writer.len);
-    wally_bzero(serialized, sizeof(serialized));
+    wally_bzero(serialized, TREZOR_BITCOIN_SIGNED_TX_MAX_LEN + TREZOR_BITCOIN_SIGNATURE_MAX_LEN + 16U);
+    free(serialized);
     if (!ok) {
         wally_bzero(output, output_len);
         return false;

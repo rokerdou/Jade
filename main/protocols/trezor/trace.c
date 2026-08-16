@@ -98,8 +98,8 @@ static bool trezor_trace_has_prefix(const char* const text, const char* const pr
 static bool trezor_trace_stage_should_persist(const char* const stage)
 {
     return trezor_trace_has_prefix(stage, "unlock:") || trezor_trace_has_prefix(stage, "auth:")
-        || trezor_trace_has_prefix(stage, "ethsign:") || trezor_trace_has_prefix(stage, "sign:")
-        || trezor_trace_has_prefix(stage, "ui:");
+        || trezor_trace_has_prefix(stage, "ethsign:") || trezor_trace_has_prefix(stage, "btcsign:")
+        || trezor_trace_has_prefix(stage, "sign:") || trezor_trace_has_prefix(stage, "ui:");
 }
 
 #ifdef ESP_PLATFORM
