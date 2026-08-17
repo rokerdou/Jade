@@ -18,6 +18,20 @@ static bool trezor_bitcoin_normalizer_add_u64(uint64_t* const total, const uint6
     return true;
 }
 
+static bool trezor_bitcoin_normalizer_copy_address(
+    char* const dst, const size_t dst_len, const char* const src, const size_t src_max_len)
+{
+    if (!dst || dst_len == 0 || !src || src_max_len == 0) {
+        return false;
+    }
+    const size_t src_len = strnlen(src, src_max_len);
+    if (src_len == src_max_len || src_len >= dst_len) {
+        return false;
+    }
+    memcpy(dst, src, src_len + 1U);
+    return true;
+}
+
 bool trezor_bitcoin_signing_to_confirm_request(
     const trezor_bitcoin_signing_state_t* const state, bitcoin_confirm_request_t* const request)
 {
@@ -51,8 +65,11 @@ bool trezor_bitcoin_signing_to_confirm_request(
         }
         if (output->has_address) {
             ++external_outputs;
-            if (external_outputs == 1) {
-                memcpy(request->to, output->address, strlen(output->address) + 1);
+            if (external_outputs == 1
+                && !trezor_bitcoin_normalizer_copy_address(
+                    request->to, sizeof(request->to), output->address, sizeof(output->address))) {
+                wally_bzero(request, sizeof(*request));
+                return false;
             }
             if (!trezor_bitcoin_normalizer_add_u64(&request->amount, output->amount)) {
                 wally_bzero(request, sizeof(*request));
@@ -123,7 +140,7 @@ bool trezor_bitcoin_signing_to_multisig_confirm_request(
     const bool ok = trezor_bitcoin_policy_signing_coin(state, &coin)
         && trezor_bitcoin_script_builder_output_script(
             external_output, coin, validated_script, sizeof(validated_script), &validated_script_len)
-        && validated_script_len > 0 && strlen(external_output->address) < sizeof(request->to);
+        && validated_script_len > 0;
     wally_bzero(validated_script, sizeof(validated_script));
     if (!ok) {
         wally_bzero(&preview, sizeof(preview));
@@ -138,7 +155,12 @@ bool trezor_bitcoin_signing_to_multisig_confirm_request(
         wally_bzero(&preview, sizeof(preview));
         return false;
     }
-    memcpy(request->to, external_output->address, strlen(external_output->address) + 1U);
+    if (!trezor_bitcoin_normalizer_copy_address(
+            request->to, sizeof(request->to), external_output->address, sizeof(external_output->address))) {
+        wally_bzero(request, sizeof(*request));
+        wally_bzero(&preview, sizeof(preview));
+        return false;
+    }
     request->amount = preview.external_amount;
     request->change = preview.change_amount;
     request->fee = state->fee;

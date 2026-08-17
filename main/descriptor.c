@@ -415,7 +415,11 @@ bool descriptor_get_signers(const char* name, const descriptor_data_t* descripto
             goto cleanup;
         }
         const size_t child_path_len = strlen(str);
-        JADE_ASSERT(child_path_len < sizeof(signer->path_str));
+        if (child_path_len >= sizeof(signer->path_str)) {
+            *errmsg = "Child path string too long";
+            JADE_WALLY_VERIFY(wally_free_string(str));
+            goto cleanup;
+        }
         strcpy(signer->path_str, str);
         signer->path_len = child_path_len;
         signer->path_is_string = true;

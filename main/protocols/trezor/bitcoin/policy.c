@@ -454,6 +454,9 @@ bool trezor_bitcoin_policy_is_p2wpkh_basic(const trezor_bitcoin_signing_state_t*
         if (!trezor_bitcoin_policy_input_is_supported_without_prev_tx_verification(input, testnet)) {
             return false;
         }
+        if (input->address_n_len <= 2) {
+            return false;
+        }
         if (i == 0) {
             account = input->address_n[2];
         } else if (input->address_n[2] != account) {
@@ -503,6 +506,9 @@ bool trezor_bitcoin_policy_is_basic(const trezor_bitcoin_signing_state_t* const 
                 ? trezor_bitcoin_policy_input_is_p2sh_p2wpkh_verified(input, testnet)
                 : false;
         if (!supported || input->script_type != input_script_type) {
+            return false;
+        }
+        if (input->address_n_len <= 2) {
             return false;
         }
         if (i == 0) {

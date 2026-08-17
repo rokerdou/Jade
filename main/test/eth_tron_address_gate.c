@@ -548,6 +548,11 @@ static bool test_trezor_bitcoin_multisig_signing_stays_rejected(void)
     if (!trezor_bitcoin_policy_is_basic(&state)) {
         return false;
     }
+    state.inputs[0].address_n_len = 2;
+    if (trezor_bitcoin_policy_is_basic(&state) || trezor_bitcoin_policy_is_p2wpkh_basic(&state)) {
+        return false;
+    }
+    test_init_basic_btc_policy_state(&state);
 
     state.inputs[0].has_multisig = true;
     state.inputs[0].multisig.variant = MULTI_P2WSH;
@@ -1763,6 +1768,37 @@ int wally_scriptpubkey_p2sh_from_bytes(
     return WALLY_OK;
 }
 
+int wally_scriptpubkey_p2pkh_from_bytes(
+    const unsigned char* bytes, size_t bytes_len, uint32_t flags, unsigned char* bytes_out, size_t len, size_t* written)
+{
+    if (!bytes || !bytes_out || !written || len < WALLY_SCRIPTPUBKEY_P2PKH_LEN
+        || (flags != 0 && flags != WALLY_SCRIPT_HASH160)) {
+        return WALLY_EINVAL;
+    }
+
+    uint8_t hash[HASH160_LEN];
+    if (flags == WALLY_SCRIPT_HASH160) {
+        if (wally_hash160(bytes, bytes_len, hash, sizeof(hash)) != WALLY_OK) {
+            return WALLY_EINVAL;
+        }
+    } else {
+        if (bytes_len != sizeof(hash)) {
+            return WALLY_EINVAL;
+        }
+        memcpy(hash, bytes, sizeof(hash));
+    }
+
+    bytes_out[0] = 0x76;
+    bytes_out[1] = 0xa9;
+    bytes_out[2] = HASH160_LEN;
+    memcpy(bytes_out + 3, hash, sizeof(hash));
+    bytes_out[3 + HASH160_LEN] = 0x88;
+    bytes_out[4 + HASH160_LEN] = 0xac;
+    *written = WALLY_SCRIPTPUBKEY_P2PKH_LEN;
+    memset(hash, 0, sizeof(hash));
+    return WALLY_OK;
+}
+
 int wally_witness_program_from_bytes(const unsigned char* bytes, size_t bytes_len, uint32_t flags,
     unsigned char* bytes_out, size_t len, size_t* written)
 {
@@ -1774,6 +1810,15 @@ int wally_witness_program_from_bytes(const unsigned char* bytes, size_t bytes_le
             return WALLY_EINVAL;
         }
         *written = WALLY_SCRIPTPUBKEY_P2WSH_LEN;
+        return WALLY_OK;
+    }
+
+    if (bytes && bytes_len == HASH160_LEN && flags == 0 && bytes_out
+        && len >= sizeof(EXPECTED_BTC_P2WPKH_SCRIPTPUBKEY) && written) {
+        bytes_out[0] = 0x00;
+        bytes_out[1] = HASH160_LEN;
+        memcpy(bytes_out + 2, bytes, HASH160_LEN);
+        *written = sizeof(EXPECTED_BTC_P2WPKH_SCRIPTPUBKEY);
         return WALLY_OK;
     }
 

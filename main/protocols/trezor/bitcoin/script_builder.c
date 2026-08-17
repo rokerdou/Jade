@@ -45,21 +45,20 @@ bool trezor_bitcoin_script_builder_p2pkh_script_code_from_path(
     if (!script || script_len < WALLY_SCRIPTPUBKEY_P2PKH_LEN || !written) {
         return false;
     }
+    *written = 0;
 
     uint8_t pubkey_hash[HASH160_LEN];
     wally_bzero(pubkey_hash, sizeof(pubkey_hash));
     const bool ok = trezor_bitcoin_script_builder_pubkey_hash_from_path(path, pubkey_hash);
-    if (ok) {
-        script[0] = 0x76;
-        script[1] = 0xa9;
-        script[2] = HASH160_LEN;
-        memcpy(script + 3, pubkey_hash, HASH160_LEN);
-        script[3 + HASH160_LEN] = 0x88;
-        script[4 + HASH160_LEN] = 0xac;
-        *written = WALLY_SCRIPTPUBKEY_P2PKH_LEN;
-    }
+    const bool built = ok
+        && wally_scriptpubkey_p2pkh_from_bytes(pubkey_hash, sizeof(pubkey_hash), 0, script, script_len, written)
+            == WALLY_OK
+        && *written == WALLY_SCRIPTPUBKEY_P2PKH_LEN;
     wally_bzero(pubkey_hash, sizeof(pubkey_hash));
-    return ok;
+    if (!built) {
+        *written = 0;
+    }
+    return built;
 }
 
 static bool trezor_bitcoin_script_builder_p2wpkh_script_from_path(
@@ -68,18 +67,20 @@ static bool trezor_bitcoin_script_builder_p2wpkh_script_from_path(
     if (!script || script_len < WALLY_SCRIPTPUBKEY_P2WPKH_LEN || !written) {
         return false;
     }
+    *written = 0;
 
     uint8_t pubkey_hash[HASH160_LEN];
     wally_bzero(pubkey_hash, sizeof(pubkey_hash));
     const bool ok = trezor_bitcoin_script_builder_pubkey_hash_from_path(path, pubkey_hash);
-    if (ok) {
-        script[0] = 0x00;
-        script[1] = HASH160_LEN;
-        memcpy(script + 2, pubkey_hash, HASH160_LEN);
-        *written = WALLY_SCRIPTPUBKEY_P2WPKH_LEN;
-    }
+    const bool built = ok
+        && wally_witness_program_from_bytes(pubkey_hash, sizeof(pubkey_hash), 0, script, script_len, written)
+            == WALLY_OK
+        && *written == WALLY_SCRIPTPUBKEY_P2WPKH_LEN;
     wally_bzero(pubkey_hash, sizeof(pubkey_hash));
-    return ok;
+    if (!built) {
+        *written = 0;
+    }
+    return built;
 }
 
 static bool trezor_bitcoin_script_builder_p2sh_p2wpkh_script_from_path(
@@ -88,6 +89,7 @@ static bool trezor_bitcoin_script_builder_p2sh_p2wpkh_script_from_path(
     if (!script || script_len < WALLY_SCRIPTPUBKEY_P2SH_LEN || !written) {
         return false;
     }
+    *written = 0;
 
     uint8_t redeem_script[WALLY_SCRIPTPUBKEY_P2WPKH_LEN];
     uint8_t redeem_hash[HASH160_LEN];
@@ -98,16 +100,16 @@ static bool trezor_bitcoin_script_builder_p2sh_p2wpkh_script_from_path(
                         &redeem_script_len)
         && redeem_script_len == sizeof(redeem_script)
         && wally_hash160(redeem_script, sizeof(redeem_script), redeem_hash, sizeof(redeem_hash)) == WALLY_OK;
-    if (ok) {
-        script[0] = 0xa9;
-        script[1] = HASH160_LEN;
-        memcpy(script + 2, redeem_hash, HASH160_LEN);
-        script[2 + HASH160_LEN] = 0x87;
-        *written = WALLY_SCRIPTPUBKEY_P2SH_LEN;
-    }
+    const bool built = ok
+        && wally_scriptpubkey_p2sh_from_bytes(redeem_hash, sizeof(redeem_hash), 0, script, script_len, written)
+            == WALLY_OK
+        && *written == WALLY_SCRIPTPUBKEY_P2SH_LEN;
     wally_bzero(redeem_script, sizeof(redeem_script));
     wally_bzero(redeem_hash, sizeof(redeem_hash));
-    return ok;
+    if (!built) {
+        *written = 0;
+    }
+    return built;
 }
 
 bool trezor_bitcoin_script_builder_p2sh_p2wpkh_scriptsig_from_path(
