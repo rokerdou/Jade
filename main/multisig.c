@@ -569,7 +569,8 @@ static bool write_text(const char* text, const bool add_eol, char* output, const
     JADE_INIT_OUT_SIZE(written);
 
     const size_t len = strlen(text);
-    if (len >= output_len) {
+    const size_t required_len = len + (add_eol ? 2U : 1U);
+    if (required_len > output_len) {
         JADE_LOGE("Output buffer filled, failed to write line: %s", text);
         return false;
     }

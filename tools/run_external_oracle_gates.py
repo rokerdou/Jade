@@ -477,6 +477,33 @@ def check_erc20_calldata_oracle(local_vectors: dict[str, str], expected: dict[st
             raise AssertionError(f"{vector_key} amount mismatch: actual={amount} expected={expected_amount}")
 
 
+def check_bip39_hidden_wallet_oracle() -> None:
+    """Verify BIP39 passphrase/hidden-wallet seed derivation with independent libraries."""
+    from embit import bip32, bip39
+
+    mnemonic = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about"
+    vectors = {
+        "": "5eb00bbddcf069084889a8ab9155568165f5c453ccb85e70811aaed6f6da5fc19a5ac40b389cd370d086206dec8aa6c43daea6690f20ad3d8d48b2d2ce9e38e4",
+        "TREZOR": "c55257c360c07c72029aebc1b53c05ed0362ada38ead3e3e9efa3708e53495531f09a6987599d18264c1e1c92f2cf141630c7a3c4ab7c81b2f001698e7463b04",
+    }
+
+    root_xprvs: dict[str, str] = {}
+    for passphrase, expected_seed_hex in vectors.items():
+        pbkdf2_seed = hashlib.pbkdf2_hmac(
+            "sha512", mnemonic.encode("utf-8"), ("mnemonic" + passphrase).encode("utf-8"), 2048, 64
+        )
+        embit_seed = bip39.mnemonic_to_seed(mnemonic, passphrase)
+        expected_seed = bytes.fromhex(expected_seed_hex)
+        if pbkdf2_seed != expected_seed:
+            raise AssertionError(f"BIP39 official vector mismatch for passphrase={passphrase!r}")
+        if embit_seed != expected_seed:
+            raise AssertionError(f"embit BIP39 vector mismatch for passphrase={passphrase!r}")
+        root_xprvs[passphrase] = str(bip32.HDKey.from_seed(embit_seed))
+
+    if root_xprvs[""] == root_xprvs["TREZOR"]:
+        raise AssertionError("BIP39 hidden wallet passphrase did not change the root key")
+
+
 def message_payload(message: messages.MessageType) -> bytes:
     output = io.BytesIO()
     protobuf.dump_message(output, message)
@@ -3779,6 +3806,7 @@ def main() -> int:
     check_erc20_legacy_signed_raw_tx_oracle(local, expected)
     check_eth_eip1559_signed_raw_tx_oracle(local, expected)
     check_erc20_calldata_oracle(local, expected)
+    check_bip39_hidden_wallet_oracle()
     check_trezorlib_btc_protobuf_oracle()
     check_trezorlib_btc_signtx_host_flow_oracle()
     check_embit_psbt_oracle()

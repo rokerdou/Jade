@@ -165,7 +165,7 @@ void get_registered_multisig_process(void* process_ptr)
         written = 0;
         if (!multisig_create_export_file(multisig_name, &multisig_data, signer_details, multisig_data.num_xpubs,
                 export_file, export_file_len, &written)
-            || !written || written > export_file_len) {
+            || !written || written >= export_file_len) {
             JADE_LOGE("Failed to produce multisig export file");
             jade_process_reject_message(process, CBOR_RPC_INTERNAL_ERROR, "Failed to produce multisig export file");
             goto cleanup;
