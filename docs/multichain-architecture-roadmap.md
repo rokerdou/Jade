@@ -13,6 +13,9 @@
 - USB/protobuf 任务栈是安全边界的一部分。主机可触发的大协议对象不得作为 `trezor_hid`
   局部变量放在栈上；大型 TxAck、multisig、SafeTx、raw tx/protobuf scratch 必须使用
   static session state 或 heap，并在失败/释放前清零。
+- C 字符串/缓冲区边界是安全边界的一部分。所有 `memcpy`、`strcpy`、`strlen`、`snprintf`
+  和手动 `buf[len]`/`buf[len + 1]` 写入必须在本函数内证明目标容量足够，且必须把
+  分隔符、换行、NUL 终止符都计入 required length。
 - 协议规范优先级：链官方规范和 BIP/EIP/TRON 文档 > Trezor official common/protob / Connect 行为 > OneKey 实践参考。
 - OneKey 只作架构和流程参考，不直接复制实现。OneKey 私有 proto 扩展必须放在
   单独 adapter/feature gate 下，不能假装成 Trezor/MetaMask 标准兼容。
@@ -808,6 +811,11 @@ tools/
 - 是否新增了链层/协议层访问私钥、seed、mnemonic、xpriv 的可能。
 - 是否绕过了本机 UI 确认。
 - 是否让 USB malformed input 可以造成越界、溢出、无限循环、FreeRTOS 卡死、重启。
+- 是否新增或修改了 `memcpy`、`strcpy`、`strncpy`、`strcat`、`sprintf`、`snprintf`、
+  `strlen` 或 `buf[len + n]` 这类 C 字符串/缓冲区操作；每一处都必须重新审视
+  source max、destination `sizeof`、NUL 终止、exact-fill、one-byte-too-long 情况。
+- 如果输出是 C 字符串或后续还要追加内容，`written == output_len` 是否被错误当成成功；
+  能否改成 `required_len > output_len` 的前置判断。
 - 是否影响 `main/amalgamated.c`。
 - 是否影响 host gate 手工源文件列表。
 - 是否影响 T-Display-S3 屏幕行数和双按键确认流程。

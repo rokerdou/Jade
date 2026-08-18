@@ -655,6 +655,52 @@ Periodic review checklist:
   hardware signing run where `reset_hwm` has meaningful headroom after the USB
   signed response is sent.
 
+### C String And Buffer Bounds Audit
+
+Bug class: host-controlled or user-registered text reaches C string helpers
+that copy into a smaller response/UI/export buffer. These bugs often hide behind
+an earlier validator, or behind a `written > output_len` check that misses the
+exact-fill case.
+
+Observed root cause:
+
+- `multisig_create_export_file()` used `write_text()` to append Coldcard-style
+  multisig export lines.
+- The old guard checked only `strlen(text) >= output_len`.
+- With `add_eol=true`, the function wrote `text`, then `'\n'`, then `'\0'`.
+  If `strlen(text) == output_len - 1`, the newline landed inside the buffer but
+  the trailing NUL wrote one byte past the end.
+- The caller checked `written > export_file_len`, so an exact-fill result was not
+  rejected.
+
+Fix pattern:
+
+- Before any `memcpy()`, `strcpy()`, `strncpy()`, `snprintf()`, or manual
+  terminator write, calculate the exact bytes required, including separators,
+  newline, and trailing NUL.
+- Reject when `required_len > output_len`; reject exact-fill when the downstream
+  consumer requires a NUL-terminated string inside the allocated buffer.
+- Do not rely on another parser, address decoder, or UI formatter to have already
+  constrained the input. Each copy site must have a local bound check against the
+  destination object.
+- Prefer structured builders or library helpers when available. If a manual copy
+  remains, the destination size and required size must be visible in the same
+  function.
+
+Review checklist:
+
+- Search every changed file for `memcpy`, `strcpy`, `strncpy`, `strcat`,
+  `sprintf`, `snprintf`, `strlen`, and direct writes such as `buf[len + 1]`.
+- For every copy, identify: source maximum length, destination `sizeof`, whether
+  the source is NUL-terminated, and whether the copy includes the terminator.
+- For every `written` check, verify whether equality is valid. If the output is
+  a C string, `written >= output_len` is usually a failure.
+- Add or update a host gate for malformed, exact-fill, and one-byte-too-long
+  inputs when the path is reachable from USB/protobuf/CBOR, registered wallet
+  data, QR import, or file import.
+- Normal business output for valid inputs must remain byte-for-byte unchanged;
+  the fix should only turn boundary cases into explicit rejection.
+
 ### Locked Wallet Local PIN Unlock
 
 Expected Trezor USB flow when the wallet is initialized but locked:
