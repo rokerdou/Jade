@@ -67,8 +67,23 @@ static uint16_t esp32_get_temperature(void)
 }
 #endif
 
-// returns up to 32 bytes of randomness (optional), takes optionallly extra entropy
-static void get_random_internal(uint8_t* bytes_out, const size_t len, const uint8_t* additional, const size_t addlen)
+static void fill_random_entropy(uint8_t* const buf, const size_t len, const bool force_hardware_entropy)
+{
+    JADE_ASSERT(buf);
+    JADE_ASSERT(len);
+
+    if (force_hardware_entropy) {
+        bootloader_random_enable();
+    }
+    esp_fill_random(buf, len);
+    if (force_hardware_entropy) {
+        bootloader_random_disable();
+    }
+}
+
+// returns up to 32 bytes of randomness (optional), takes optionally extra entropy
+static void get_random_internal(
+    uint8_t* bytes_out, const size_t len, const uint8_t* additional, const size_t addlen, const bool force_hardware_entropy)
 {
     JADE_ASSERT(rnd_mutex);
     JADE_ASSERT(len <= SHA256_LEN);
@@ -110,9 +125,10 @@ static void get_random_internal(uint8_t* bytes_out, const size_t len, const uint
     // add some data from the stack
     add_bytes_to_hasher(ctx, buf, sizeof(buf));
 
-    // esp_fill_random is considered a prng when
-    // RF subsystem (or bootloader_random) aren't enabled
-    esp_fill_random(buf, sizeof(buf));
+    // esp_fill_random is considered a PRNG when the RF subsystem and
+    // bootloader_random are both disabled. For long-term secrets callers use
+    // get_strong_random(), which temporarily enables bootloader_random here.
+    fill_random_entropy(buf, sizeof(buf), force_hardware_entropy);
     add_bytes_to_hasher(ctx, buf, sizeof(buf));
 
     hasherfinish(ctx, buf);
@@ -139,10 +155,10 @@ void refeed_entropy(const void* additional, const size_t len)
 {
     JADE_ASSERT(additional);
     JADE_ASSERT(len);
-    get_random_internal(NULL, 0, additional, len);
+    get_random_internal(NULL, 0, additional, len, false);
 }
 
-void get_random(void* bytes_out, const size_t len)
+static void get_random_with_policy(void* bytes_out, const size_t len, const bool force_hardware_entropy)
 {
     JADE_ASSERT(bytes_out);
     JADE_ASSERT(len);
@@ -150,9 +166,24 @@ void get_random(void* bytes_out, const size_t len)
     size_t filled = 0;
     while (filled != len) {
         const size_t towrite = len - filled > SHA256_LEN ? SHA256_LEN : len - filled;
-        get_random_internal(bytes_out + filled, towrite, NULL, 0);
+        get_random_internal(bytes_out + filled, towrite, NULL, 0, force_hardware_entropy);
         filled += towrite;
     }
+}
+
+void get_random(void* bytes_out, const size_t len) { get_random_with_policy(bytes_out, len, false); }
+
+void get_strong_random(void* bytes_out, const size_t len) { get_random_with_policy(bytes_out, len, true); }
+
+void get_hardware_random(void* bytes_out, const size_t len)
+{
+    JADE_ASSERT(rnd_mutex);
+    JADE_ASSERT(bytes_out);
+    JADE_ASSERT(len);
+
+    JADE_SEMAPHORE_TAKE(rnd_mutex);
+    fill_random_entropy(bytes_out, len, true);
+    JADE_SEMAPHORE_GIVE(rnd_mutex);
 }
 
 uint8_t get_uniform_random_byte(const uint8_t upper_bound)
@@ -273,7 +304,7 @@ void random_start_collecting(void)
     // BLE or I2S peripherals (camera?) working later.
 
     bootloader_random_enable();
-    esp_fill_random(entropy_state, sizeof(entropy_state));
+    fill_random_entropy(entropy_state, sizeof(entropy_state), false);
     bootloader_random_disable();
 
     JADE_ASSERT(!rnd_mutex);

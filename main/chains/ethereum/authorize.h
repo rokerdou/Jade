@@ -14,5 +14,7 @@
  * the same normalized request the user confirmed on the hardware screen.
  */
 bool ethereum_authorize_tx(const ethereum_tx_preflight_request_t* request, chain_authorization_t* authorization);
+bool ethereum_authorize_tx_ex(
+    const ethereum_tx_preflight_request_t* request, chain_authorization_t* authorization, bool free_managed_activities);
 
 #endif /* ETHEREUM_AUTHORIZE_H_ */

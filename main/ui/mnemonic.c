@@ -49,14 +49,31 @@ gui_activity_t* make_new_mnemonic_activity(void)
     btn_data_t hdrbtns[] = { { .txt = "=", .font = JADE_SYMBOLS_16x16_FONT, .ev_id = BTN_MNEMONIC_METHOD },
         { .txt = NULL, .font = GUI_DEFAULT_FONT, .ev_id = GUI_BUTTON_EVENT_NONE } };
 
-    btn_data_t menubtns[] = { { .txt = "12 Words", .font = GUI_DEFAULT_FONT, .ev_id = BTN_NEW_MNEMONIC_12 },
-        { .txt = "24 Words", .font = GUI_DEFAULT_FONT, .ev_id = BTN_NEW_MNEMONIC_24 } };
+    btn_data_t menubtns[] = {
+        { .txt = "Standard Random", .font = GUI_DEFAULT_FONT, .ev_id = BTN_NEW_MNEMONIC_STANDARD },
+        { .txt = "Dice Enhanced", .font = GUI_DEFAULT_FONT, .ev_id = BTN_NEW_MNEMONIC_ENHANCED },
+    };
 
-    gui_activity_t* const act = make_menu_activity("Recovery Phrase", hdrbtns, 2, menubtns, 2);
+    gui_activity_t* const act = make_menu_activity("Create Wallet", hdrbtns, 2, menubtns, 2);
 
-    // Set the intially selected item to the '12 words' button
+    // Set the intially selected item to the standard-random button.
     gui_set_activity_initial_selection(menubtns[0].btn);
 
+    return act;
+}
+
+gui_activity_t* make_dice_roll_count_activity(void)
+{
+    btn_data_t hdrbtns[] = { { .txt = "=", .font = JADE_SYMBOLS_16x16_FONT, .ev_id = BTN_NEW_MNEMONIC },
+        { .txt = NULL, .font = GUI_DEFAULT_FONT, .ev_id = GUI_BUTTON_EVENT_NONE } };
+
+    btn_data_t menubtns[] = {
+        { .txt = "50 Rolls", .font = GUI_DEFAULT_FONT, .ev_id = BTN_NEW_MNEMONIC_DICE_50 },
+        { .txt = "99 Rolls", .font = GUI_DEFAULT_FONT, .ev_id = BTN_NEW_MNEMONIC_DICE_99 },
+    };
+
+    gui_activity_t* const act = make_menu_activity("Dice Enhanced", hdrbtns, 2, menubtns, 2);
+    gui_set_activity_initial_selection(menubtns[0].btn);
     return act;
 }
 

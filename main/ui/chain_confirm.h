@@ -18,5 +18,6 @@ _Static_assert(CHAIN_CONFIRM_UI_HEX_LINE_CHARS + 1U <= CHAIN_CONFIRM_UI_DISPLAY_
     "chain confirmation hex line buffer must include room for a terminator");
 
 bool show_chain_confirm_summary_activity(const chain_confirm_summary_t* summary);
+bool show_chain_confirm_summary_activity_ex(const chain_confirm_summary_t* summary, bool free_managed_activities);
 
 #endif /* UI_CHAIN_CONFIRM_H_ */

@@ -47,6 +47,7 @@
 #include "smoketest.h"
 #include "storage.h"
 #include "wallet.h"
+#include "wallet_core/wallet_core.h"
 
 // Running partition/fw info & chip info, fetched once at boot
 esp_app_desc_t running_app_info;
@@ -259,6 +260,7 @@ static void boot_process(void)
 
     jade_wally_init();
     wallet_init();
+    wallet_core_init();
 
 #ifdef CONFIG_BT_ENABLED
     // Delay BLE initialisation as uses the hw unit key which is not initialised until

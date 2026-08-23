@@ -7,6 +7,15 @@
 - 安全优先。协议层、链层、UI 层不得读取 seed、mnemonic、xpriv、raw private key，也不得返回可还原私钥的中间态。
 - USB 主机不可信。所有 Trezor protobuf、wire、TxAck、EthereumTxAck、definitions、calldata 都按恶意输入处理。
 - 统一签名边界。链代码负责解析、校验、生成 digest；`wallet_core` 负责在内部派生私钥并签名；协议层只负责请求/响应格式。
+- 长期密钥材料必须使用强随机接口。新建钱包的 BIP39 256-bit entropy 必须走
+  `wallet_entropy_system_256()` / `wallet_entropy_standard()` / `wallet_entropy_enhanced()`：
+  标准模式直接使用临时启用 `bootloader_random_enable()` 后采集的 ESP32-S3 HWRNG 32 bytes；
+  骰子增强模式使用 `system_entropy XOR SHA256("WALLET_DICE_V1" || roll_count || dice_rolls)`，
+  XOR 后不得再做二次 hash。其他根私钥、设备/会话私钥这类资金安全关键随机数必须走
+  `get_strong_random()`；普通 UI 随机化可以继续用 `get_random()`。
+- 当前 `get_strong_random()` 的 SHA512 条件化实现来自 ESP-IDF bundled mbedTLS 3.6.5
+  `mbedtls_sha512_*`，不是本工程自写 hash。这个实现仍是通用强随机接口的条件化层，但新建钱包标准模式
+  不再依赖 SHA512 条件化作为最终 BIP39 entropy。
 - 小步重构。每次只拆一块，先加门禁，后迁移调用，再删旧代码。
 - 兼容 Jade 工程约束。新增 `.c` 文件要同时考虑 ESP-IDF `SRC_DIRS`、host gate 手工源列表、`main/amalgamated.c`。
 - 兼容 T-Display-S3 硬件约束。交易确认摘要必须符合现有 LCD 行数、按键导航、Activity 生命周期和 FreeRTOS 栈限制。
@@ -267,6 +276,11 @@ main/
   `GetPublicKey(m/49'...)` / `GetPublicKey(m/84'...)`。固件现在只在账户级 public-node
   导出路径把这个默认值视为客户端兼容占位，并按 BIP purpose 推断 ypub/zpub；
   签名路径仍然要求 input `script_type` 与 prevout/script policy 严格匹配。
+- BTC 签名前已增加确认摘要绑定门禁：UI 确认后、任何 digest/signing 之前，
+  固件会从当前 `trezor_bitcoin_signing_state_t` 重新生成 singlesig/multisig
+  `bitcoin_confirm_request_t`，逐字段比对 path、policy、to、amount、self、
+  change、fee、fee-rate、lock_time、sequence；不一致直接拒绝并清理 pending。
+  host gate 会篡改金额、fee、地址、路径、multisig policy/change 验证拒绝路径。
 
 继续要求：
 
@@ -445,6 +459,10 @@ trezorlib / Safe CLI 兼容路径：
   `wallet_adapter` 负责 UI 确认后调用
   `wallet_core_sign_digest_ecdsa_recoverable()`，协议层和链层不获取
   raw private key。
+- SafeTx UI 摘要绑定已显式化：`wallet_adapter` 在用户确认后、`wallet_core`
+  签名前，会调用 `ethereum_safe_tx_confirm_summary_matches_preflight()` 重新从
+  `address_n + SafeTx + preflight result + signing_hash` 构造确认摘要并逐字段比较。
+  host gate 覆盖正常匹配，以及篡改 SafeTx hash、token amount、path 的拒绝。
 - `tools/run_external_oracle_gates.py` 已补 SafeTx 二阶段 raw-wire oracle：
   使用 `safe-eth-py`/`eth_account` 生成 SafeTx hash，用第三方 `eth_keys`
   recover `EthereumTypedDataSignature(r||s||recid)`，验证 signer address
@@ -468,8 +486,10 @@ trezorlib / Safe CLI 兼容路径：
 - `policy.c/h` 已独立，集中 P2WPKH-only、fee-rate、change path、single external output、lock_time/serialize 等当前签名策略。
 - `requests.c/h` 已独立，集中 Trezor `TxRequest`、prev_tx `tx_hash` request、多输入 signed response 编码。
 - `signing_state.c/h` 已独立，集中 `SignTx -> TxAck -> ready` 状态推进，并显式区分
-  current transaction `TXMETA/TXINPUT/TXOUTPUT` 与 prev_tx
-  `TXMETA/TXORIGINPUT/TXORIGOUTPUT` 状态。
+  current transaction `TXINPUT/TXOUTPUT` 与 prev_tx `TXMETA/TXORIGINPUT/TXORIGOUTPUT`
+  状态。当前交易的 inputs/outputs/version/lock_time 已由 `SignTx` 携带，设备不再主动请求
+  no-`tx_hash` current `TXMETA`，避免 Sparrow/Lark 报 `Unexpected request TXMETA`；旧 host
+  若额外发送一致的 current meta，状态机会校验后兼容跳过。
 - `messages.c/h` 已独立，集中 BTC Trezor protobuf decode/encode，包括 `GetAddress`、`SignTx`、`TxAck`、prev input/output、Address response。
 - `script_builder.c/h` 已独立，集中 BTC Trezor-compatible 路径里的 external output
   scriptPubKey、change scriptPubKey、legacy P2PKH scriptSig、P2SH-P2WPKH scriptSig
@@ -654,9 +674,22 @@ trezorlib / Safe CLI 兼容路径：
 
 4. UI 摘要门禁
    - BTC 签名 host gate 必须验证 review model 中 `Path/To/Amount/Change/Fee/FeeRate`
-     与交易 policy 计算结果一致。
+     与交易 policy 计算结果一致；这些是资金安全强相关字段，必须显示。
+   - 非资金流核心、但会影响交易行为的字段要分级处理：例如 Sparrow 常见的
+     anti-fee-sniping/RBF 交易使用非 0 `lock_time` 和非 final `sequence`，UI 不逐项展开
+     原始字段，而是在非默认时合并为一个 `Tx Flags` 摘要，并由 third-party oracle
+     验证 signed raw tx 中的 locktime/sequence 未被改变。
+   - BTC 内部输出需要区分 branch：branch `0` 是同钱包自转/receive-branch 输出，必须显示为
+     `Self`；branch `1` 才显示为 `Change`。两者都必须先通过账户、coin type、script type 和 index
+     绑定校验，不能把任意内部路径静默当作找零。
+   - BTC 允许没有外部收款地址的 self-transfer/consolidation，但前提是每个输出都由
+     `address_n` 证明属于同一账户/脚本策略；普通地址字符串即便看起来是自己的，也不能被固件
+     当作内部输出信任。
+   - 纯协议/内部字段不进入 UI，除非它改变收款方、金额、手续费、找零或签名可广播语义。
    - 所有新增 BTC 摘要字段必须通过 `test_confirm_summary_fits_tdisplay_s3()`，避免再次出现
      超过 T-Display-S3 对话框行数或分页约束导致的确认流异常。
+   - UI 分页 formatter 必须按实际 copied/consumed 字符数推进，不能按最大行宽跳步后继续
+     读取 NUL 之后的尾部缓冲；门禁必须覆盖 short value、exact-fit value、long address/hash。
 
 ### Phase 3: 收敛 Protocol Adapter / App Service
 
@@ -806,11 +839,135 @@ tools/
      descriptor/change/prevout/output 安全绑定；Taproot 已有 protocol-level 拒绝门禁。
      未完成这些安全模型前继续拒绝签名。
 
+## 大额资金 Readiness Gate
+
+目标不是“能签名”，而是达到可以长期承载高价值资产的防御深度。开启 Secure Boot 和
+Flash Encryption 只是生产硬化的一部分，不能替代协议、UI、签名和物理安全审计。
+
+当前判断：
+
+- 标准本机创建钱包路径已经走 `wallet_entropy_system_256()`，它调用
+  `get_hardware_random()`，后者在采样时临时启用 `bootloader_random_enable()`，
+  再调用 `esp_fill_random()`。因此 T-Display-S3 离线、Wi-Fi/BLE 关闭时，
+  “标准随机”路径的 ESP32-S3 硬件熵前提在当前代码上成立。
+- 高级旧路径 `BTN_NEW_MNEMONIC_12/24` 仍通过 `keychain_get_new_mnemonic()` 和
+  `get_strong_random()` 创建助记词。该路径也临时启用硬件熵，并使用 mbedTLS SHA512
+  条件化，不是已知不安全路径；但生产审计模型应继续收敛到同一个
+  `wallet_entropy_*` 模块，避免两套助记词生成语义长期并存。
+- hardened Trezor USB 构建关闭 `CONFIG_DEBUG_MODE`、CDC console、Jade USB serial/RPC、
+  default log 输出、Secure Boot 和 Flash Encryption。调试期必须保持 Secure Boot /
+  Flash Encryption 关闭；生产前必须在测试板完成 eFuse 演练。
+
+硬阻断项，未完成前不建议单签存放巨量资金：
+
+1. USB/protobuf fuzz 与 malformed host gate
+   - 覆盖 oversized payload、畸形 varint、重复字段、未知 wire type、超长 string/bytes、
+     out-of-order `TxAck`、多会话/Cancel/ButtonAck 乱序。
+   - fuzz 输入不得触发越界、无限循环、stack exhaustion、assert reboot 或 sensitive leak。
+
+   当前已落地：
+   - `trezor_usb_fuzz_gate` 覆盖低层 `wire/protobuf/misc/dispatcher`：
+     unterminated varint、field 0、unsupported wire type、length 越界、field 超上限、
+     message 超上限、HID chunk marker 损坏、声明长度与 chunk 数不一致、output cap 不足、
+     GetEntropy 重复字段/错类型/超限 clamp、以及 512 轮确定性 parser fuzz。
+   - `trezor_usb_fuzz_gate` 还显式固定 dispatcher 的消息面：`Initialize`、`GetFeatures`、
+     `ButtonAck`、BTC/ETH/Safe 已实现请求可进入 session；`LoadDevice`、`ResetDevice`、
+     `BackupDevice`、`RecoveryDevice`、`SignMessage`、`SignIdentity`、`GetECDHSessionKey`、
+     `CipherKeyValue`、`PassphraseAck`、`UnlockPath`、`TxAckPaymentRequest`、未知消息等
+     必须被归类为 sensitive/unsupported，不能进入签名或敏感导出路径。
+   - `eth_tron_address_gate` 覆盖 session 级乱序 corpus：pending GetEntropy 下 `GetFeatures`
+     不清状态，重复 `GetEntropy`/`ApplyFlags` 被拒绝且不覆盖 pending，带 payload 的
+     `ButtonAck/Cancel` 被拒绝且不清 pending，`Cancel/EndSession/Initialize` 会显式清 pending。
+     BTC `TxAck` pending、ETH data-chunk pending、Safe typed-hash pending 下乱发跨币种
+     `TxAck`/`EthereumTxAck`/`EthereumGnosisSafeTxAck`、`GetEntropy`、`ApplyFlags`
+     都必须返回 `UnexpectedMessage`，保持原 pending，并且不触发 signer。
+     BTC 多输入签名结果分段发送期间的 `has_pending_btc_signed_tx` 也有覆盖：乱发
+     `GetPublicKey`/`GetEntropy` 不会清掉已生成签名响应，也不会再次触发 signer。
+   - `run_host_gates.sh` 已把该 gate 纳入默认本机门禁。
+
+   仍未达到生产级 fuzz 的部分：
+   - 现有 fuzz 是确定性 corpus/host gate，适合快速门禁；还不是覆盖率驱动的
+     libFuzzer/AFL 长跑。
+   - 还需要把更多 app-service 层 corpus 加进去：大体积 BTC prev_tx/multisig、
+     SafeTx/EIP1559 definitions、TRON raw tx、跨币种 pending 交错、多 Initialize/session_id
+     交错、签名中途断线/重入。
+   - 生产前应在 sanitizer/coverage build 上长期跑 fuzz，并把导致 assert/reboot/timeout/OOM
+     的输入都沉淀为固定回归样例。
+
+2. UI 确认完整性
+   - 每个签名前资金关键字段必须来自同一个 normalized request，并绑定到最终 digest/raw tx。
+   - host-triggered UI 必须使用 managed activity 清理策略，避免“能切换选择但确认事件没人接”。
+   - 显示层必须防残影、防分页读 NUL 后尾部、防标题/按钮状态欺骗。
+
+3. 签名 oracle 边界
+   - 解锁不等于授权。所有 `wallet_core_sign_digest_ecdsa_recoverable()` 可达路径必须先完成
+     本机屏幕确认或进入显式安全白名单。
+   - 禁止协议层、链层、USB 层直接访问 seed、mnemonic、xpriv、raw private key。
+   - `GetEntropy` 这类导出随机数接口必须本机确认、限长、敏感清零，不得和钱包种子路径混淆。
+
+   当前已落地：
+   - `tools/check_sensitive_key_boundaries.py` 除了禁止链/协议层直接访问 keychain/private key，
+     还检查 ETH、Safe、BTC 单签、BTC multisig 的 signer 调用前存在结构化确认流程。
+   - Host-triggered ETH、Safe、BTC 交易确认必须使用 managed activity cleanup；
+     `GetEntropy` 也必须使用 managed 本机确认，再调用 `get_hardware_random()`。这些已经进入
+     `tools/check_sensitive_key_boundaries.py`，避免连续 USB 请求造成旧 Activity/event handler
+     残留后绕过或卡住确认。
+   - 新增 `wallet_core_sign_digest_ecdsa_recoverable()` 调用只能出现在显式 allowlist 文件里；
+     否则本机门禁失败。当前 allowlist 是 ETH chain signer 和 Trezor wallet adapter 的
+     Safe/BTC 回调边界。
+   - Trezor Features 当前只宣告 BTC、Bitcoin-like、Ethereum。TRON 地址/链层可继续保留
+     本机门禁，但在 Trezor-compatible USB 的 parser、UI 摘要绑定、签名/返回链路完成前，
+     `tools/check_sensitive_key_boundaries.py` 会阻止提前暴露 `TREZOR_CAPABILITY_TRON`。
+
+4. FreeRTOS 并发和资源耗尽
+   - Trezor HID、dashboard、auth/keychain、GUI 之间必须有明确串行化或锁边界。
+   - 所有 host 可控请求不得在 HID task 栈上放大对象；large tx/protobuf buffer 必须静态、
+     heap 或 session state 化，并有上限。
+
+   当前已落地：
+   - `wallet_core` 公钥派生、xpub 导出和 `sign_digest` 入口使用 keychain 递归锁串行化。
+   - `keychain_set/clear/load/store/reencrypt/complete_derivation` 等主要状态转换使用同一把锁。
+   - Trezor session 对 pending call 做状态机约束：等待本机确认、ETH data chunk、
+     BTC `TxAck` 或 GetEntropy `ButtonAck` 时，乱序消息返回 `UnexpectedMessage`，不覆盖 pending 状态。
+   - `tools/check_sensitive_key_boundaries.py` 已把 session pending guard、GetEntropy 本机确认、
+     wallet_core/keychain lock 作为静态门禁。
+   - `tools/check_sensitive_key_boundaries.py` 还禁止在 Trezor 协议 `.c` 文件中把
+     `trezor_bitcoin_signed_tx_t`、`trezor_bitcoin_signing_state_t`、
+     `trezor_ethereum_signing_state_t` 作为普通局部变量声明，避免 HID/session task
+     再次被 host-triggered 大对象耗尽栈。
+
+   仍需继续：
+   - 原生 Jade RPC 里直接调用 `wallet_get_hdkey()` 或长时间持有 `keychain_get()` 指针的历史路径，
+     需要分阶段迁移到 wallet-core handle/sign-only 边界。
+   - USB/protobuf fuzz 还需要继续 corpus 化到 session/app service 层：更多
+     out-of-order `ButtonAck/TxAck/Cancel/Initialize`、多会话交错、跨币种 pending
+     交错、large BTC/ETH/Safe protobuf 结构，都要跑成本机自动门禁。
+
+5. 持久化与 eFuse 生产配置
+   - 生产固件需要 Secure Boot、Flash Encryption、禁 JTAG/USB-JTAG/下载调试、
+     禁 debug RPC、禁 console、禁 core dump、禁敏感日志。
+   - eFuse 是不可逆操作，必须先有测试板流程、恢复流程、签名密钥管理和发布流程。
+
+6. 物理与供应链
+   - T-Display-S3 不是专用 secure element 硬件。Secure Boot/Flash Encryption 能提高攻击成本，
+     但不能等同于抗故障注入、抗侧信道、抗探针读取的高等级硬件安全模块。
+   - 大额资金建议优先以 BTC multisig / Safe multisig 的一个 signer 使用，而不是单签唯一保管点。
+
 ## 每次改动必须检查
 
 - 是否新增了链层/协议层访问私钥、seed、mnemonic、xpriv 的可能。
+- 是否把“钱包已解锁”误当成“主机已授权”：解锁只允许进入请求处理，任何私钥签名、
+  助记词/seed/private key/xpriv、以及高敏派生密钥导出仍必须经过本机屏幕确认。
+- 是否新增了长期密钥材料生成；如果是，新建钱包 BIP39 entropy 必须使用 `wallet_entropy_*`
+  审计模型，其他密钥材料必须使用 `get_strong_random()`，不能直接用普通 `get_random()`。
 - 是否绕过了本机 UI 确认。
 - 是否让 USB malformed input 可以造成越界、溢出、无限循环、FreeRTOS 卡死、重启。
+- 是否新增或修改 Trezor wire/protobuf/parser/dispatcher；如果是，必须更新并运行
+  `trezor_usb_fuzz_gate`，覆盖 malformed、oversized、duplicate、wrong wire type、short buffer、
+  wrong chunk marker、declared length mismatch。
+- 是否新增 `wallet_core_sign_digest_ecdsa_recoverable()` 调用；如果是，必须经过结构化
+  review model、本机 UI 确认、digest/raw tx 绑定，并更新 `tools/check_sensitive_key_boundaries.py`
+  的显式 allowlist 与确认顺序门禁。
 - 是否新增或修改了 `memcpy`、`strcpy`、`strncpy`、`strcat`、`sprintf`、`snprintf`、
   `strlen` 或 `buf[len + n]` 这类 C 字符串/缓冲区操作；每一处都必须重新审视
   source max、destination `sizeof`、NUL 终止、exact-fill、one-byte-too-long 情况。
@@ -819,6 +976,16 @@ tools/
 - 是否影响 `main/amalgamated.c`。
 - 是否影响 host gate 手工源文件列表。
 - 是否影响 T-Display-S3 屏幕行数和双按键确认流程。
+- 是否修改 UI 分页/显示文本；必须确认每页不超过 4 行、每行 NUL 终止、短字段不会读取或显示
+  NUL 之后的缓冲尾部。
+- 是否新增 host-triggered UI 确认流；如果主机可以连续触发，必须使用显式 managed activity
+  清理策略，例如 `_ex(..., true)` 确认 helper 或进入流程前的 blank cleanup activity。
+- Host-triggered UI cleanup 不能只靠人工约定；新增路径必须同步更新
+  `tools/check_sensitive_key_boundaries.py` 或 host gate，证明确认页的 event handler 生命周期可控。
+- 是否检查了 GUI event handler 注册返回值；不能让可见确认页处于“能切换选择但确认事件没人接”
+  的状态。
+- 资金相关拒绝路径是否有安全日志：必须能定位拒绝阶段和结构原因，但不得记录 seed、mnemonic、
+  PIN、private key、xpriv、完整地址、完整 script、完整 raw transaction 或签名材料。
 - 是否新增 `trezor_hid` 可达的大栈对象，尤其是 `trezor_bitcoin_signed_tx_t`、
   `trezor_bitcoin_transaction_t`、`trezor_bitcoin_multisig_t`、
   `trezor_bitcoin_multisig_policy_t`、`trezor_ethereum_safe_tx_ack_t`，或按

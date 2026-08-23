@@ -62,5 +62,8 @@ bool ethereum_safe_tx_preflight(const ethereum_safe_tx_t* tx, ethereum_safe_tx_s
 bool ethereum_safe_tx_confirm_summary_from_preflight(const uint32_t* path, size_t path_len,
     const ethereum_safe_tx_t* tx, const ethereum_safe_tx_summary_t* result,
     const uint8_t signing_hash[ETHEREUM_TX_SIGNING_HASH_LEN], chain_confirm_summary_t* summary);
+bool ethereum_safe_tx_confirm_summary_matches_preflight(const uint32_t* path, size_t path_len,
+    const ethereum_safe_tx_t* tx, const ethereum_safe_tx_summary_t* result,
+    const uint8_t signing_hash[ETHEREUM_TX_SIGNING_HASH_LEN], const chain_confirm_summary_t* summary);
 
 #endif /* ETHEREUM_SAFE_TX_H_ */

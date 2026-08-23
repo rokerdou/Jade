@@ -5,6 +5,7 @@
 #include "../jade_assert.h"
 #include "../keychain.h"
 #include "../process.h"
+#include "../ui.h"
 #include "../utils/cbor_rpc.h"
 #include "../wallet_core/wallet_core.h"
 
@@ -12,8 +13,6 @@
 
 #include <string.h>
 #include <wally_crypto.h>
-
-bool show_confirm_address_activity(const char* address, bool default_selection);
 
 static bool get_eth_address_copy_path(
     const uint32_t* const path, const size_t path_len, wallet_core_path_t* const output)
@@ -65,7 +64,7 @@ void get_eth_address_process(void* process_ptr)
     }
 
     const bool default_selection = false;
-    if (!show_confirm_address_activity(address_str, default_selection)) {
+    if (!show_confirm_address_activity_ex(address_str, default_selection, true)) {
         JADE_LOGW("User declined to confirm Ethereum address");
         jade_process_reject_message(process, CBOR_RPC_USER_CANCELLED, "User declined to confirm Ethereum address");
         goto cleanup;

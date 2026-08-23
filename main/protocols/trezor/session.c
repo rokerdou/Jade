@@ -13,6 +13,7 @@
 #include "ethereum/safe_normalizer.h"
 #include "failure.h"
 #include "messages.h"
+#include "misc.h"
 #include "protobuf.h"
 #include "public_key.h"
 #include "trace.h"
@@ -49,6 +50,33 @@ static void trezor_session_clear_pending(trezor_session_state_t* const state)
     }
     trezor_bitcoin_signing_reset(&state->pending_btc_signing);
     wally_bzero(state, sizeof(*state));
+}
+
+static bool trezor_session_has_pending(const trezor_session_state_t* const state)
+{
+    return state
+        && (state->has_pending_local_unlock || state->has_pending_eth_signing || state->has_pending_eth_safe_typed_hash
+            || state->has_pending_btc_signing || state->has_pending_btc_signed_tx || state->has_pending_get_entropy);
+}
+
+static bool trezor_session_pending_accepts(const trezor_session_state_t* const state, const uint16_t request_type)
+{
+    if (!trezor_session_has_pending(state)) {
+        return true;
+    }
+    if (state->has_pending_local_unlock || state->has_pending_get_entropy) {
+        return request_type == TREZOR_MSG_BUTTON_ACK;
+    }
+    if (state->has_pending_eth_signing) {
+        return request_type == TREZOR_MSG_ETHEREUM_TX_ACK;
+    }
+    if (state->has_pending_eth_safe_typed_hash) {
+        return request_type == TREZOR_MSG_ETHEREUM_GNOSIS_SAFE_TX_ACK;
+    }
+    if (state->has_pending_btc_signing || state->has_pending_btc_signed_tx) {
+        return request_type == TREZOR_MSG_TX_ACK;
+    }
+    return false;
 }
 
 static bool trezor_session_button_request_payload(const trezor_button_request_type_t code, const char* const name,
@@ -133,6 +161,52 @@ static bool trezor_session_handle_button_ack(const trezor_session_t* const sessi
         return trezor_session_failure_payload(TREZOR_FAILURE_DATA_ERROR, "Unexpected payload", response_type,
             response_payload, response_payload_len, response_payload_written);
     }
+
+    if (session && session->state && session->state->has_pending_get_entropy) {
+        if (!session->get_entropy) {
+            trezor_session_clear_pending(session->state);
+            trezor_trace_set_stage("entropy:unavailable");
+            return trezor_session_failure_payload(TREZOR_FAILURE_DATA_ERROR, "Entropy unavailable", response_type,
+                response_payload, response_payload_len, response_payload_written);
+        }
+
+        const uint32_t entropy_size = session->state->pending_entropy_size;
+        trezor_session_clear_pending(session->state);
+        if (entropy_size > TREZOR_GET_ENTROPY_MAX_SIZE) {
+            trezor_trace_set_stage("entropy:size_bad");
+            return trezor_session_failure_payload(TREZOR_FAILURE_DATA_ERROR, "Entropy size too large", response_type,
+                response_payload, response_payload_len, response_payload_written);
+        }
+
+        uint8_t* const entropy = entropy_size ? malloc(entropy_size) : NULL;
+        if (entropy_size && !entropy) {
+            trezor_trace_set_stage("entropy:oom");
+            return trezor_session_failure_payload(TREZOR_FAILURE_DATA_ERROR, "Entropy memory unavailable",
+                response_type, response_payload, response_payload_len, response_payload_written);
+        }
+
+        trezor_trace_set_stage("entropy:confirm");
+        bool ok = session->get_entropy(session->get_entropy_ctx, entropy_size, entropy, entropy_size);
+        trezor_trace_set_stage(ok ? "entropy:encode" : "entropy:cancel");
+        if (ok) {
+            *response_type = TREZOR_MSG_ENTROPY;
+            ok = trezor_entropy_encode(entropy, entropy_size, response_payload, response_payload_len,
+                response_payload_written);
+        }
+        if (entropy) {
+            wally_bzero(entropy, entropy_size);
+            free(entropy);
+        }
+        if (!ok) {
+            return trezor_session_failure_payload(TREZOR_FAILURE_ACTION_CANCELLED, "Entropy request rejected",
+                response_type, response_payload, response_payload_len, response_payload_written);
+        }
+        if (response_event) {
+            *response_event = TREZOR_SESSION_RESPONSE_EVENT_ENTROPY_RESULT;
+        }
+        return true;
+    }
+
     if (!session || !session->state || !session->state->has_pending_local_unlock || !session->perform_local_unlock) {
         trezor_trace_set_stage("unlock:unexpected_ack");
         return trezor_session_failure_payload(TREZOR_FAILURE_UNEXPECTED_MESSAGE, "Button not expected", response_type,
@@ -341,6 +415,9 @@ static bool trezor_session_btc_signing_continue(const trezor_session_t* const se
             }
             const bool multisig_confirmed = session->confirm_btc_tx
                 && session->confirm_btc_tx(session->confirm_btc_tx_ctx, &multisig_confirm_request);
+            const bool multisig_confirm_bound = multisig_confirmed
+                && trezor_bitcoin_multisig_confirm_request_matches_state(
+                    &session->state->pending_btc_signing, &multisig_confirm_request);
             wally_bzero(&multisig_confirm_request, sizeof(multisig_confirm_request));
             if (!multisig_confirmed) {
                 trezor_trace_set_stage("btcsign:multisig_cancel");
@@ -348,6 +425,14 @@ static bool trezor_session_btc_signing_continue(const trezor_session_t* const se
                 session->state->has_pending_btc_signing = false;
                 return trezor_session_failure_payload(TREZOR_FAILURE_ACTION_CANCELLED,
                     "Bitcoin multisig transaction rejected", response_type, response_payload, response_payload_len,
+                    response_payload_written);
+            }
+            if (!multisig_confirm_bound) {
+                trezor_trace_set_stage("btcsign:multisig_confirm_bind");
+                trezor_bitcoin_signing_reset(&session->state->pending_btc_signing);
+                session->state->has_pending_btc_signing = false;
+                return trezor_session_failure_payload(TREZOR_FAILURE_DATA_ERROR,
+                    "Bitcoin multisig confirmation mismatch", response_type, response_payload, response_payload_len,
                     response_payload_written);
             }
 
@@ -417,11 +502,13 @@ static bool trezor_session_btc_signing_continue(const trezor_session_t* const se
         wally_bzero(&confirm_request, sizeof(confirm_request));
         const bool confirm_request_ok
             = trezor_bitcoin_signing_to_confirm_request(&session->state->pending_btc_signing, &confirm_request);
-        trezor_trace_set_note("btc preflight inputs=%lu outputs=%lu fee=%llu",
-            (unsigned long)session->state->pending_btc_signing.inputs_len,
-            (unsigned long)session->state->pending_btc_signing.outputs_len,
-            (unsigned long long)session->state->pending_btc_signing.fee);
-        trezor_trace_set_stage(confirm_request_ok ? "btcsign:confirm" : "btcsign:confirm_req_fail");
+        if (confirm_request_ok) {
+            trezor_trace_set_stage("btcsign:confirm");
+            trezor_trace_set_note("btc preflight inputs=%lu outputs=%lu fee=%llu",
+                (unsigned long)session->state->pending_btc_signing.inputs_len,
+                (unsigned long)session->state->pending_btc_signing.outputs_len,
+                (unsigned long long)session->state->pending_btc_signing.fee);
+        }
         if (!confirm_request_ok) {
             wally_bzero(&confirm_request, sizeof(confirm_request));
             trezor_bitcoin_signing_reset(&session->state->pending_btc_signing);
@@ -431,12 +518,21 @@ static bool trezor_session_btc_signing_continue(const trezor_session_t* const se
         }
         const bool confirmed = session->confirm_btc_tx
             && session->confirm_btc_tx(session->confirm_btc_tx_ctx, &confirm_request);
+        const bool confirm_bound = confirmed
+            && trezor_bitcoin_confirm_request_matches_state(&session->state->pending_btc_signing, &confirm_request);
         wally_bzero(&confirm_request, sizeof(confirm_request));
         if (!confirmed) {
             trezor_trace_set_stage("btcsign:confirm_cancel");
             trezor_bitcoin_signing_reset(&session->state->pending_btc_signing);
             session->state->has_pending_btc_signing = false;
             return trezor_session_failure_payload(TREZOR_FAILURE_ACTION_CANCELLED, "Bitcoin transaction rejected",
+                response_type, response_payload, response_payload_len, response_payload_written);
+        }
+        if (!confirm_bound) {
+            trezor_trace_set_stage("btcsign:confirm_bind");
+            trezor_bitcoin_signing_reset(&session->state->pending_btc_signing);
+            session->state->has_pending_btc_signing = false;
+            return trezor_session_failure_payload(TREZOR_FAILURE_DATA_ERROR, "Bitcoin confirmation mismatch",
                 response_type, response_payload, response_payload_len, response_payload_written);
         }
 
@@ -606,6 +702,12 @@ static bool trezor_session_handle_payload_ex(const trezor_session_t* const sessi
         return true;
     }
 
+    if (!trezor_session_pending_accepts(session->state, request_type)) {
+        trezor_trace_set_stage("session:busy");
+        return trezor_session_failure_payload(TREZOR_FAILURE_UNEXPECTED_MESSAGE, "Other call in progress",
+            response_type, response_payload, response_payload_len, response_payload_written);
+    }
+
     if (request_type == TREZOR_MSG_APPLY_FLAGS) {
         if (!trezor_session_apply_flags_payload_is_noop(request_payload, request_payload_len)) {
             return trezor_session_failure_payload(TREZOR_FAILURE_DATA_ERROR, "Unsupported flags", response_type,
@@ -619,6 +721,37 @@ static bool trezor_session_handle_payload_ex(const trezor_session_t* const sessi
     if (request_type == TREZOR_MSG_BUTTON_ACK) {
         return trezor_session_handle_button_ack(session, request_payload, request_payload_len, response_type,
             response_payload, response_payload_len, response_payload_written, response_event);
+    }
+
+    if (request_type == TREZOR_MSG_GET_ENTROPY) {
+        if (!session || !session->state || !session->get_entropy) {
+            return trezor_session_failure_payload(TREZOR_FAILURE_DATA_ERROR, "Entropy unavailable", response_type,
+                response_payload, response_payload_len, response_payload_written);
+        }
+
+        uint32_t entropy_size = 0;
+        if (!trezor_get_entropy_decode(request_payload, request_payload_len, &entropy_size)) {
+            trezor_trace_set_stage("entropy:decode_fail");
+            return trezor_session_failure_payload(TREZOR_FAILURE_DATA_ERROR, "Invalid entropy request",
+                response_type, response_payload, response_payload_len, response_payload_written);
+        }
+
+        bool deferred = false;
+        if (!trezor_session_maybe_defer_for_local_unlock(session, request_type, request_payload, request_payload_len,
+                response_type, response_payload, response_payload_len, response_payload_written, &deferred)) {
+            return false;
+        }
+        if (deferred) {
+            return true;
+        }
+
+        trezor_session_clear_pending(session->state);
+        session->state->has_pending_get_entropy = true;
+        session->state->pending_entropy_size = entropy_size;
+        trezor_trace_set_stage("entropy:button");
+        trezor_trace_set_note("entropy size=%lu", (unsigned long)entropy_size);
+        return trezor_session_button_request_payload(TREZOR_BUTTON_REQUEST_PROTECT_CALL, "get-entropy",
+            response_type, response_payload, response_payload_len, response_payload_written);
     }
 
     if (request_type == TREZOR_MSG_GET_ADDRESS) {

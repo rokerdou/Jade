@@ -16,5 +16,7 @@ typedef struct {
 } ethereum_signature_t;
 
 bool ethereum_sign_tx(const ethereum_tx_preflight_request_t* request, ethereum_signature_t* signature);
+bool ethereum_sign_tx_ex(
+    const ethereum_tx_preflight_request_t* request, ethereum_signature_t* signature, bool free_managed_activities);
 
 #endif /* ETHEREUM_SIGN_H_ */

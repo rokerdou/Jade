@@ -461,11 +461,17 @@ gui_activity_t* make_show_single_value_activity(const char* name, const char* va
 }
 
 // Make activity that displays a simple message - cannot be dismissed by caller
-gui_activity_t* display_message_activity(const char* message[], const size_t message_size)
+gui_activity_t* display_message_activity_ex(
+    const char* message[], const size_t message_size, const bool free_managed_activities)
 {
     gui_activity_t* const act = make_show_message_activity(message, message_size, NULL, NULL, 0, NULL, 0);
-    gui_set_current_activity(act);
+    gui_set_current_activity_ex(act, free_managed_activities);
     return act;
+}
+
+gui_activity_t* display_message_activity(const char* message[], const size_t message_size)
+{
+    return display_message_activity_ex(message, message_size, false);
 }
 
 gui_activity_t* display_processing_message_activity()
@@ -476,7 +482,8 @@ gui_activity_t* display_processing_message_activity()
 
 // Show passed dialog and handle events until a 'yes' or 'no', which is translated into a boolean return
 // NOTE: only expect BTN_YES, BTN_NO and BTN_HELP events.
-static bool await_yesno_activity_loop(gui_activity_t* const act, const char* help_url)
+static bool await_yesno_activity_loop_ex(
+    gui_activity_t* const act, const char* help_url, const bool free_managed_activities)
 {
     JADE_ASSERT(act);
     // help_url is optional (but should be present if a BTN_HELP btn is present)
@@ -485,7 +492,7 @@ static bool await_yesno_activity_loop(gui_activity_t* const act, const char* hel
 #ifdef CONFIG_TREZOR_USB_HID
         trezor_trace_set_stage("dlg:set_current");
 #endif
-        gui_set_current_activity(act);
+        gui_set_current_activity_ex(act, free_managed_activities);
 
 #ifdef CONFIG_TREZOR_USB_HID
         trezor_trace_set_stage("dlg:wait_btn");
@@ -535,6 +542,11 @@ static bool await_yesno_activity_loop(gui_activity_t* const act, const char* hel
             break;
         }
     }
+}
+
+static bool await_yesno_activity_loop(gui_activity_t* const act, const char* help_url)
+{
+    return await_yesno_activity_loop_ex(act, help_url, false);
 }
 
 // Run activity that displays a message and awaits an 'ack' button click
@@ -588,7 +600,8 @@ void await_error_3(const char* msg1, const char* msg2, const char* msg3)
 // Generic activity that displays a message and Yes/No buttons, and waits
 // for button press.  Function returns true if 'Yes' was pressed.
 static bool await_yesno_activity_impl(const char* title, const char* message[], const size_t message_size,
-    const char* yes, const char* no, const bool default_selection, const char* help_url)
+    const char* yes, const char* no, const bool default_selection, const char* help_url,
+    const bool free_managed_activities)
 {
     // title is optional
     JADE_ASSERT(message);
@@ -607,33 +620,47 @@ static bool await_yesno_activity_impl(const char* title, const char* message[], 
         = make_show_message_activity(message, message_size, title, hdrbtns, help_url ? 2 : 0, ftrbtns, 2);
     gui_set_activity_initial_selection(ftrbtns[default_selection ? 1 : 0].btn);
 
-    return await_yesno_activity_loop(act, help_url);
+    return await_yesno_activity_loop_ex(act, help_url, free_managed_activities);
 }
 
 // Generic Yes/No activity
 bool await_yesno_activity(const char* title, const char* message[], const size_t message_size,
     const bool default_selection, const char* help_url)
 {
-    return await_yesno_activity_impl(title, message, message_size, "Yes", "No", default_selection, help_url);
+    return await_yesno_activity_impl(title, message, message_size, "Yes", "No", default_selection, help_url, false);
+}
+
+bool await_yesno_activity_ex(const char* title, const char* message[], const size_t message_size,
+    const bool default_selection, const char* help_url, const bool free_managed_activities)
+{
+    return await_yesno_activity_impl(
+        title, message, message_size, "Yes", "No", default_selection, help_url, free_managed_activities);
 }
 
 // Variant of the Yes/No activity that is instead Skip/Yes
 bool await_skipyes_activity(const char* title, const char* message[], const size_t message_size,
     const bool default_selection, const char* help_url)
 {
-    return await_yesno_activity_impl(title, message, message_size, "Yes", "Skip", default_selection, help_url);
+    return await_yesno_activity_impl(title, message, message_size, "Yes", "Skip", default_selection, help_url, false);
 }
 
 bool await_signback_activity(const char* title, const char* message[], const size_t message_size,
     const bool default_selection, const char* help_url)
 {
-    return await_yesno_activity_impl(title, message, message_size, "Sign", "Back", default_selection, help_url);
+    return await_yesno_activity_impl(title, message, message_size, "Sign", "Back", default_selection, help_url, false);
 }
 
 bool await_signcancel_activity(const char* title, const char* message[], const size_t message_size,
     const bool default_selection, const char* help_url)
 {
-    return await_yesno_activity_impl(title, message, message_size, "Sign", "Cancel", default_selection, help_url);
+    return await_yesno_activity_impl(title, message, message_size, "Sign", "Cancel", default_selection, help_url, false);
+}
+
+bool await_signcancel_activity_ex(const char* title, const char* message[], const size_t message_size,
+    const bool default_selection, const char* help_url, const bool free_managed_activities)
+{
+    return await_yesno_activity_impl(
+        title, message, message_size, "Sign", "Cancel", default_selection, help_url, free_managed_activities);
 }
 
 // Variant of the Yes/No activity that is instead Continue/Back (latter in title bar)
@@ -644,8 +671,8 @@ bool await_continueback_activity(const char* title, const char* message[], const
         "Continue");
 }
 
-bool await_continueback_activity_with_continue_text(const char* title, const char* message[], const size_t message_size,
-    const bool default_selection, const char* help_url, const char* continue_text)
+bool await_continueback_activity_with_continue_text_ex(const char* title, const char* message[], const size_t message_size,
+    const bool default_selection, const char* help_url, const char* continue_text, const bool free_managed_activities)
 {
     // title is optional
     JADE_ASSERT(message);
@@ -668,7 +695,14 @@ bool await_continueback_activity_with_continue_text(const char* title, const cha
     gui_activity_t* const act = make_show_message_activity(message, message_size, title, hdrbtns, 2, &ftrbtn, 1);
     gui_set_activity_initial_selection((default_selection ? ftrbtn : hdrbtns[0]).btn);
 
-    return await_yesno_activity_loop(act, help_url);
+    return await_yesno_activity_loop_ex(act, help_url, free_managed_activities);
+}
+
+bool await_continueback_activity_with_continue_text(const char* title, const char* message[], const size_t message_size,
+    const bool default_selection, const char* help_url, const char* continue_text)
+{
+    return await_continueback_activity_with_continue_text_ex(
+        title, message, message_size, default_selection, help_url, continue_text, false);
 }
 
 // Updatable label with left/right arrows

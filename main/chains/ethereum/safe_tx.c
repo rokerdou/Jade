@@ -318,4 +318,20 @@ bool ethereum_safe_tx_confirm_summary_from_preflight(const uint32_t* const path,
         && chain_confirm_summary_add_bytes(
             summary, CHAIN_CONFIRM_FIELD_SAFE_TX_HASH, signing_hash, ETHEREUM_TX_SIGNING_HASH_LEN);
 }
+
+bool ethereum_safe_tx_confirm_summary_matches_preflight(const uint32_t* const path, const size_t path_len,
+    const ethereum_safe_tx_t* const tx, const ethereum_safe_tx_summary_t* const result,
+    const uint8_t signing_hash[ETHEREUM_TX_SIGNING_HASH_LEN], const chain_confirm_summary_t* const summary)
+{
+    if (!summary) {
+        return false;
+    }
+
+    chain_confirm_summary_t expected;
+    wally_bzero(&expected, sizeof(expected));
+    const bool ok = ethereum_safe_tx_confirm_summary_from_preflight(path, path_len, tx, result, signing_hash, &expected)
+        && chain_confirm_summary_equal(summary, &expected);
+    wally_bzero(&expected, sizeof(expected));
+    return ok;
+}
 #endif /* AMALGAMATED_BUILD */

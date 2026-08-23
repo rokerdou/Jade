@@ -61,6 +61,7 @@ static bool show_connect_screen = false;
 static volatile bool dashboard_redraw_requested = false;
 
 void dashboard_request_redraw(void) { dashboard_redraw_requested = true; }
+void dashboard_cancel_redraw_request(void) { dashboard_redraw_requested = false; }
 
 static bool dashboard_take_redraw_request(void)
 {
@@ -2665,7 +2666,7 @@ static void handle_btn(const int32_t btn)
         break;
 
     case BTN_UNLOCK:
-        auth_user_unlock_wallet_with_pin(SOURCE_SERIAL);
+        auth_user_unlock_wallet_with_pin(SOURCE_INTERNAL);
         break;
 
     case BTN_SESSION:

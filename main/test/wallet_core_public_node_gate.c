@@ -42,6 +42,10 @@ const keychain_t* keychain_get(void) { return &s_keychain; }
 
 bool keychain_has_pin(void) { return true; }
 
+void keychain_lock(void) {}
+
+void keychain_unlock(void) {}
+
 void wallet_get_fingerprint(uint8_t* const output, const size_t output_len)
 {
     if (output && output_len == sizeof(TEST_ROOT_FINGERPRINT)) {

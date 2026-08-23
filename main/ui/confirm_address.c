@@ -123,8 +123,19 @@ gui_activity_t* make_display_address_activities(const char* title, const bool sh
 
 bool show_confirm_address_activity(const char* address, const bool default_selection)
 {
+    return show_confirm_address_activity_ex(address, default_selection, false);
+}
+
+bool show_confirm_address_activity_ex(
+    const char* address, const bool default_selection, const bool free_managed_activities)
+{
     JADE_ASSERT(address);
     // warning_msg is optional
+
+    if (free_managed_activities) {
+        gui_activity_t* const act_clear = gui_make_activity();
+        gui_set_current_activity_ex(act_clear, true);
+    }
 
     const bool show_tick = true;
     gui_activity_t* act_addr2 = NULL;

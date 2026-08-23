@@ -21,7 +21,8 @@ static bool tron_authorize_copy_path(
     return true;
 }
 
-bool tron_authorize_tx(const tron_tx_preflight_request_t* const request, chain_authorization_t* const authorization)
+bool tron_authorize_tx_ex(const tron_tx_preflight_request_t* const request, chain_authorization_t* const authorization,
+    const bool free_managed_activities)
 {
     if (!request || !authorization) {
         return false;
@@ -45,7 +46,7 @@ bool tron_authorize_tx(const tron_tx_preflight_request_t* const request, chain_a
     tron_tx_preflight_result_t result;
     const bool ok = tron_tx_preflight(&trusted_request, &result)
         && tron_confirm_summary_from_preflight(&trusted_request, &result, &local_authorization.summary)
-        && show_chain_confirm_summary_activity(&local_authorization.summary);
+        && show_chain_confirm_summary_activity_ex(&local_authorization.summary, free_managed_activities);
     wally_bzero(&result, sizeof(result));
     wally_bzero(derived_signer, sizeof(derived_signer));
 
@@ -57,5 +58,10 @@ bool tron_authorize_tx(const tron_tx_preflight_request_t* const request, chain_a
     memcpy(authorization, &local_authorization, sizeof(*authorization));
     wally_bzero(&local_authorization, sizeof(local_authorization));
     return true;
+}
+
+bool tron_authorize_tx(const tron_tx_preflight_request_t* const request, chain_authorization_t* const authorization)
+{
+    return tron_authorize_tx_ex(request, authorization, false);
 }
 #endif /* AMALGAMATED_BUILD */

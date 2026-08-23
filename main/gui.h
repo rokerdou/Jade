@@ -466,7 +466,7 @@ void gui_set_current_activity_ex(gui_activity_t* new_current, bool free_managed_
 void gui_set_current_activity(gui_activity_t* new_current);
 
 wait_event_data_t* gui_activity_make_wait_event_data(gui_activity_t* activity);
-void gui_activity_register_event(
+activity_event_t* gui_activity_register_event(
     gui_activity_t* activity, const char* event_base, uint32_t event_id, esp_event_handler_t handler, void* args);
 bool gui_activity_wait_event(gui_activity_t* activity, const char* event_base, uint32_t event_id,
     esp_event_base_t* trigger_event_base, int32_t* trigger_event_id, void** trigger_event_data, TickType_t max_wait);

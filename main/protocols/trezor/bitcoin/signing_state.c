@@ -31,6 +31,16 @@ static void trezor_bitcoin_transaction_free(trezor_bitcoin_transaction_t* const 
     free(tx);
 }
 
+static bool trezor_bitcoin_signing_is_current_meta_ack(
+    const trezor_bitcoin_signing_state_t* const state, const trezor_bitcoin_transaction_t* const tx_ack)
+{
+    return state && tx_ack && tx_ack->inputs_len == 0 && tx_ack->outputs_len == 0 && tx_ack->has_inputs_cnt
+        && tx_ack->has_outputs_cnt && tx_ack->inputs_cnt == state->request.inputs_count
+        && tx_ack->outputs_cnt == state->request.outputs_count
+        && (!tx_ack->has_version || tx_ack->version == state->request.version)
+        && (!tx_ack->has_lock_time || tx_ack->lock_time == state->request.lock_time);
+}
+
 static void trezor_bitcoin_signing_clear_multisig_redeem_scripts(trezor_bitcoin_signing_state_t* const state)
 {
     if (!state) {
@@ -105,7 +115,7 @@ bool trezor_bitcoin_signing_init(
     if (!trezor_bitcoin_sign_tx_decode(payload, payload_len, &state->request)) {
         return false;
     }
-    state->phase = TREZOR_BITCOIN_SIGNING_PHASE_EXPECT_META;
+    state->phase = TREZOR_BITCOIN_SIGNING_PHASE_EXPECT_INPUT;
     return true;
 }
 
@@ -122,11 +132,8 @@ bool trezor_bitcoin_signing_apply_tx_ack(
         if (!tx_ack) {
             return false;
         }
-        const bool ok = trezor_bitcoin_tx_ack_decode(payload, payload_len, tx_ack) && tx_ack->inputs_len == 0
-            && tx_ack->outputs_len == 0 && tx_ack->has_inputs_cnt && tx_ack->has_outputs_cnt
-            && tx_ack->inputs_cnt == state->request.inputs_count && tx_ack->outputs_cnt == state->request.outputs_count
-            && (!tx_ack->has_version || tx_ack->version == state->request.version)
-            && (!tx_ack->has_lock_time || tx_ack->lock_time == state->request.lock_time);
+        const bool ok = trezor_bitcoin_tx_ack_decode(payload, payload_len, tx_ack)
+            && trezor_bitcoin_signing_is_current_meta_ack(state, tx_ack);
         trezor_bitcoin_transaction_free(tx_ack);
         if (ok) {
             state->phase = TREZOR_BITCOIN_SIGNING_PHASE_EXPECT_INPUT;
@@ -142,6 +149,11 @@ bool trezor_bitcoin_signing_apply_tx_ack(
             || !trezor_bitcoin_tx_ack_decode_with_multisig_fingerprints(payload, payload_len, tx_ack, &fingerprints)) {
             trezor_bitcoin_transaction_free(tx_ack);
             return false;
+        }
+        if (state->inputs_len == 0 && trezor_bitcoin_signing_is_current_meta_ack(state, tx_ack)) {
+            trezor_bitcoin_tx_ack_multisig_fingerprints_clear(&fingerprints);
+            trezor_bitcoin_transaction_free(tx_ack);
+            return true;
         }
         if (tx_ack->inputs_len != 1 || tx_ack->outputs_len != 0 || state->inputs_len >= state->request.inputs_count) {
             wally_bzero(&fingerprints, sizeof(fingerprints));

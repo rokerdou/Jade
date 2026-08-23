@@ -15,6 +15,11 @@
 #include <wally_bip39.h>
 #include <wally_elements.h>
 
+#ifdef ESP_PLATFORM
+#include <freertos/FreeRTOS.h>
+#include <freertos/semphr.h>
+#endif
+
 // Size of keydata_t elements - ext-key, ga-path, master-blinding-key
 #define SERIALIZED_KEY_LEN (BIP32_SERIALIZED_LEN + HMAC_SHA512_LEN + HMAC_SHA512_LEN)
 
@@ -36,9 +41,37 @@ static size_t mnemonic_entropy_len = 0;
 // Cached key flags
 static uint8_t key_flags = 0;
 
+#ifdef ESP_PLATFORM
+static SemaphoreHandle_t keychain_mutex = NULL;
+
+static void keychain_init_mutex(void)
+{
+    if (!keychain_mutex) {
+        keychain_mutex = xSemaphoreCreateRecursiveMutex();
+        JADE_ASSERT(keychain_mutex);
+    }
+}
+
+void keychain_lock(void)
+{
+    keychain_init_mutex();
+    JADE_ASSERT(xSemaphoreTakeRecursive(keychain_mutex, portMAX_DELAY) == pdTRUE);
+}
+
+void keychain_unlock(void)
+{
+    JADE_ASSERT(keychain_mutex);
+    JADE_ASSERT(xSemaphoreGiveRecursive(keychain_mutex) == pdTRUE);
+}
+#else
+void keychain_lock(void) {}
+void keychain_unlock(void) {}
+#endif
+
 void keychain_set(const keychain_t* src, const uint8_t userdata, const bool temporary)
 {
     JADE_ASSERT(src);
+    keychain_lock();
 
     // We will hold any loaded keychain here - saves malloc'ing a struct which
     // can fragment DRAM (as will be persistent once allocated).
@@ -63,10 +96,12 @@ void keychain_set(const keychain_t* src, const uint8_t userdata, const bool temp
 
     // Store whether this is intended to be a temporary keychain
     keychain_temporary = temporary;
+    keychain_unlock();
 }
 
 void keychain_clear(void)
 {
+    keychain_lock();
     if (keychain_data) {
         JADE_WALLY_VERIFY(wally_bzero(keychain_data, sizeof(keychain_t)));
         keychain_data = NULL;
@@ -81,20 +116,31 @@ void keychain_clear(void)
 
     keychain_userdata = 0;
     keychain_temporary = false;
+    keychain_unlock();
 }
 
-const keychain_t* keychain_get(void) { return keychain_data; }
+const keychain_t* keychain_get(void)
+{
+    keychain_lock();
+    const keychain_t* const ret = keychain_data;
+    keychain_unlock();
+    return ret;
+}
 
 bool keychain_requires_passphrase(void)
 {
+    keychain_lock();
     // We require a passphrase when we have mnemonic entropy but no key data as yet
     // ie. the final wallet derivation step has yet to occur.
     // (This may be an explicitly user-provided phrase, or may be the default/blank phrase)
-    return !keychain_data && mnemonic_entropy_len;
+    const bool ret = !keychain_data && mnemonic_entropy_len;
+    keychain_unlock();
+    return ret;
 }
 
 void keychain_set_passphrase_frequency(const passphrase_freq_t freq)
 {
+    keychain_lock();
     switch (freq) {
     case PASSPHRASE_NEVER:
         key_flags |= KEY_FLAGS_AUTO_DEFAULT_PASSPHRASE;
@@ -113,43 +159,61 @@ void keychain_set_passphrase_frequency(const passphrase_freq_t freq)
     default:
         JADE_LOGE("Unexpected passphrase frequency flag ignored: %u", freq);
     }
+    keychain_unlock();
 }
 
 passphrase_freq_t keychain_get_passphrase_freq(void)
 {
+    keychain_lock();
     // NOTE: Both flags set implies 'once only'
-    return (key_flags & KEY_FLAGS_USER_TO_ENTER_PASSPHRASE)
+    const passphrase_freq_t ret = (key_flags & KEY_FLAGS_USER_TO_ENTER_PASSPHRASE)
         ? ((key_flags & KEY_FLAGS_AUTO_DEFAULT_PASSPHRASE) ? PASSPHRASE_ONCE : PASSPHRASE_ALWAYS)
         : PASSPHRASE_NEVER;
+    keychain_unlock();
+    return ret;
 }
 
 void keychain_set_passphrase_type(const passphrase_type_t type)
 {
+    keychain_lock();
     if (type == PASSPHRASE_WORDLIST) {
         key_flags |= KEY_FLAGS_WORDLIST_PASSPHRASE;
     } else {
         key_flags &= ~KEY_FLAGS_WORDLIST_PASSPHRASE;
     }
+    keychain_unlock();
 }
 
 passphrase_type_t keychain_get_passphrase_type(void)
 {
-    return (key_flags & KEY_FLAGS_WORDLIST_PASSPHRASE) ? PASSPHRASE_WORDLIST : PASSPHRASE_FREETEXT;
+    keychain_lock();
+    const passphrase_type_t ret = (key_flags & KEY_FLAGS_WORDLIST_PASSPHRASE) ? PASSPHRASE_WORDLIST : PASSPHRASE_FREETEXT;
+    keychain_unlock();
+    return ret;
 }
 
 void keychain_set_confirm_export_blinding_key(const bool confirm_export)
 {
+    keychain_lock();
     if (confirm_export) {
         key_flags |= KEY_FLAGS_CONFIRM_EXPORT_BLINDING_KEY;
     } else {
         key_flags &= ~KEY_FLAGS_CONFIRM_EXPORT_BLINDING_KEY;
     }
+    keychain_unlock();
 }
 
-bool keychain_get_confirm_export_blinding_key(void) { return (key_flags & KEY_FLAGS_CONFIRM_EXPORT_BLINDING_KEY); }
+bool keychain_get_confirm_export_blinding_key(void)
+{
+    keychain_lock();
+    const bool ret = key_flags & KEY_FLAGS_CONFIRM_EXPORT_BLINDING_KEY;
+    keychain_unlock();
+    return ret;
+}
 
 void keychain_persist_key_flags(void)
 {
+    keychain_lock();
     // If both the 'auto-default (ie. empty) passphrase' flag and the 'ask user for passphrase'
     // flags are set, then we ask the user for a passphrase *just for the
     // current session/next-login*.
@@ -162,31 +226,44 @@ void keychain_persist_key_flags(void)
     } else {
         storage_set_key_flags(key_flags);
     }
+    keychain_unlock();
 }
 
 // Only for use under specific circumstances during wallet setup, when the initialisation is
 // started as standard/pin-protected, but the user then wants to flip to temporary-wallet only.
 void keychain_set_temporary(void)
 {
+    keychain_lock();
     // This combination should only occur when part way through initial setup
     JADE_ASSERT(keychain_data);
     JADE_ASSERT(mnemonic_entropy_len);
     JADE_ASSERT(!keychain_temporary);
     JADE_ASSERT(!keychain_has_pin());
     keychain_temporary = true;
+    keychain_unlock();
 }
 
 bool keychain_has_temporary(void)
 {
+    keychain_lock();
     JADE_ASSERT(!keychain_temporary || keychain_data);
-    return keychain_temporary;
+    const bool ret = keychain_temporary;
+    keychain_unlock();
+    return ret;
 }
 
-uint8_t keychain_get_userdata(void) { return keychain_userdata; }
+uint8_t keychain_get_userdata(void)
+{
+    keychain_lock();
+    const uint8_t ret = keychain_userdata;
+    keychain_unlock();
+    return ret;
+}
 
 // Cache/clear mnemonic entropy (if using passphrase)
 void keychain_cache_mnemonic_entropy(const char* mnemonic)
 {
+    keychain_lock();
     JADE_ASSERT(mnemonic);
     JADE_ASSERT(!keychain_temporary);
     JADE_ASSERT(!mnemonic_entropy_len);
@@ -196,22 +273,26 @@ void keychain_cache_mnemonic_entropy(const char* mnemonic)
 
     // Only 12 or 24 word mnemonics are supported
     JADE_ASSERT(mnemonic_entropy_len == BIP39_ENTROPY_LEN_128 || mnemonic_entropy_len == BIP39_ENTROPY_LEN_256);
+    keychain_unlock();
 }
 
 // Clear the network type restriction
 void keychain_clear_network_type_restriction(void)
 {
+    keychain_lock();
     JADE_LOGI("Clearing network type restriction");
     // If we are not currently working with temporary keys, clear the keys from storage
     if (!keychain_has_temporary()) {
         storage_set_network_type_restriction(NETWORK_TYPE_NONE);
     }
     network_type_restriction = NETWORK_TYPE_NONE;
+    keychain_unlock();
 }
 
 // Set the network type restriction (must currently be 'none', or same as passed).
 void keychain_set_network_type_restriction(const network_type_t network_type)
 {
+    keychain_lock();
     JADE_ASSERT(keychain_is_network_type_consistent(network_type));
 
     if (network_type_restriction == NETWORK_TYPE_NONE) {
@@ -228,15 +309,25 @@ void keychain_set_network_type_restriction(const network_type_t network_type)
             network_type_restriction = network_type;
         }
     }
+    keychain_unlock();
 }
 
 // Get the current network type restriction
-network_type_t keychain_get_network_type_restriction(void) { return network_type_restriction; }
+network_type_t keychain_get_network_type_restriction(void)
+{
+    keychain_lock();
+    const network_type_t ret = network_type_restriction;
+    keychain_unlock();
+    return ret;
+}
 
 // Compare pinned/restricted network type and the type of the network passed
 bool keychain_is_network_type_consistent(const network_type_t network_type)
 {
-    return network_type_restriction == NETWORK_TYPE_NONE || network_type == network_type_restriction;
+    keychain_lock();
+    const bool ret = network_type_restriction == NETWORK_TYPE_NONE || network_type == network_type_restriction;
+    keychain_unlock();
+    return ret;
 }
 
 bool keychain_is_network_id_consistent(const network_t network_id)
@@ -247,11 +338,13 @@ bool keychain_is_network_id_consistent(const network_t network_id)
 
 const struct ext_key* keychain_cached_service(const struct ext_key* const service, const bool subaccount_root)
 {
+    keychain_lock();
     JADE_ASSERT(keychain_data);
 
     // If no service passed, invalidate cache
     if (!service) {
         keychain_data->cached_service = NULL;
+        keychain_unlock();
         return NULL;
     }
 
@@ -263,7 +356,10 @@ const struct ext_key* keychain_cached_service(const struct ext_key* const servic
     }
 
     // Return cached value
-    return subaccount_root ? &keychain_data->cached_gaservice_subact_root : &keychain_data->cached_gaservice_main_root;
+    const struct ext_key* const ret
+        = subaccount_root ? &keychain_data->cached_gaservice_subact_root : &keychain_data->cached_gaservice_main_root;
+    keychain_unlock();
+    return ret;
 }
 
 void keychain_get_new_mnemonic(char** mnemonic, const size_t nwords)
@@ -278,11 +374,29 @@ void keychain_get_new_mnemonic(char** mnemonic, const size_t nwords)
     SENSITIVE_PUSH(entropy, sizeof(entropy));
 
     const size_t entropy_len = nwords == 12 ? BIP39_ENTROPY_LEN_128 : BIP39_ENTROPY_LEN_256;
-    get_random(entropy, entropy_len);
+    get_strong_random(entropy, entropy_len);
     const int wret = bip39_mnemonic_from_bytes(NULL, entropy, entropy_len, mnemonic);
     SENSITIVE_POP(entropy);
     JADE_WALLY_VERIFY(wret);
     JADE_WALLY_VERIFY(bip39_mnemonic_validate(NULL, *mnemonic));
+}
+
+bool keychain_get_mnemonic_from_entropy(const uint8_t* const entropy, const size_t entropy_len, char** const mnemonic)
+{
+    JADE_INIT_OUT_PPTR(mnemonic);
+    if (!entropy || (entropy_len != BIP39_ENTROPY_LEN_128 && entropy_len != BIP39_ENTROPY_LEN_256)) {
+        return false;
+    }
+
+    if (bip39_mnemonic_from_bytes(NULL, entropy, entropy_len, mnemonic) != WALLY_OK || !*mnemonic) {
+        return false;
+    }
+    if (bip39_mnemonic_validate(NULL, *mnemonic) != WALLY_OK) {
+        JADE_WALLY_VERIFY(wally_free_string(*mnemonic));
+        *mnemonic = NULL;
+        return false;
+    }
+    return true;
 }
 
 // Derive master key from given seed
@@ -350,7 +464,9 @@ bool keychain_derive_from_mnemonic(const char* mnemonic, const char* passphrase,
 // Derive keys from cached mnemonic and passed passphrase
 bool keychain_complete_derivation_with_passphrase(const char* passphrase)
 {
+    keychain_lock();
     if (!passphrase || !keychain_requires_passphrase()) {
+        keychain_unlock();
         return false;
     }
 
@@ -377,6 +493,7 @@ bool keychain_complete_derivation_with_passphrase(const char* passphrase)
 
 cleanup:
     SENSITIVE_POP(&keydata);
+    keychain_unlock();
     return ret;
 }
 
@@ -536,11 +653,14 @@ static bool keychain_load_and_decrypt_blob(
 
 bool keychain_store(const uint8_t* aeskey, const size_t aeslen)
 {
+    keychain_lock();
     if (!aeskey || aeslen != AES_KEY_LEN_256) {
+        keychain_unlock();
         return false;
     }
     if (!keychain_data && !mnemonic_entropy_len) {
         // No keychain data to store
+        keychain_unlock();
         return false;
     }
 
@@ -574,6 +694,7 @@ bool keychain_store(const uint8_t* aeskey, const size_t aeslen)
     if (!keychain_encrypt_and_save_blob(aeskey, aeslen, p_serialized_data, serialized_data_len)) {
         JADE_LOGE("Failed to encrypt and save key data");
         SENSITIVE_POP(serialized);
+        keychain_unlock();
         return false;
     }
     SENSITIVE_POP(serialized);
@@ -582,20 +703,25 @@ bool keychain_store(const uint8_t* aeskey, const size_t aeslen)
     keychain_clear_network_type_restriction();
     has_encrypted_blob = true;
 
+    keychain_unlock();
     return true;
 }
 
 bool keychain_load(const uint8_t* aeskey, const size_t aeslen)
 {
+    keychain_lock();
     if (!aeskey || aeslen != AES_KEY_LEN_256) {
+        keychain_unlock();
         return false;
     }
     if (keychain_data || mnemonic_entropy_len) {
         // We already have loaded keychain data - do not overwrite
+        keychain_unlock();
         return false;
     }
     if (!keychain_has_pin()) {
         // No valid keychain data in storage to load
+        keychain_unlock();
         return false;
     }
 
@@ -609,6 +735,7 @@ bool keychain_load(const uint8_t* aeskey, const size_t aeslen)
     if (!keychain_load_and_decrypt_blob(aeskey, aeslen, serialized, sizeof(serialized), &serialized_data_len)) {
         JADE_LOGE("Failed to load and decrypt blob from storage");
         SENSITIVE_POP(serialized);
+        keychain_unlock();
         return false;
     }
 
@@ -627,22 +754,27 @@ bool keychain_load(const uint8_t* aeskey, const size_t aeslen)
     } else {
         JADE_LOGE("Unexpected length of decrypted serialised data: %d", serialized_data_len);
         SENSITIVE_POP(serialized);
+        keychain_unlock();
         return false;
     }
     SENSITIVE_POP(serialized);
 
+    keychain_unlock();
     return true;
 }
 
 bool keychain_reencrypt(
     const uint8_t* curr_aeskey, const size_t curr_aeslen, const uint8_t* new_aeskey, const size_t new_aeslen)
 {
+    keychain_lock();
     if (!curr_aeskey || curr_aeslen != AES_KEY_LEN_256 || !new_aeskey || new_aeslen != AES_KEY_LEN_256) {
+        keychain_unlock();
         return false;
     }
 
     if (!keychain_has_pin()) {
         // No valid keychain data in storage to load
+        keychain_unlock();
         return false;
     }
 
@@ -657,6 +789,7 @@ bool keychain_reencrypt(
             curr_aeskey, curr_aeslen, serialized, sizeof(serialized), &serialized_data_len)) {
         JADE_LOGE("Failed to load and decrypt blob from storage");
         SENSITIVE_POP(serialized);
+        keychain_unlock();
         return false;
     }
 
@@ -665,22 +798,32 @@ bool keychain_reencrypt(
     if (!keychain_encrypt_and_save_blob(new_aeskey, new_aeslen, serialized, serialized_data_len)) {
         JADE_LOGE("Failed to encrypt and save key data");
         SENSITIVE_POP(serialized);
+        keychain_unlock();
         return false;
     }
     SENSITIVE_POP(serialized);
 
+    keychain_unlock();
     return true;
 }
 
-bool keychain_has_pin(void) { return has_encrypted_blob; }
+bool keychain_has_pin(void)
+{
+    keychain_lock();
+    const bool ret = has_encrypted_blob;
+    keychain_unlock();
+    return ret;
+}
 
 uint8_t keychain_pin_attempts_remaining(void) { return storage_get_counter(); }
 
 void keychain_erase_encrypted(void)
 {
+    keychain_lock();
     storage_erase_encrypted_blob();
     keychain_clear_network_type_restriction();
     has_encrypted_blob = false;
+    keychain_unlock();
 }
 
 bool keychain_get_new_privatekey(uint8_t* privatekey, const size_t size)
@@ -690,7 +833,7 @@ bool keychain_get_new_privatekey(uint8_t* privatekey, const size_t size)
     }
 
     for (size_t attempts = 0; attempts < 4; ++attempts) {
-        get_random(privatekey, size);
+        get_strong_random(privatekey, size);
 
         if (wally_ec_private_key_verify(privatekey, size) == WALLY_OK) {
             JADE_LOGD("Created new random private key");
@@ -705,11 +848,13 @@ bool keychain_get_new_privatekey(uint8_t* privatekey, const size_t size)
 
 void keychain_init_cache(void)
 {
+    keychain_lock();
     // Cache whether we are restricted to main/test networks and whether we have an encrypted blob
     network_type_restriction = storage_get_network_type_restriction();
     has_encrypted_blob = keychain_pin_attempts_remaining() > 0;
 
     // Cache the user key/passphrase preferences
     key_flags = storage_get_key_flags();
+    keychain_unlock();
 }
 #endif // AMALGAMATED_BUILD

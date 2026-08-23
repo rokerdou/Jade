@@ -16,11 +16,38 @@
 #include <wally_core.h>
 #include <wally_bip32.h>
 
-bool wallet_core_is_unlocked(void) { return keychain_get() != NULL; }
+void wallet_core_init(void)
+{
+    keychain_lock();
+    keychain_unlock();
+}
 
-bool wallet_core_is_initialized(void) { return keychain_has_pin(); }
+static void wallet_core_lock(void) { keychain_lock(); }
+static void wallet_core_unlock(void) { keychain_unlock(); }
 
-bool wallet_core_is_ready(void) { return wallet_core_is_initialized() && wallet_core_is_unlocked(); }
+bool wallet_core_is_unlocked(void)
+{
+    wallet_core_lock();
+    const bool ret = keychain_get() != NULL;
+    wallet_core_unlock();
+    return ret;
+}
+
+bool wallet_core_is_initialized(void)
+{
+    wallet_core_lock();
+    const bool ret = keychain_has_pin();
+    wallet_core_unlock();
+    return ret;
+}
+
+bool wallet_core_is_ready(void)
+{
+    wallet_core_lock();
+    const bool ret = keychain_has_pin() && keychain_get() != NULL;
+    wallet_core_unlock();
+    return ret;
+}
 
 bool wallet_core_path_valid(const wallet_core_path_t* const path)
 {
@@ -29,17 +56,22 @@ bool wallet_core_path_valid(const wallet_core_path_t* const path)
 
 bool wallet_core_get_fingerprint(uint8_t* const output, const size_t output_len)
 {
+    wallet_core_lock();
     if (!wallet_core_is_unlocked() || !output || output_len != BIP32_KEY_FINGERPRINT_LEN) {
+        wallet_core_unlock();
         return false;
     }
 
     wallet_get_fingerprint(output, output_len);
+    wallet_core_unlock();
     return true;
 }
 
 static bool derive_private_key(const wallet_core_path_t* const path, uint8_t* const private_key, const size_t key_len)
 {
+    wallet_core_lock();
     if (!wallet_core_is_unlocked() || !wallet_core_path_valid(path) || !private_key || key_len != EC_PRIVATE_KEY_LEN) {
+        wallet_core_unlock();
         return false;
     }
 
@@ -56,13 +88,16 @@ static bool derive_private_key(const wallet_core_path_t* const path, uint8_t* co
     WALLET_CORE_TRACE("wcore:derive_pop");
     SENSITIVE_POP(&derived);
     WALLET_CORE_TRACE(ok ? "wcore:derive_ok" : "wcore:derive_fail");
+    wallet_core_unlock();
     return ok;
 }
 
 bool wallet_core_get_public_key(const wallet_core_path_t* const path, const wallet_core_pubkey_format_t format,
     uint8_t* const output, const size_t output_len)
 {
+    wallet_core_lock();
     if (!wallet_core_is_unlocked() || !wallet_core_path_valid(path) || !output || output_len != (size_t)format) {
+        wallet_core_unlock();
         return false;
     }
 
@@ -71,11 +106,13 @@ bool wallet_core_get_public_key(const wallet_core_path_t* const path, const wall
         WALLET_CORE_TRACE("wcore:pubc_hdkey");
         if (!wallet_get_hdkey(path->parts, path->len, BIP32_FLAG_KEY_PUBLIC | BIP32_FLAG_SKIP_HASH, &derived)) {
             WALLET_CORE_TRACE("wcore:pubc_fail");
+            wallet_core_unlock();
             return false;
         }
         memcpy(output, derived.pub_key, output_len);
         JADE_WALLY_VERIFY(wally_bzero(&derived, sizeof(derived)));
         WALLET_CORE_TRACE("wcore:pubc_ok");
+        wallet_core_unlock();
         return true;
     }
 
@@ -93,9 +130,11 @@ bool wallet_core_get_public_key(const wallet_core_path_t* const path, const wall
         WALLET_CORE_TRACE("wcore:pubu_pop");
         SENSITIVE_POP(compressed_pubkey);
         WALLET_CORE_TRACE(ok ? "wcore:pubu_ok" : "wcore:pubu_fail");
+        wallet_core_unlock();
         return ok;
     }
 
+    wallet_core_unlock();
     return false;
 }
 
@@ -151,8 +190,10 @@ static bool wallet_core_public_node_to_base58(
 bool wallet_core_get_public_node_with_version(
     const wallet_core_path_t* const path, const uint32_t bip32_public_version, wallet_core_public_node_t* const output)
 {
+    wallet_core_lock();
     if (!wallet_core_is_unlocked() || !wallet_core_path_valid(path) || !output
         || !wallet_core_bip32_public_version_allowed(bip32_public_version)) {
+        wallet_core_unlock();
         return false;
     }
 
@@ -186,6 +227,7 @@ bool wallet_core_get_public_node_with_version(
         JADE_WALLY_VERIFY(wally_free_string(xpub));
     }
     JADE_WALLY_VERIFY(wally_bzero(&derived, sizeof(derived)));
+    wallet_core_unlock();
     return ok;
 }
 
@@ -197,8 +239,10 @@ bool wallet_core_get_public_node(const wallet_core_path_t* const path, wallet_co
 bool wallet_core_sign_digest_ecdsa_recoverable(const wallet_core_path_t* const path, const uint8_t* const digest,
     const size_t digest_len, uint8_t* const signature, const size_t signature_len)
 {
+    wallet_core_lock();
     if (!wallet_core_is_unlocked() || !wallet_core_path_valid(path) || !digest || digest_len != SHA256_LEN || !signature
         || signature_len != EC_SIGNATURE_RECOVERABLE_LEN) {
+        wallet_core_unlock();
         return false;
     }
 
@@ -216,5 +260,6 @@ bool wallet_core_sign_digest_ecdsa_recoverable(const wallet_core_path_t* const p
     WALLET_CORE_TRACE("wcore:sign_pop");
     SENSITIVE_POP(private_key);
     WALLET_CORE_TRACE(ok ? "wcore:sign_ok" : "wcore:sign_fail");
+    wallet_core_unlock();
     return ok;
 }

@@ -34,6 +34,9 @@ bool bitcoin_path_is_p2sh_p2wpkh_signing(const uint32_t* path, size_t path_len, 
 bool bitcoin_path_is_p2pkh_change(const uint32_t* path, size_t path_len, bool testnet, uint32_t account);
 bool bitcoin_path_is_p2wpkh_change(const uint32_t* path, size_t path_len, bool testnet, uint32_t account);
 bool bitcoin_path_is_p2sh_p2wpkh_change(const uint32_t* path, size_t path_len, bool testnet, uint32_t account);
+bool bitcoin_path_is_p2pkh_internal(const uint32_t* path, size_t path_len, bool testnet, uint32_t account);
+bool bitcoin_path_is_p2wpkh_internal(const uint32_t* path, size_t path_len, bool testnet, uint32_t account);
+bool bitcoin_path_is_p2sh_p2wpkh_internal(const uint32_t* path, size_t path_len, bool testnet, uint32_t account);
 bool bitcoin_path_is_multisig_signing(
     const uint32_t* path, size_t path_len, bool testnet, bitcoin_multisig_path_type_t path_type);
 bool bitcoin_path_is_multisig_change(

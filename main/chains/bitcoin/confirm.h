@@ -16,9 +16,12 @@ typedef struct {
     char policy[BITCOIN_CONFIRM_POLICY_MAX_LEN];
     char to[BITCOIN_ADDRESS_MAX_LEN];
     uint64_t amount;
+    uint64_t self;
     uint64_t change;
     uint64_t fee;
     uint64_t fee_rate_sats_per_vbyte;
+    uint32_t lock_time;
+    uint32_t sequence;
 } bitcoin_confirm_request_t;
 
 bool bitcoin_confirm_summary_from_request(const bitcoin_confirm_request_t* request, chain_confirm_summary_t* summary);

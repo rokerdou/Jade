@@ -38,6 +38,7 @@ typedef enum {
     CHAIN_CONFIRM_FIELD_SAFE,
     CHAIN_CONFIRM_FIELD_TO,
     CHAIN_CONFIRM_FIELD_AMOUNT,
+    CHAIN_CONFIRM_FIELD_SELF,
     CHAIN_CONFIRM_FIELD_CHANGE,
     CHAIN_CONFIRM_FIELD_TOKEN_CONTRACT,
     CHAIN_CONFIRM_FIELD_TOKEN_RECIPIENT,
@@ -48,6 +49,7 @@ typedef enum {
     CHAIN_CONFIRM_FIELD_MAX_FEE,
     CHAIN_CONFIRM_FIELD_FEE,
     CHAIN_CONFIRM_FIELD_FEE_RATE,
+    CHAIN_CONFIRM_FIELD_TX_FLAGS,
     CHAIN_CONFIRM_FIELD_FEE_LIMIT,
     CHAIN_CONFIRM_FIELD_CALLDATA_HASH,
     CHAIN_CONFIRM_FIELD_SAFE_TX_HASH,
@@ -99,5 +101,6 @@ bool chain_confirm_summary_add_path(
     chain_confirm_summary_t* summary, chain_confirm_field_kind_t kind, const uint32_t* path, size_t path_len);
 bool chain_confirm_summary_add_text(chain_confirm_summary_t* summary, chain_confirm_field_kind_t kind, const char* text);
 bool chain_confirm_summary_has_field(const chain_confirm_summary_t* summary, chain_confirm_field_kind_t kind);
+bool chain_confirm_summary_equal(const chain_confirm_summary_t* lhs, const chain_confirm_summary_t* rhs);
 
 #endif /* CHAIN_CONFIRM_SUMMARY_H_ */

@@ -232,21 +232,18 @@ void sign_message_process(void* process_ptr)
         }
     }
 
-    // If the path and message suggest a gdk login challenge, just sign
-    // the message without prompting the user to explicitly confirm.
-    // (Otherwise the user has to confirm message or hash and the path.)
-    const bool auto_sign = isGdkLoginChallenge(path, path_len, message, msg_len);
-    if (auto_sign) {
-        JADE_LOGI("Auto-signing GDK login challenge message");
-    } else {
-        // Ask the user to confirm signing the message
-        if (!confirm_sign_message(message, msg_len, message_hash, sizeof(message_hash), pathstr)) {
-            JADE_LOGW("User declined to sign message");
-            jade_process_reject_message(process, CBOR_RPC_USER_CANCELLED, "User declined to sign message");
-            goto cleanup;
-        }
-        JADE_LOGD("User pressed accept");
+    // Older Jade/GDK flows auto-signed a very narrow login challenge after
+    // unlock. This firmware requires on-device confirmation for every
+    // private-key signature, even when the wallet is already unlocked.
+    if (isGdkLoginChallenge(path, path_len, message, msg_len)) {
+        JADE_LOGI("GDK login challenge requires user confirmation");
     }
+    if (!confirm_sign_message(message, msg_len, message_hash, sizeof(message_hash), pathstr)) {
+        JADE_LOGW("User declined to sign message");
+        jade_process_reject_message(process, CBOR_RPC_USER_CANCELLED, "User declined to sign message");
+        goto cleanup;
+    }
+    JADE_LOGD("User pressed accept");
 
     // Send signature replies.
     // NOTE: currently we have two message flows - the backward compatible version
@@ -259,9 +256,7 @@ void sign_message_process(void* process_ptr)
         JADE_ASSERT(ae_host_commitment);
         JADE_ASSERT(ae_host_commitment_len == WALLY_HOST_COMMITMENT_LEN);
 
-        if (!auto_sign) {
-            display_processing_message_activity();
-        }
+        display_processing_message_activity();
 
         // Compute signer-commitment
         uint8_t ae_signer_commitment[WALLY_S2C_OPENING_LEN];

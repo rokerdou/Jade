@@ -16,28 +16,24 @@ void get_master_blinding_key_process(void* process_ptr)
     ASSERT_CURRENT_MESSAGE(process, "get_master_blinding_key");
     ASSERT_KEYCHAIN_UNLOCKED_BY_MESSAGE_SOURCE(process);
 
-    // Ask the user if necessary
-    if (keychain_get_confirm_export_blinding_key()) {
-        // Optional field to suppress asking user for permission and instead
-        // error in the cases where we would normally need to ask the user.
-        bool only_if_silent = false;
+    // Optional field to suppress asking user for permission and instead error
+    // when this firmware policy requires confirmation.
+    bool only_if_silent = false;
 
-        CborValue params;
-        const CborError cberr = cbor_value_map_find_value(&process->ctx.value, CBOR_RPC_TAG_PARAMS, &params);
-        if (cberr == CborNoError || cbor_value_is_valid(&params) || cbor_value_is_map(&params)) {
-            // This field is optional and defaults to false if not present (initialized above)
-            only_if_silent = rpc_get_bool_or("only_if_silent", &params, false);
-        }
-
-        const char* question[] = { "Export master", "blinding key?" };
-        if (only_if_silent || !await_yesno_activity("Blinding Key", question, 2, true, "blkstrm.com/blindingkey")) {
-            JADE_LOGW("User declined to export master blinding key");
-            jade_process_reject_message(
-                process, CBOR_RPC_USER_CANCELLED, "User declined to export master blinding key");
-            goto cleanup;
-        }
-        JADE_LOGD("User pressed accept");
+    CborValue params;
+    const CborError cberr = cbor_value_map_find_value(&process->ctx.value, CBOR_RPC_TAG_PARAMS, &params);
+    if (cberr == CborNoError && cbor_value_is_valid(&params) && cbor_value_is_map(&params)) {
+        // This field is optional and defaults to false if not present.
+        only_if_silent = rpc_get_bool_or("only_if_silent", &params, false);
     }
+
+    const char* question[] = { "Export master", "blinding key?" };
+    if (only_if_silent || !await_yesno_activity("Blinding Key", question, 2, true, "blkstrm.com/blindingkey")) {
+        JADE_LOGW("User declined to export master blinding key");
+        jade_process_reject_message(process, CBOR_RPC_USER_CANCELLED, "User declined to export master blinding key");
+        goto cleanup;
+    }
+    JADE_LOGD("User pressed accept");
 
     // NOTE: 'master_unblinding_key' is stored here as the full output of hmac512, when according to slip-0077
     // the master unblinding key is only the second half of that - ie. 256 bits

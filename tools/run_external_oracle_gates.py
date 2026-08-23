@@ -886,8 +886,10 @@ class ScriptedBtcSignTxClient:
         coin_name: str = "Testnet",
         inputs_count: int = 1,
         outputs_count: int = 1,
+        lock_time: int = 0,
         input_prev_hashes: list[bytes] | None = None,
         input_amounts: list[int] | None = None,
+        input_sequences: list[int] | None = None,
         output_amounts: list[int] | None = None,
         output_addresses: list[str | None] | None = None,
         output_paths: list[list[int] | None] | None = None,
@@ -899,8 +901,10 @@ class ScriptedBtcSignTxClient:
         self.coin_name = coin_name
         self.inputs_count = inputs_count
         self.outputs_count = outputs_count
+        self.lock_time = lock_time
         self.input_prev_hashes = input_prev_hashes or [btc_tx_prev_hash()]
         self.input_amounts = input_amounts or [100_000]
+        self.input_sequences = input_sequences or ([0xFFFFFFFF] * inputs_count)
         self.output_amounts = output_amounts or [90_000]
         self.output_addresses = output_addresses or [btc_tx_output_address()]
         self.output_paths = output_paths or [None]
@@ -925,7 +929,7 @@ class ScriptedBtcSignTxClient:
                 or message.outputs_count != self.outputs_count
             ):
                 raise AssertionError(f"unexpected SignTx message: {message}")
-            if message.version != 2 or message.lock_time != 0:
+            if message.version != 2 or message.lock_time != self.lock_time:
                 raise AssertionError(f"unexpected SignTx version/lock_time: {message}")
             self.started = True
             return self._next_request()
@@ -943,6 +947,8 @@ class ScriptedBtcSignTxClient:
                 raise AssertionError(f"TXMETA ack leaked full transaction data: {message.tx}")
             if message.tx.inputs_cnt != self.inputs_count or message.tx.outputs_cnt != self.outputs_count:
                 raise AssertionError(f"unexpected TXMETA counts: {message.tx}")
+            if message.tx.lock_time is not None and message.tx.lock_time != self.lock_time:
+                raise AssertionError(f"unexpected TXMETA lock_time: {message.tx.lock_time}")
         elif previous.ack_kind == "input":
             assert previous.request_index is not None
             if (
@@ -954,6 +960,9 @@ class ScriptedBtcSignTxClient:
                 raise AssertionError(f"unexpected BTC input script type: {message.tx.inputs[0].script_type}")
             if message.tx.inputs[0].amount != self.input_amounts[previous.request_index]:
                 raise AssertionError(f"unexpected BTC input amount: {message.tx.inputs[0].amount}")
+            actual_sequence = message.tx.inputs[0].sequence if message.tx.inputs[0].sequence is not None else 0xFFFFFFFF
+            if actual_sequence != self.input_sequences[previous.request_index]:
+                raise AssertionError(f"unexpected BTC input sequence: {message.tx.inputs[0].sequence}")
         elif previous.ack_kind == "output":
             assert previous.request_index is not None
             if len(message.tx.outputs) != 1:
@@ -1109,6 +1118,7 @@ def btc_tx_input(
     prev_hash: bytes | None = None,
     prev_index: int = 0,
     amount: int = 100_000,
+    sequence: int = 0xFFFFFFFF,
     script_type: messages.InputScriptType = messages.InputScriptType.SPENDWITNESS,
     multisig: messages.MultisigRedeemScriptType | None = None,
 ) -> messages.TxInputType:
@@ -1118,7 +1128,7 @@ def btc_tx_input(
         prev_index=prev_index,
         script_type=script_type,
         amount=amount,
-        sequence=0xFFFFFFFF,
+        sequence=sequence,
         multisig=multisig,
     )
 
@@ -1135,7 +1145,7 @@ def btc_tx_output_change(
     amount: int = 5_000,
     *,
     path: list[int] | None = None,
-    script_type: messages.OutputScriptType = messages.OutputScriptType.PAYTOADDRESS,
+    script_type: messages.OutputScriptType = messages.OutputScriptType.PAYTOWITNESS,
     multisig: messages.MultisigRedeemScriptType | None = None,
 ) -> messages.TxOutputType:
     return messages.TxOutputType(
@@ -1253,7 +1263,6 @@ def check_trezorlib_btc_signtx_host_flow_oracle() -> None:
     serialized_tx = bytes.fromhex("02000000000100")
     client = ScriptedBtcSignTxClient(
         [
-            BtcSignTxHostStep(messages.RequestType.TXMETA, "meta"),
             BtcSignTxHostStep(messages.RequestType.TXINPUT, "input", request_index=0),
             BtcSignTxHostStep(messages.RequestType.TXOUTPUT, "output", request_index=0),
         ],
@@ -1275,10 +1284,84 @@ def check_trezorlib_btc_signtx_host_flow_oracle() -> None:
         raise AssertionError(f"trezorlib BTC SignTx serialized tx mismatch: {signed_tx.hex()}")
 
     call_types = [type(call).__name__ for call in client.calls]
-    if call_types != ["SignTx", "TxAck", "TxAck", "TxAck"]:
+    if call_types != ["SignTx", "TxAck", "TxAck"]:
         raise AssertionError(f"unexpected trezorlib BTC host call sequence: {call_types}")
     if not client.closed:
         raise AssertionError("trezorlib BTC SignTx session did not close")
+
+    sparrow_locktime = 5_126_746
+    sparrow_sequence = 0xFFFFFFFD
+    sparrow_input = btc_tx_input(amount=200_000, sequence=sparrow_sequence)
+    sparrow_output = btc_tx_output_external(amount=79_995)
+    sparrow_change = btc_tx_output_change(amount=103_288)
+    sparrow_signature = bytes.fromhex("30" + "99" * 70)
+    sparrow_serialized_tx = bytes.fromhex("0200000000010102")
+    sparrow_client = ScriptedBtcSignTxClient(
+        [
+            BtcSignTxHostStep(messages.RequestType.TXINPUT, "input", request_index=0),
+            BtcSignTxHostStep(messages.RequestType.TXOUTPUT, "output", request_index=0),
+            BtcSignTxHostStep(messages.RequestType.TXOUTPUT, "output", request_index=1),
+        ],
+        sparrow_signature,
+        sparrow_serialized_tx,
+        inputs_count=1,
+        outputs_count=2,
+        lock_time=sparrow_locktime,
+        input_amounts=[200_000],
+        input_sequences=[sparrow_sequence],
+        output_amounts=[79_995, 103_288],
+        output_addresses=[btc_tx_output_address(), None],
+        output_paths=[None, btc_input_path(change=1)],
+    )
+
+    signatures, signed_tx = btc.sign_tx(
+        sparrow_client,
+        "Testnet",
+        [sparrow_input],
+        [sparrow_output, sparrow_change],
+        version=2,
+        lock_time=sparrow_locktime,
+    )
+    if signatures != [sparrow_signature]:
+        raise AssertionError(f"trezorlib BTC locktime/RBF signatures mismatch: {signatures}")
+    if signed_tx != sparrow_serialized_tx:
+        raise AssertionError(f"trezorlib BTC locktime/RBF serialized tx mismatch: {signed_tx.hex()}")
+    if not sparrow_client.closed:
+        raise AssertionError("trezorlib BTC locktime/RBF SignTx session did not close")
+
+    sparrow_self = btc_tx_output_change(amount=103_288, path=btc_input_path(change=0, index=2))
+    sparrow_self_client = ScriptedBtcSignTxClient(
+        [
+            BtcSignTxHostStep(messages.RequestType.TXINPUT, "input", request_index=0),
+            BtcSignTxHostStep(messages.RequestType.TXOUTPUT, "output", request_index=0),
+            BtcSignTxHostStep(messages.RequestType.TXOUTPUT, "output", request_index=1),
+        ],
+        sparrow_signature,
+        sparrow_serialized_tx,
+        inputs_count=1,
+        outputs_count=2,
+        lock_time=sparrow_locktime,
+        input_amounts=[200_000],
+        input_sequences=[sparrow_sequence],
+        output_amounts=[79_995, 103_288],
+        output_addresses=[btc_tx_output_address(), None],
+        output_paths=[None, btc_input_path(change=0, index=2)],
+    )
+
+    signatures, signed_tx = btc.sign_tx(
+        sparrow_self_client,
+        "Testnet",
+        [sparrow_input],
+        [sparrow_output, sparrow_self],
+        version=2,
+        lock_time=sparrow_locktime,
+    )
+    if signatures != [sparrow_signature]:
+        raise AssertionError(f"trezorlib BTC self-output signatures mismatch: {signatures}")
+    if signed_tx != sparrow_serialized_tx:
+        raise AssertionError(f"trezorlib BTC self-output serialized tx mismatch: {signed_tx.hex()}")
+    if not sparrow_self_client.closed:
+        raise AssertionError("trezorlib BTC self-output SignTx session did not close")
 
     input_path_1 = btc_input_path(1)
     tx_input_1 = btc_tx_input(path=input_path_1, prev_hash=bytes.fromhex("22" * 32), prev_index=1, amount=40_000)
@@ -1287,7 +1370,6 @@ def check_trezorlib_btc_signtx_host_flow_oracle() -> None:
     multi_serialized_tx = bytes.fromhex("0200000000010201")
     multi_client = ScriptedBtcSignTxClient(
         [
-            BtcSignTxHostStep(messages.RequestType.TXMETA, "meta"),
             BtcSignTxHostStep(messages.RequestType.TXINPUT, "input", request_index=0),
             BtcSignTxHostStep(messages.RequestType.TXINPUT, "input", request_index=1),
             BtcSignTxHostStep(messages.RequestType.TXOUTPUT, "output", request_index=0),
@@ -1322,7 +1404,7 @@ def check_trezorlib_btc_signtx_host_flow_oracle() -> None:
         raise AssertionError(f"trezorlib multi-input BTC serialized tx mismatch: {signed_tx.hex()}")
 
     call_types = [type(call).__name__ for call in multi_client.calls]
-    if call_types != ["SignTx", "TxAck", "TxAck", "TxAck", "TxAck", "TxAck"]:
+    if call_types != ["SignTx", "TxAck", "TxAck", "TxAck", "TxAck"]:
         raise AssertionError(f"unexpected trezorlib multi-input BTC host call sequence: {call_types}")
     if not multi_client.closed:
         raise AssertionError("trezorlib multi-input BTC SignTx session did not close")
@@ -1333,7 +1415,6 @@ def check_trezorlib_btc_signtx_host_flow_oracle() -> None:
     multi_change_serialized_tx = bytes.fromhex("0200000000010202")
     multi_change_client = ScriptedBtcSignTxClient(
         [
-            BtcSignTxHostStep(messages.RequestType.TXMETA, "meta"),
             BtcSignTxHostStep(messages.RequestType.TXINPUT, "input", request_index=0),
             BtcSignTxHostStep(messages.RequestType.TXINPUT, "input", request_index=1),
             BtcSignTxHostStep(messages.RequestType.TXOUTPUT, "output", request_index=0),
@@ -1371,7 +1452,7 @@ def check_trezorlib_btc_signtx_host_flow_oracle() -> None:
         raise AssertionError(f"trezorlib multi-output BTC serialized tx mismatch: {signed_tx.hex()}")
 
     call_types = [type(call).__name__ for call in multi_change_client.calls]
-    if call_types != ["SignTx", "TxAck", "TxAck", "TxAck", "TxAck", "TxAck", "TxAck"]:
+    if call_types != ["SignTx", "TxAck", "TxAck", "TxAck", "TxAck", "TxAck"]:
         raise AssertionError(f"unexpected trezorlib multi-output BTC host call sequence: {call_types}")
     if not multi_change_client.closed:
         raise AssertionError("trezorlib multi-output BTC SignTx session did not close")
@@ -1446,7 +1527,6 @@ def btc_verified_multisig_signing_calls(
             messages.MessageType.SignTx,
             messages.SignTx(coin_name="Testnet", inputs_count=1, outputs_count=outputs_count, version=2, lock_time=0),
         ),
-        (messages.MessageType.TxAck, btc_tx_ack_meta(1, outputs_count)),
         (
             messages.MessageType.TxAck,
             btc_tx_ack_input(
@@ -1512,13 +1592,12 @@ def assert_btc_verified_multisig_signs(
         btc_verified_multisig_signing_calls(multisig, redeem_script, script_type),
         btc_compact_signatures=[btc_sign_digest_compact(digest)],
     )
-    assert_btc_tx_request(responses[0], messages.RequestType.TXMETA)
-    assert_btc_tx_request(responses[1], messages.RequestType.TXINPUT, request_index=0)
-    assert_btc_tx_request(responses[2], messages.RequestType.TXOUTPUT, request_index=0)
-    assert_btc_tx_request(responses[3], messages.RequestType.TXMETA, tx_hash=prev_hash)
-    assert_btc_tx_request(responses[4], messages.RequestType.TXORIGINPUT, request_index=0, tx_hash=prev_hash)
-    assert_btc_tx_request(responses[5], messages.RequestType.TXORIGOUTPUT, request_index=0, tx_hash=prev_hash)
-    assert_btc_tx_request(responses[6], messages.RequestType.TXORIGOUTPUT, request_index=1, tx_hash=prev_hash)
+    assert_btc_tx_request(responses[0], messages.RequestType.TXINPUT, request_index=0)
+    assert_btc_tx_request(responses[1], messages.RequestType.TXOUTPUT, request_index=0)
+    assert_btc_tx_request(responses[2], messages.RequestType.TXMETA, tx_hash=prev_hash)
+    assert_btc_tx_request(responses[3], messages.RequestType.TXORIGINPUT, request_index=0, tx_hash=prev_hash)
+    assert_btc_tx_request(responses[4], messages.RequestType.TXORIGOUTPUT, request_index=0, tx_hash=prev_hash)
+    assert_btc_tx_request(responses[5], messages.RequestType.TXORIGOUTPUT, request_index=1, tx_hash=prev_hash)
     tx_request = assert_btc_tx_request(
         responses[-1], messages.RequestType.TXFINISHED, signature_index=0, expect_serialized_tx=False
     )
@@ -1567,7 +1646,6 @@ def assert_btc_multisig_prevout_mismatch_rejects(
                 messages.MessageType.SignTx,
                 messages.SignTx(coin_name="Testnet", inputs_count=1, outputs_count=1, version=2, lock_time=0),
             ),
-            (messages.MessageType.TxAck, btc_tx_ack_meta(1, 1)),
             (
                 messages.MessageType.TxAck,
                 btc_tx_ack_input(
@@ -1586,10 +1664,10 @@ def assert_btc_multisig_prevout_mismatch_rejects(
             (messages.MessageType.TxAck, btc_tx_ack_prev_output(1_000, btc_p2wpkh_script_pubkey())),
         ],
     )
-    assert_btc_tx_request(responses[3], messages.RequestType.TXMETA, tx_hash=prev_hash)
-    assert_btc_tx_request(responses[4], messages.RequestType.TXORIGINPUT, request_index=0, tx_hash=prev_hash)
-    assert_btc_tx_request(responses[5], messages.RequestType.TXORIGOUTPUT, request_index=0, tx_hash=prev_hash)
-    assert_btc_tx_request(responses[6], messages.RequestType.TXORIGOUTPUT, request_index=1, tx_hash=prev_hash)
+    assert_btc_tx_request(responses[2], messages.RequestType.TXMETA, tx_hash=prev_hash)
+    assert_btc_tx_request(responses[3], messages.RequestType.TXORIGINPUT, request_index=0, tx_hash=prev_hash)
+    assert_btc_tx_request(responses[4], messages.RequestType.TXORIGOUTPUT, request_index=0, tx_hash=prev_hash)
+    assert_btc_tx_request(responses[5], messages.RequestType.TXORIGOUTPUT, request_index=1, tx_hash=prev_hash)
     assert_btc_failure(
         responses[-1],
         messages.FailureType.DataError,
@@ -1603,6 +1681,7 @@ def check_embit_btc_signed_tx_oracle(
     version: int,
     locktime: int,
     inputs: list[tuple[bytes, int]],
+    sequences: list[int] | None = None,
     outputs: list[tuple[int, bytes]],
     witness_pubkeys: list[bytes],
 ) -> None:
@@ -1617,13 +1696,14 @@ def check_embit_btc_signed_tx_oracle(
     if len(tx.vin) != len(inputs) or len(tx.vout) != len(outputs):
         raise AssertionError(f"BTC signed tx input/output count mismatch: {len(tx.vin)}/{len(tx.vout)}")
 
+    expected_sequences = sequences or ([0xFFFFFFFF] * len(inputs))
     for index, (expected_txid, expected_vout) in enumerate(inputs):
         txin = tx.vin[index]
         if txin.txid != expected_txid or txin.vout != expected_vout:
             raise AssertionError(f"BTC input {index} outpoint mismatch: {txin.txid.hex()}:{txin.vout}")
         if txin.script_sig.data != b"":
             raise AssertionError(f"BTC input {index} scriptSig must be empty for native segwit")
-        if txin.sequence != 0xFFFFFFFF:
+        if txin.sequence != expected_sequences[index]:
             raise AssertionError(f"BTC input {index} sequence mismatch: {txin.sequence}")
         if len(txin.witness.items) != 2:
             raise AssertionError(f"BTC input {index} witness item count mismatch: {len(txin.witness.items)}")
@@ -2501,7 +2581,6 @@ def check_local_btc_signtx_wire_script_oracle(gate: Path) -> None:
                 messages.MessageType.SignTx,
                 messages.SignTx(coin_name="Testnet", inputs_count=1, outputs_count=1, version=2, lock_time=0),
             ),
-            (messages.MessageType.TxAck, btc_tx_ack_meta(1, 1)),
             (messages.MessageType.TxAck, btc_tx_ack_input(tx_input_0)),
             (messages.MessageType.TxAck, btc_tx_ack_output(external_output)),
         ],
@@ -2530,7 +2609,6 @@ def check_local_btc_signtx_wire_script_oracle(gate: Path) -> None:
                 messages.MessageType.SignTx,
                 messages.SignTx(coin_name="Bitcoin", inputs_count=1, outputs_count=1, version=2, lock_time=0),
             ),
-            (messages.MessageType.TxAck, btc_tx_ack_meta(1, 1)),
             (messages.MessageType.TxAck, btc_tx_ack_input(mainnet_input)),
             (messages.MessageType.TxAck, btc_tx_ack_output(mainnet_output)),
         ],
@@ -2557,7 +2635,6 @@ def check_local_btc_signtx_wire_script_oracle(gate: Path) -> None:
                 messages.MessageType.SignTx,
                 messages.SignTx(coin_name="Testnet", inputs_count=2, outputs_count=2, version=2, lock_time=0),
             ),
-            (messages.MessageType.TxAck, common_meta),
             (messages.MessageType.TxAck, btc_tx_ack_input(tx_input_0)),
             (messages.MessageType.TxAck, btc_tx_ack_input(tx_input_1)),
             (messages.MessageType.TxAck, btc_tx_ack_output(external_output)),
@@ -2566,7 +2643,6 @@ def check_local_btc_signtx_wire_script_oracle(gate: Path) -> None:
         ],
     )
     expected = [
-        (messages.RequestType.TXMETA, None, None, False),
         (messages.RequestType.TXINPUT, 0, None, False),
         (messages.RequestType.TXINPUT, 1, None, False),
         (messages.RequestType.TXOUTPUT, 0, None, False),
@@ -2589,6 +2665,116 @@ def check_local_btc_signtx_wire_script_oracle(gate: Path) -> None:
         inputs=[(btc_tx_prev_hash(), 0), (bytes.fromhex("22" * 32), 1)],
         outputs=[(90_000, btc_p2wpkh_script), (45_000, btc_p2wpkh_script)],
         witness_pubkeys=[BTC_TEST_COMPRESSED_PUBKEY, BTC_TEST_COMPRESSED_PUBKEY],
+    )
+
+    sparrow_locktime = 5_126_746
+    sparrow_sequence = 0xFFFFFFFD
+    sparrow_input = btc_tx_input(amount=200_000, sequence=sparrow_sequence)
+    sparrow_external_output = btc_tx_output_external(amount=79_995)
+    sparrow_change_output = btc_tx_output_change(amount=103_288)
+    sparrow_self_output = btc_tx_output_change(amount=103_288, path=btc_input_path(change=0, index=2))
+    sparrow_responses = run_local_wire_script(
+        gate,
+        [
+            (
+                messages.MessageType.SignTx,
+                messages.SignTx(
+                    coin_name="Testnet",
+                    inputs_count=1,
+                    outputs_count=2,
+                    version=2,
+                    lock_time=sparrow_locktime,
+                ),
+            ),
+            (messages.MessageType.TxAck, btc_tx_ack_input(sparrow_input)),
+            (messages.MessageType.TxAck, btc_tx_ack_output(sparrow_external_output)),
+            (messages.MessageType.TxAck, btc_tx_ack_output(sparrow_change_output)),
+        ],
+    )
+    sparrow_final = assert_btc_tx_request(
+        sparrow_responses[-1],
+        messages.RequestType.TXFINISHED,
+        signature_index=0,
+        expect_serialized_tx=True,
+    )
+    check_embit_btc_signed_tx_oracle(
+        sparrow_final.serialized.serialized_tx,
+        version=2,
+        locktime=sparrow_locktime,
+        inputs=[(btc_tx_prev_hash(), 0)],
+        sequences=[sparrow_sequence],
+        outputs=[(79_995, btc_p2wpkh_script), (103_288, btc_p2wpkh_script)],
+        witness_pubkeys=[BTC_TEST_COMPRESSED_PUBKEY],
+    )
+
+    sparrow_self_responses = run_local_wire_script(
+        gate,
+        [
+            (
+                messages.MessageType.SignTx,
+                messages.SignTx(
+                    coin_name="Testnet",
+                    inputs_count=1,
+                    outputs_count=2,
+                    version=2,
+                    lock_time=sparrow_locktime,
+                ),
+            ),
+            (messages.MessageType.TxAck, btc_tx_ack_input(sparrow_input)),
+            (messages.MessageType.TxAck, btc_tx_ack_output(sparrow_external_output)),
+            (messages.MessageType.TxAck, btc_tx_ack_output(sparrow_self_output)),
+        ],
+    )
+    sparrow_self_final = assert_btc_tx_request(
+        sparrow_self_responses[-1],
+        messages.RequestType.TXFINISHED,
+        signature_index=0,
+        expect_serialized_tx=True,
+    )
+    check_embit_btc_signed_tx_oracle(
+        sparrow_self_final.serialized.serialized_tx,
+        version=2,
+        locktime=sparrow_locktime,
+        inputs=[(btc_tx_prev_hash(), 0)],
+        sequences=[sparrow_sequence],
+        outputs=[(79_995, btc_p2wpkh_script), (103_288, btc_p2wpkh_script)],
+        witness_pubkeys=[BTC_TEST_COMPRESSED_PUBKEY],
+    )
+
+    sparrow_self_only_output = btc_tx_output_change(amount=90_000, path=btc_input_path(change=0, index=2))
+    sparrow_self_only_change = btc_tx_output_change(amount=5_000, path=btc_input_path(change=1, index=3))
+    sparrow_self_only_responses = run_local_wire_script(
+        gate,
+        [
+            (
+                messages.MessageType.SignTx,
+                messages.SignTx(
+                    coin_name="Testnet",
+                    inputs_count=1,
+                    outputs_count=2,
+                    version=2,
+                    lock_time=sparrow_locktime,
+                ),
+            ),
+            (messages.MessageType.TxAck, btc_tx_ack_input(sparrow_input)),
+            (messages.MessageType.TxAck, btc_tx_ack_output(sparrow_self_only_output)),
+            (messages.MessageType.TxAck, btc_tx_ack_output(sparrow_self_only_change)),
+        ],
+    )
+    sparrow_self_only_final = assert_btc_tx_request(
+        sparrow_self_only_responses[-1],
+        messages.RequestType.TXFINISHED,
+        signature_index=0,
+        expect_serialized_tx=True,
+    )
+    check_embit_btc_signed_tx_oracle(
+        sparrow_self_only_final.serialized.serialized_tx,
+        version=2,
+        locktime=sparrow_locktime,
+        inputs=[(btc_tx_prev_hash(), 0)],
+        sequences=[sparrow_sequence],
+        outputs=[(90_000, btc_p2wpkh_script), (5_000, btc_p2wpkh_script)],
+        witness_pubkeys=[BTC_TEST_COMPRESSED_PUBKEY],
     )
 
     overflow_responses = run_local_wire_script(
@@ -2619,16 +2805,30 @@ def check_local_btc_signtx_wire_script_oracle(gate: Path) -> None:
     )
     assert_btc_failure(high_fee_responses[-1], messages.FailureType.DataError, "BTC fee-rate too high")
 
-    hidden_locktime_responses = run_local_wire_script(
+    mixed_sequence_responses = run_local_wire_script(
         gate,
         [
             (
                 messages.MessageType.SignTx,
-                messages.SignTx(coin_name="Testnet", inputs_count=1, outputs_count=1, version=2, lock_time=1),
+                messages.SignTx(coin_name="Testnet", inputs_count=2, outputs_count=1, version=2, lock_time=1),
             ),
+            (messages.MessageType.TxAck, btc_tx_ack_meta(2, 1, lock_time=1)),
+            (messages.MessageType.TxAck, btc_tx_ack_input(btc_tx_input(sequence=0xFFFFFFFD))),
+            (
+                messages.MessageType.TxAck,
+                btc_tx_ack_input(
+                    btc_tx_input(
+                        path=btc_input_path(1),
+                        prev_hash=bytes.fromhex("33" * 32),
+                        prev_index=1,
+                        amount=40_000,
+                    )
+                ),
+            ),
+            (messages.MessageType.TxAck, btc_tx_ack_output(external_output)),
         ],
     )
-    assert_btc_failure(hidden_locktime_responses[-1], messages.FailureType.DataError, "BTC hidden lock_time")
+    assert_btc_failure(mixed_sequence_responses[-1], messages.FailureType.DataError, "BTC mixed sequence")
 
     mixed_account_responses = run_local_wire_script(
         gate,
@@ -2814,7 +3014,6 @@ def check_local_btc_signtx_wire_script_oracle(gate: Path) -> None:
                 messages.MessageType.SignTx,
                 messages.SignTx(coin_name="Testnet", inputs_count=1, outputs_count=1, version=2, lock_time=0),
             ),
-            (messages.MessageType.TxAck, btc_tx_ack_meta(1, 1)),
             (
                 messages.MessageType.TxAck,
                 btc_tx_ack_input(
@@ -2879,7 +3078,6 @@ def check_local_btc_signtx_wire_script_oracle(gate: Path) -> None:
                 messages.MessageType.SignTx,
                 messages.SignTx(coin_name="Testnet", inputs_count=1, outputs_count=1, version=2, lock_time=0),
             ),
-            (messages.MessageType.TxAck, btc_tx_ack_meta(1, 1)),
             (messages.MessageType.TxAck, btc_tx_ack_input(legacy_input)),
             (messages.MessageType.TxAck, btc_tx_ack_output(external_output)),
             (messages.MessageType.TxAck, btc_tx_ack_meta(1, 2)),
@@ -2890,7 +3088,6 @@ def check_local_btc_signtx_wire_script_oracle(gate: Path) -> None:
         btc_compact_signatures=[btc_sign_digest_compact(legacy_digest)],
     )
     expected_legacy_prev = [
-        (messages.RequestType.TXMETA, None),
         (messages.RequestType.TXINPUT, None),
         (messages.RequestType.TXOUTPUT, None),
         (messages.RequestType.TXMETA, legacy_prev_txid),
@@ -2933,7 +3130,6 @@ def check_local_btc_signtx_wire_script_oracle(gate: Path) -> None:
                 messages.MessageType.SignTx,
                 messages.SignTx(coin_name="Testnet", inputs_count=1, outputs_count=1, version=2, lock_time=0),
             ),
-            (messages.MessageType.TxAck, btc_tx_ack_meta(1, 1)),
             (messages.MessageType.TxAck, btc_tx_ack_input(legacy_input)),
             (messages.MessageType.TxAck, btc_tx_ack_output(legacy_base58_output)),
             (messages.MessageType.TxAck, btc_tx_ack_meta(1, 2)),
@@ -2962,7 +3158,6 @@ def check_local_btc_signtx_wire_script_oracle(gate: Path) -> None:
                 messages.MessageType.SignTx,
                 messages.SignTx(coin_name="Testnet", inputs_count=1, outputs_count=1, version=2, lock_time=0),
             ),
-            (messages.MessageType.TxAck, btc_tx_ack_meta(1, 1)),
             (messages.MessageType.TxAck, btc_tx_ack_input(legacy_input)),
             (
                 messages.MessageType.TxAck,
@@ -2991,7 +3186,6 @@ def check_local_btc_signtx_wire_script_oracle(gate: Path) -> None:
                 messages.MessageType.SignTx,
                 messages.SignTx(coin_name="Testnet", inputs_count=1, outputs_count=1, version=2, lock_time=0),
             ),
-            (messages.MessageType.TxAck, btc_tx_ack_meta(1, 1)),
             (
                 messages.MessageType.TxAck,
                 btc_tx_ack_input(
@@ -3037,7 +3231,6 @@ def check_local_btc_signtx_wire_script_oracle(gate: Path) -> None:
                 messages.MessageType.SignTx,
                 messages.SignTx(coin_name="Testnet", inputs_count=1, outputs_count=1, version=2, lock_time=0),
             ),
-            (messages.MessageType.TxAck, btc_tx_ack_meta(1, 1)),
             (messages.MessageType.TxAck, btc_tx_ack_input(p2sh_input)),
             (messages.MessageType.TxAck, btc_tx_ack_output(external_output)),
             (messages.MessageType.TxAck, btc_tx_ack_meta(1, 2)),
@@ -3046,21 +3239,21 @@ def check_local_btc_signtx_wire_script_oracle(gate: Path) -> None:
             (messages.MessageType.TxAck, btc_tx_ack_prev_output(1_000)),
         ],
     )
-    assert_btc_tx_request(p2sh_witness_prev_tx_responses[3], messages.RequestType.TXMETA, tx_hash=p2sh_prev_txid)
+    assert_btc_tx_request(p2sh_witness_prev_tx_responses[2], messages.RequestType.TXMETA, tx_hash=p2sh_prev_txid)
     assert_btc_tx_request(
-        p2sh_witness_prev_tx_responses[4],
+        p2sh_witness_prev_tx_responses[3],
         messages.RequestType.TXORIGINPUT,
         request_index=0,
         tx_hash=p2sh_prev_txid,
     )
     assert_btc_tx_request(
-        p2sh_witness_prev_tx_responses[5],
+        p2sh_witness_prev_tx_responses[4],
         messages.RequestType.TXORIGOUTPUT,
         request_index=0,
         tx_hash=p2sh_prev_txid,
     )
     assert_btc_tx_request(
-        p2sh_witness_prev_tx_responses[6],
+        p2sh_witness_prev_tx_responses[5],
         messages.RequestType.TXORIGOUTPUT,
         request_index=1,
         tx_hash=p2sh_prev_txid,
@@ -3135,7 +3328,6 @@ def check_local_btc_signtx_wire_script_oracle(gate: Path) -> None:
                 messages.MessageType.SignTx,
                 messages.SignTx(coin_name="Testnet", inputs_count=1, outputs_count=1, version=2, lock_time=0),
             ),
-            (messages.MessageType.TxAck, btc_tx_ack_meta(1, 1)),
             (messages.MessageType.TxAck, btc_tx_ack_input(p2sh_true_sig_input)),
             (messages.MessageType.TxAck, btc_tx_ack_output(external_output)),
             (messages.MessageType.TxAck, btc_tx_ack_meta(1, 2)),
@@ -3174,7 +3366,6 @@ def check_local_btc_signtx_wire_script_oracle(gate: Path) -> None:
                 messages.MessageType.SignTx,
                 messages.SignTx(coin_name="Testnet", inputs_count=1, outputs_count=1, version=2, lock_time=0),
             ),
-            (messages.MessageType.TxAck, btc_tx_ack_meta(1, 1)),
             (messages.MessageType.TxAck, btc_tx_ack_input(p2sh_true_sig_input)),
             (messages.MessageType.TxAck, btc_tx_ack_output(p2sh_base58_output)),
             (messages.MessageType.TxAck, btc_tx_ack_meta(1, 2)),
@@ -3727,8 +3918,12 @@ def check_trezorlib_protocol_oracle(gate: Path, local_vectors: dict[str, str]) -
     if response_type != messages.MessageType.TxRequest:
         raise AssertionError(f"BTC SignTx preflight response type mismatch: {response_type}")
     btc_tx_request = protobuf.load_message(io.BytesIO(payload), messages.TxRequest)
-    if btc_tx_request.request_type != messages.RequestType.TXMETA or btc_tx_request.details is None:
-        raise AssertionError(f"BTC SignTx must start with TxRequest(TXMETA): {btc_tx_request}")
+    if (
+        btc_tx_request.request_type != messages.RequestType.TXINPUT
+        or btc_tx_request.details is None
+        or btc_tx_request.details.request_index != 0
+    ):
+        raise AssertionError(f"BTC SignTx must start with TxRequest(TXINPUT index 0): {btc_tx_request}")
 
     response_type, payload = run_local_wire_oracle(
         gate,
@@ -3738,8 +3933,12 @@ def check_trezorlib_protocol_oracle(gate: Path, local_vectors: dict[str, str]) -
     if response_type != messages.MessageType.TxRequest:
         raise AssertionError(f"BTC mainnet SignTx preflight response type mismatch: {response_type}")
     btc_tx_request = protobuf.load_message(io.BytesIO(payload), messages.TxRequest)
-    if btc_tx_request.request_type != messages.RequestType.TXMETA or btc_tx_request.details is None:
-        raise AssertionError(f"BTC mainnet SignTx must start with TxRequest(TXMETA): {btc_tx_request}")
+    if (
+        btc_tx_request.request_type != messages.RequestType.TXINPUT
+        or btc_tx_request.details is None
+        or btc_tx_request.details.request_index != 0
+    ):
+        raise AssertionError(f"BTC mainnet SignTx must start with TxRequest(TXINPUT index 0): {btc_tx_request}")
 
     response_type, payload = run_local_wire_oracle(
         gate, messages.MessageType.TxAck, messages.TxAck(tx=messages.TransactionType())

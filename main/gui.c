@@ -2444,7 +2444,9 @@ static size_t handle_gui_input_queue(bool* switched_activities)
             activity_event_t* l = current_activity->activity_events;
             while (l) {
                 JADE_ASSERT(!l->instance);
-                esp_event_handler_instance_register(l->event_base, l->event_id, l->handler, l->args, &(l->instance));
+                const esp_err_t rc
+                    = esp_event_handler_instance_register(l->event_base, l->event_id, l->handler, l->args, &(l->instance));
+                JADE_ASSERT(rc == ESP_OK);
                 l = l->next;
             }
         }
@@ -2742,7 +2744,7 @@ wait_event_data_t* gui_activity_make_wait_event_data(gui_activity_t* activity)
     return item->event_data;
 }
 
-void gui_activity_register_event(
+activity_event_t* gui_activity_register_event(
     gui_activity_t* activity, const char* event_base, uint32_t event_id, esp_event_handler_t handler, void* args)
 {
     JADE_ASSERT(activity);
@@ -2779,6 +2781,64 @@ void gui_activity_register_event(
 
     // Return the main gui mutex
     JADE_SEMAPHORE_GIVE(gui_mutex);
+    return link;
+}
+
+static void gui_activity_unregister_event_link(gui_activity_t* const activity, activity_event_t* const link)
+{
+    JADE_ASSERT(activity);
+    JADE_ASSERT(link);
+
+    JADE_SEMAPHORE_TAKE(gui_mutex);
+
+    activity_event_t* previous = NULL;
+    activity_event_t* current = activity->activity_events;
+    while (current && current != link) {
+        previous = current;
+        current = current->next;
+    }
+
+    if (current == link) {
+        if (previous) {
+            previous->next = link->next;
+        } else {
+            activity->activity_events = link->next;
+        }
+        if (link->instance) {
+            esp_event_handler_instance_unregister(link->event_base, link->event_id, link->instance);
+            link->instance = NULL;
+        }
+        free(link);
+    }
+
+    JADE_SEMAPHORE_GIVE(gui_mutex);
+}
+
+static void gui_activity_free_wait_event_data(gui_activity_t* const activity, wait_event_data_t* const wait_event_data)
+{
+    JADE_ASSERT(activity);
+    JADE_ASSERT(wait_event_data);
+
+    JADE_SEMAPHORE_TAKE(gui_mutex);
+
+    wait_data_t* previous = NULL;
+    wait_data_t* item = activity->wait_data_items;
+    while (item && item->event_data != wait_event_data) {
+        previous = item;
+        item = item->next;
+    }
+
+    if (item && item->event_data == wait_event_data) {
+        if (previous) {
+            previous->next = item->next;
+        } else {
+            activity->wait_data_items = item->next;
+        }
+        free_wait_event_data(item->event_data);
+        free(item);
+    }
+
+    JADE_SEMAPHORE_GIVE(gui_mutex);
 }
 
 // Registers an event handler, then blocks waiting for it to fire.  A timeout can be passed.
@@ -2793,11 +2853,24 @@ bool gui_activity_wait_event(gui_activity_t* activity, const char* event_base, u
     JADE_ASSERT(wait_event_data);
 
     // register it so that it gets removed when the activity is swapped out
-    gui_activity_register_event(activity, event_base, event_id, sync_wait_event_handler, wait_event_data);
+#ifdef CONFIG_TREZOR_USB_HID
+    trezor_trace_set_stage("gui:wait_reg");
+#endif
+    activity_event_t* const event_link
+        = gui_activity_register_event(activity, event_base, event_id, sync_wait_event_handler, wait_event_data);
+    JADE_ASSERT(event_link);
 
     // immediately start waiting
+#ifdef CONFIG_TREZOR_USB_HID
+    trezor_trace_set_stage("gui:wait_block");
+#endif
     const esp_err_t ret
         = sync_wait_event(wait_event_data, trigger_event_base, trigger_event_id, trigger_event_data, max_wait);
+#ifdef CONFIG_TREZOR_USB_HID
+    trezor_trace_set_stage(ret == ESP_OK ? "gui:wait_done" : "gui:wait_timeout");
+#endif
+    gui_activity_unregister_event_link(activity, event_link);
+    gui_activity_free_wait_event_data(activity, wait_event_data);
 
     return ret == ESP_OK;
 }

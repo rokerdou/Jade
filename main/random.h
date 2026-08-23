@@ -6,6 +6,8 @@
 
 void refeed_entropy(const void* additional, size_t len);
 void get_random(void* bytes_out, size_t len);
+void get_strong_random(void* bytes_out, size_t len);
+void get_hardware_random(void* bytes_out, size_t len);
 uint8_t get_uniform_random_byte(uint8_t upper_bound);
 
 // Adapter between 'get_random()' and the mbedtls RNG function interface

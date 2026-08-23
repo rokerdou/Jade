@@ -13,6 +13,7 @@
 #include "../random.h"
 #include "../sensitive.h"
 #include "../ui.h"
+#include "../wallet_entropy.h"
 #include "../utils/cbor_rpc.h"
 #include "../utils/network.h"
 #include "../utils/util.h"
@@ -35,6 +36,7 @@ typedef enum { MNEMONIC_SIMPLE, MNEMONIC_ADVANCED, WORDLIST_PASSPHRASE } wordlis
 gui_activity_t* make_mnemonic_setup_type_activity(void);
 gui_activity_t* make_mnemonic_setup_method_activity(bool advanced);
 gui_activity_t* make_new_mnemonic_activity(void);
+gui_activity_t* make_dice_roll_count_activity(void);
 gui_activity_t* make_restore_mnemonic_activity(bool temporary_restore);
 
 void make_show_mnemonic_activities(gui_activity_t** first_activity_ptr, gui_activity_t** last_activity_ptr,
@@ -415,6 +417,165 @@ static bool mnemonic_new(const size_t nwords, char* mnemonic, const size_t mnemo
     JADE_WALLY_VERIFY(wally_free_string(new_mnemonic));
 
     return mnemonic_confirmed;
+}
+
+static gui_activity_t* make_dice_entry_activity(
+    gui_view_node_t** const count_text, gui_view_node_t** const value_text, const size_t roll_count)
+{
+    JADE_INIT_OUT_PPTR(count_text);
+    JADE_INIT_OUT_PPTR(value_text);
+    JADE_ASSERT(roll_count == WALLET_ENTROPY_DICE_RECOMMENDED_ROLLS || roll_count == WALLET_ENTROPY_DICE_MAX_ROLLS);
+
+    gui_activity_t* const act = gui_make_activity();
+    gui_view_node_t* const parent = add_title_bar(act, "Dice Entropy", NULL, 0, NULL);
+
+    gui_view_node_t* vsplit = NULL;
+    gui_make_vsplit(&vsplit, GUI_SPLIT_RELATIVE, 4, 24, 24, 32, 20);
+    gui_set_padding(vsplit, GUI_MARGIN_ALL_DIFFERENT, 4, 8, 12, 16);
+    gui_set_parent(vsplit, parent);
+
+    gui_view_node_t* node = NULL;
+    gui_make_text(&node, "Physical six-sided dice", TFT_WHITE);
+    gui_set_align(node, GUI_ALIGN_CENTER, GUI_ALIGN_MIDDLE);
+    gui_set_parent(node, vsplit);
+
+    char count_buf[16];
+    const int ret = snprintf(count_buf, sizeof(count_buf), "0 / %u", (unsigned int)roll_count);
+    JADE_ASSERT(ret > 0 && ret < sizeof(count_buf));
+
+    gui_view_node_t* text_bg = NULL;
+    gui_make_fill(&text_bg, TFT_BLACK, FILL_PLAIN, vsplit);
+    gui_make_text(count_text, count_buf, TFT_WHITE);
+    gui_set_align(*count_text, GUI_ALIGN_CENTER, GUI_ALIGN_MIDDLE);
+    gui_set_parent(*count_text, text_bg);
+
+    gui_make_fill(&text_bg, TFT_BLACK, FILL_PLAIN, vsplit);
+    gui_make_text(value_text, "[ 1 ]", TFT_GREEN);
+    gui_set_text_font(*value_text, DEJAVU24_FONT);
+    gui_set_align(*value_text, GUI_ALIGN_CENTER, GUI_ALIGN_MIDDLE);
+    gui_set_parent(*value_text, text_bg);
+
+    gui_make_text(&node, "A/B value  A+B save", TFT_WHITE);
+    gui_set_align(node, GUI_ALIGN_CENTER, GUI_ALIGN_MIDDLE);
+    gui_set_parent(node, vsplit);
+
+    return act;
+}
+
+static bool mnemonic_collect_dice_rolls(uint8_t* const dice_rolls, const size_t roll_count)
+{
+    if (!dice_rolls || (roll_count != WALLET_ENTROPY_DICE_RECOMMENDED_ROLLS
+                           && roll_count != WALLET_ENTROPY_DICE_MAX_ROLLS)) {
+        return false;
+    }
+
+    const char* intro[] = { roll_count == WALLET_ENTROPY_DICE_RECOMMENDED_ROLLS ? "50 dice rolls" : "99 dice rolls",
+        roll_count == WALLET_ENTROPY_DICE_RECOMMENDED_ROLLS ? "theoretical max" : "advanced mode",
+        roll_count == WALLET_ENTROPY_DICE_RECOMMENDED_ROLLS ? "about 129 bit*" : "about 256 bit*" };
+    if (!await_continueback_activity("Dice Enhanced", intro, 3, true, NULL)) {
+        return false;
+    }
+
+    gui_view_node_t* count_text = NULL;
+    gui_view_node_t* value_text = NULL;
+    gui_activity_t* const act = make_dice_entry_activity(&count_text, &value_text, roll_count);
+    JADE_ASSERT(act);
+    JADE_ASSERT(count_text);
+    JADE_ASSERT(value_text);
+    gui_set_current_activity(act);
+
+    uint8_t current_value = 0;
+    for (size_t i = 0; i < roll_count;) {
+        char count_buf[16];
+        int ret = snprintf(count_buf, sizeof(count_buf), "%u / %u", (unsigned int)i, (unsigned int)roll_count);
+        JADE_ASSERT(ret > 0 && ret < sizeof(count_buf));
+        gui_update_text(count_text, count_buf);
+
+        char value_buf[8];
+        ret = snprintf(value_buf, sizeof(value_buf), "[ %u ]", (unsigned int)current_value + 1U);
+        JADE_ASSERT(ret > 0 && ret < sizeof(value_buf));
+        gui_update_text(value_text, value_buf);
+
+        int32_t ev_id = ESP_EVENT_ANY_ID;
+        gui_activity_wait_event(act, GUI_EVENT, ESP_EVENT_ANY_ID, NULL, &ev_id, NULL, 0);
+        if (ev_id == GUI_WHEEL_LEFT_EVENT) {
+            current_value = (uint8_t)((current_value + 5U) % 6U);
+        } else if (ev_id == GUI_WHEEL_RIGHT_EVENT) {
+            current_value = (uint8_t)((current_value + 1U) % 6U);
+        } else if (ev_id == gui_get_click_event()) {
+            dice_rolls[i] = current_value;
+            ++i;
+        }
+    }
+
+    char done_buf[16];
+    const int ret = snprintf(done_buf, sizeof(done_buf), "%u / %u", (unsigned int)roll_count, (unsigned int)roll_count);
+    JADE_ASSERT(ret > 0 && ret < sizeof(done_buf));
+    gui_update_text(count_text, done_buf);
+    return true;
+}
+
+static bool mnemonic_new_from_wallet_entropy(
+    char* const mnemonic, const size_t mnemonic_len, const uint8_t* const dice_rolls, const size_t roll_count)
+{
+    JADE_ASSERT(mnemonic);
+    JADE_ASSERT(mnemonic_len == MNEMONIC_BUFLEN);
+    JADE_ASSERT(!dice_rolls || roll_count == WALLET_ENTROPY_DICE_RECOMMENDED_ROLLS
+        || roll_count == WALLET_ENTROPY_DICE_MAX_ROLLS);
+
+    uint8_t system_entropy[WALLET_ENTROPY_256_LEN];
+    SENSITIVE_PUSH(system_entropy, sizeof(system_entropy));
+    uint8_t final_entropy[WALLET_ENTROPY_256_LEN];
+    SENSITIVE_PUSH(final_entropy, sizeof(final_entropy));
+
+    char* new_mnemonic = NULL;
+    bool ret = false;
+
+    if (!wallet_entropy_system_256(system_entropy)) {
+        goto cleanup;
+    }
+    const bool entropy_ok = dice_rolls
+        ? wallet_entropy_enhanced(final_entropy, system_entropy, dice_rolls, roll_count)
+        : wallet_entropy_standard(final_entropy, system_entropy);
+    if (!entropy_ok || !keychain_get_mnemonic_from_entropy(final_entropy, sizeof(final_entropy), &new_mnemonic)
+        || !new_mnemonic) {
+        goto cleanup;
+    }
+
+    const size_t new_mnemonic_len = strnlen(new_mnemonic, MNEMONIC_BUFLEN);
+    JADE_ASSERT(new_mnemonic_len < MNEMONIC_BUFLEN);
+    SENSITIVE_PUSH(new_mnemonic, new_mnemonic_len);
+    strcpy(mnemonic, new_mnemonic);
+    ret = display_confirm_mnemonic(MNEMONIC_MAXWORDS, new_mnemonic, new_mnemonic_len);
+    SENSITIVE_POP(new_mnemonic);
+
+cleanup:
+    if (new_mnemonic) {
+        JADE_WALLY_VERIFY(wally_free_string(new_mnemonic));
+    }
+    if (!ret) {
+        JADE_WALLY_VERIFY(wally_bzero(mnemonic, mnemonic_len));
+    }
+    SENSITIVE_POP(final_entropy);
+    SENSITIVE_POP(system_entropy);
+    return ret;
+}
+
+static bool mnemonic_new_standard(char* const mnemonic, const size_t mnemonic_len)
+{
+    return mnemonic_new_from_wallet_entropy(mnemonic, mnemonic_len, NULL, 0);
+}
+
+static bool mnemonic_new_dice(const size_t roll_count, char* const mnemonic, const size_t mnemonic_len)
+{
+    uint8_t dice_rolls[WALLET_ENTROPY_DICE_MAX_ROLLS];
+    SENSITIVE_PUSH(dice_rolls, sizeof(dice_rolls));
+    bool ret = false;
+    if (mnemonic_collect_dice_rolls(dice_rolls, roll_count)) {
+        ret = mnemonic_new_from_wallet_entropy(mnemonic, mnemonic_len, dice_rolls, roll_count);
+    }
+    SENSITIVE_POP(dice_rolls);
+    return ret;
 }
 #endif // CONFIG_DEBUG_UNATTENDED_CI
 
@@ -1359,11 +1520,27 @@ void initialise_with_mnemonic(const bool temporary_restore, const bool force_qr_
                 act = make_new_mnemonic_activity();
                 continue;
 
+            case BTN_NEW_MNEMONIC_ENHANCED:
+                act = make_dice_roll_count_activity();
+                continue;
+
             case BTN_RESTORE_MNEMONIC:
                 act = make_restore_mnemonic_activity(temporary_restore);
                 continue;
 
             // Await user mnemonic entry/confirmation
+            case BTN_NEW_MNEMONIC_STANDARD:
+                got_mnemonic = mnemonic_new_standard(mnemonic, sizeof(mnemonic));
+                break;
+
+            case BTN_NEW_MNEMONIC_DICE_50:
+                got_mnemonic = mnemonic_new_dice(WALLET_ENTROPY_DICE_RECOMMENDED_ROLLS, mnemonic, sizeof(mnemonic));
+                break;
+
+            case BTN_NEW_MNEMONIC_DICE_99:
+                got_mnemonic = mnemonic_new_dice(WALLET_ENTROPY_DICE_MAX_ROLLS, mnemonic, sizeof(mnemonic));
+                break;
+
             case BTN_NEW_MNEMONIC_12:
                 got_mnemonic = mnemonic_new(12, mnemonic, sizeof(mnemonic));
                 break;

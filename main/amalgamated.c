@@ -160,6 +160,7 @@ void __wrap_abort(void);
 #include "./protocols/trezor/ethereum/safe_normalizer.c"
 #include "./protocols/trezor/failure.c"
 #include "./protocols/trezor/features.c"
+#include "./protocols/trezor/misc.c"
 #include "./protocols/trezor/protobuf.c"
 #include "./protocols/trezor/public_key.c"
 #include "./protocols/trezor/session.c"
@@ -178,6 +179,7 @@ void __wrap_abort(void);
 #include "./rsa.c"
 #ifndef CONFIG_LIBJADE
 #include "./random.c"
+#include "./wallet_entropy.c"
 #include "./selfcheck.c"
 #include "./sensitive.c"
 #endif // CONFIG_LIBJADE
@@ -191,6 +193,7 @@ void __wrap_abort(void);
 #include "./storage.c"
 #include "./ui/ble_confirm.c"
 #include "./ui/camera.c"
+#include "./ui/chain_confirm_format.c"
 #include "./ui/chain_confirm.c"
 #include "./ui/confirm_address.c"
 #include "./ui/dashboard.c"

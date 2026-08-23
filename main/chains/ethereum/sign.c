@@ -68,7 +68,8 @@ static bool ethereum_signature_v(
     return true;
 }
 
-bool ethereum_sign_tx(const ethereum_tx_preflight_request_t* const request, ethereum_signature_t* const signature)
+bool ethereum_sign_tx_ex(const ethereum_tx_preflight_request_t* const request, ethereum_signature_t* const signature,
+    const bool free_managed_activities)
 {
     if (!request || !signature) {
         return false;
@@ -101,7 +102,7 @@ bool ethereum_sign_tx(const ethereum_tx_preflight_request_t* const request, ethe
 
     uint8_t recovery_id = 0;
     ETH_SIGN_TRACE("sign:authorize");
-    bool ok = ethereum_authorize_tx(&trusted_request, &authorization);
+    bool ok = ethereum_authorize_tx_ex(&trusted_request, &authorization, free_managed_activities);
     ETH_SIGN_NOTE("sign authorize ok=%u fields=%lu", ok ? 1 : 0, (unsigned long)authorization.summary.num_fields);
     ETH_SIGN_TRACE(ok ? "sign:authorize_ok" : "sign:authorize_fail");
     if (ok) {
@@ -147,5 +148,10 @@ bool ethereum_sign_tx(const ethereum_tx_preflight_request_t* const request, ethe
     wally_bzero(&trusted_request, sizeof(trusted_request));
     wally_bzero(&path, sizeof(path));
     return ok;
+}
+
+bool ethereum_sign_tx(const ethereum_tx_preflight_request_t* const request, ethereum_signature_t* const signature)
+{
+    return ethereum_sign_tx_ex(request, signature, false);
 }
 #endif /* AMALGAMATED_BUILD */

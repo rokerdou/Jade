@@ -2,6 +2,7 @@
 #include "../jade_assert.h"
 #include "../keychain.h"
 #include "../process.h"
+#include "../ui.h"
 #include "../utils/cbor_rpc.h"
 #include "../utils/network.h"
 #include "../wallet.h"
@@ -26,6 +27,20 @@ void get_xpubs_process(void* process_ptr)
     const bool has_path = rpc_get_bip32_path("path", &params, path, max_path_len, &written);
     if (!has_path) {
         jade_process_reject_message(process, CBOR_RPC_BAD_PARAMETERS, "Failed to extract valid path from parameters");
+        goto cleanup;
+    }
+
+    char pathstr[MAX_PATH_STR_LEN(MAX_PATH_LEN)];
+    const bool path_only = false;
+    if (!wallet_bip32_path_as_str(path, written, pathstr, sizeof(pathstr), path_only)) {
+        jade_process_reject_message(process, CBOR_RPC_INTERNAL_ERROR, "Failed to convert path to string format");
+        goto cleanup;
+    }
+
+    const char* question[] = { "Export xpub?", "Host can track", "wallet history." };
+    if (!await_yesno_activity("Public Key", question, 3, false, NULL)) {
+        JADE_LOGW("User declined to export xpub for path %s", pathstr);
+        jade_process_reject_message(process, CBOR_RPC_USER_CANCELLED, "User declined to export xpub");
         goto cleanup;
     }
 

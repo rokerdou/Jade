@@ -39,6 +39,13 @@ void get_identity_shared_key_process(void* process_ptr)
         goto cleanup;
     }
 
+    const char* question[] = { "Share identity", "secret with", "USB host?" };
+    if (!await_yesno_activity("Identity Key", question, 3, false, NULL)) {
+        JADE_LOGW("User declined to export identity shared key");
+        jade_process_reject_message(process, CBOR_RPC_USER_CANCELLED, "User declined to export identity shared key");
+        goto cleanup;
+    }
+
     // Check keychain has seed data
     if (keychain_get()->seed_len == 0) {
         JADE_LOGE("No wallet seed available.  Wallet must be re-initialised from mnemonic.");

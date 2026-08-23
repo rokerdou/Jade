@@ -12,6 +12,7 @@
 #include "../../jade_tasks.h"
 #include "../../sensitive.h"
 #include "../../process.h"
+#include "../../ui.h"
 
 #include <esp_err.h>
 #include <esp_mac.h>
@@ -55,6 +56,7 @@ static bool s_trezor_session_id_initialized = false;
 static trezor_session_state_t s_trezor_session_state;
 static char s_trezor_device_id[13];
 static volatile bool s_signed_notice_active = false;
+static volatile uint32_t s_hid_notice_generation = 0;
 
 static const tusb_desc_device_t TREZOR_USB_HID_DEVICE_DESCRIPTOR = {
     .bLength = sizeof(tusb_desc_device_t),
@@ -308,15 +310,32 @@ static bool trezor_usb_hid_response_header(
     return true;
 }
 
-static void trezor_usb_hid_show_signed_notice(void)
+static void trezor_usb_hid_delayed_dashboard_redraw_task(void* arg)
+{
+    const uint32_t generation = (uint32_t)(uintptr_t)arg;
+    vTaskDelay(pdMS_TO_TICKS(TREZOR_USB_HID_SIGNED_NOTICE_MS));
+    if (generation == s_hid_notice_generation) {
+        dashboard_request_redraw();
+    }
+    vTaskDelete(NULL);
+}
+
+static void trezor_usb_hid_show_host_result_notice(const char* const stage)
 {
     if (s_signed_notice_active) {
         return;
     }
     s_signed_notice_active = true;
-    trezor_trace_set_stage("usb:signed_notice");
-    dashboard_request_redraw();
-    trezor_trace_set_stage("usb:signed_done");
+    trezor_trace_set_stage(stage ? stage : "usb:host_notice");
+
+    const char* message[] = { "Sent to host" };
+    display_message_activity_ex(message, 1, true);
+
+    const uint32_t generation = s_hid_notice_generation;
+    (void)xTaskCreatePinnedToCore(trezor_usb_hid_delayed_dashboard_redraw_task, "trezor_notice",
+        2048, (void*)(uintptr_t)generation, TREZOR_USB_HID_TASK_PRIORITY - 1, NULL, JADE_CORE_GUI);
+
+    trezor_trace_set_stage("usb:host_notice_done");
     s_signed_notice_active = false;
 }
 
@@ -406,6 +425,8 @@ static void trezor_usb_hid_task(void* ignore)
         rx_len += sizeof(chunk.bytes);
 
         if (expected_len != 0 && rx_len >= expected_len) {
+            dashboard_cancel_redraw_request();
+            ++s_hid_notice_generation;
             trezor_trace_set_stage("usb:pre_session");
             trezor_session_t session = trezor_usb_hid_session();
             size_t tx_len = 0;
@@ -430,6 +451,11 @@ static void trezor_usb_hid_task(void* ignore)
                 }
                 const bool sent = trezor_usb_hid_send_chunks(s_hid_tx_chunks, tx_len, &available, &written,
                     response_is_signed_result);
+                // Entropy export already requires an on-device confirmation. Do not show a
+                // transient managed "Sent to host" page for it: hosts can legally request
+                // entropy repeatedly, and the extra async notice/dashboard redraw can race
+                // with the next confirmation activity and leave a visible dialog without an
+                // active waiter.
                 show_signed_notice = sent && response_is_signed_result;
                 trezor_trace_record_transport_result(sent, tx_len, available, written);
                 trezor_trace_set_note("usb tx sent=%u len=%lu av=%lu wr=%lu sig=%u", sent ? 1 : 0,
@@ -457,7 +483,9 @@ static void trezor_usb_hid_task(void* ignore)
                 trezor_trace_set_stage("usb:sens_ok");
             }
             if (show_signed_notice) {
-                trezor_usb_hid_show_signed_notice();
+                trezor_usb_hid_show_host_result_notice("usb:signed_notice");
+            } else if (response_event == TREZOR_SESSION_RESPONSE_EVENT_ENTROPY_RESULT) {
+                trezor_trace_set_stage("usb:entropy_no_notice");
             }
             if (show_signed_notice) {
                 trezor_trace_checkpoint("usb:idle", "after_sig=1 queued=%lu",

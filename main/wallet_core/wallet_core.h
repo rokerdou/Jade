@@ -34,6 +34,7 @@ typedef struct {
     uint32_t root_fingerprint;
 } wallet_core_public_node_t;
 
+void wallet_core_init(void);
 bool wallet_core_is_unlocked(void);
 bool wallet_core_is_initialized(void);
 bool wallet_core_is_ready(void);

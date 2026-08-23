@@ -99,7 +99,8 @@ static bool trezor_trace_stage_should_persist(const char* const stage)
 {
     return trezor_trace_has_prefix(stage, "unlock:") || trezor_trace_has_prefix(stage, "auth:")
         || trezor_trace_has_prefix(stage, "ethsign:") || trezor_trace_has_prefix(stage, "btcsign:")
-        || trezor_trace_has_prefix(stage, "sign:") || trezor_trace_has_prefix(stage, "ui:");
+        || trezor_trace_has_prefix(stage, "btcpol:") || trezor_trace_has_prefix(stage, "sign:")
+        || trezor_trace_has_prefix(stage, "ui:");
 }
 
 #ifdef ESP_PLATFORM
@@ -455,6 +456,10 @@ const char* trezor_trace_message_name(const uint16_t message_type)
         return "Success";
     case TREZOR_MSG_FAILURE:
         return "Failure";
+    case TREZOR_MSG_GET_ENTROPY:
+        return "GetEntropy";
+    case TREZOR_MSG_ENTROPY:
+        return "Entropy";
     case TREZOR_MSG_GET_PUBLIC_KEY:
         return "GetPublicKey";
     case TREZOR_MSG_PUBLIC_KEY:
@@ -551,6 +556,10 @@ static const char* trezor_trace_message_short_name(const uint16_t message_type)
         return "Success";
     case TREZOR_MSG_FAILURE:
         return "Fail";
+    case TREZOR_MSG_GET_ENTROPY:
+        return "GetEntropy";
+    case TREZOR_MSG_ENTROPY:
+        return "Entropy";
     case TREZOR_MSG_GET_PUBLIC_KEY:
         return "GetPub";
     case TREZOR_MSG_PUBLIC_KEY:
@@ -993,6 +1002,34 @@ static void trezor_trace_format_features_response(
     }
 }
 
+static void trezor_trace_format_get_entropy(
+    const uint8_t* const payload, const size_t payload_len, char* const output, const size_t output_len)
+{
+    trezor_protobuf_reader_t reader;
+    trezor_protobuf_reader_init(&reader, payload, payload_len);
+    uint64_t size = 0;
+    bool valid = reader.len == payload_len;
+    bool saw_size = false;
+    while (valid && reader.pos < reader.len) {
+        uint32_t field_number = 0;
+        uint8_t wire_type = 0;
+        const uint8_t* value = NULL;
+        size_t value_len = 0;
+        if (!trezor_protobuf_reader_next(&reader, &field_number, &wire_type, &value, &value_len)
+            || field_number != 1 || wire_type != TREZOR_PROTOBUF_WIRE_VARINT || saw_size
+            || !trezor_protobuf_read_varint_value(value, value_len, &size)) {
+            valid = false;
+            break;
+        }
+        saw_size = true;
+    }
+    if (valid && saw_size) {
+        trezor_trace_append(output, output_len, "size=%lu", (unsigned long)size);
+    } else {
+        trezor_trace_append(output, output_len, "invalid payload_len=%lu", (unsigned long)payload_len);
+    }
+}
+
 static void trezor_trace_format_request(uint16_t request_type, const uint8_t* const payload,
     const size_t payload_len, const bool wire_ok, char* const output, const size_t output_len)
 {
@@ -1011,6 +1048,9 @@ static void trezor_trace_format_request(uint16_t request_type, const uint8_t* co
     case TREZOR_MSG_BUTTON_ACK:
     case TREZOR_MSG_APPLY_FLAGS:
         trezor_trace_append(output, output_len, "%s", payload_len ? "unexpected payload" : "empty");
+        break;
+    case TREZOR_MSG_GET_ENTROPY:
+        trezor_trace_format_get_entropy(payload, payload_len, output, output_len);
         break;
     case TREZOR_MSG_GET_ADDRESS:
         trezor_trace_format_get_address(payload, payload_len, output, output_len);
@@ -1052,6 +1092,9 @@ static void trezor_trace_format_response(uint16_t response_type, const uint8_t* 
     case TREZOR_MSG_PUBLIC_KEY:
     case TREZOR_MSG_ETHEREUM_PUBLIC_KEY:
         trezor_trace_append(output, output_len, "node/xpub omitted");
+        break;
+    case TREZOR_MSG_ENTROPY:
+        trezor_trace_append(output, output_len, "entropy omitted payload_len=%lu", (unsigned long)payload_len);
         break;
     default:
         trezor_trace_append(output, output_len, "payload_len=%lu", (unsigned long)payload_len);

@@ -203,11 +203,11 @@ bool trezor_bitcoin_script_builder_output_script(const trezor_bitcoin_tx_output_
     }
     const uint32_t account = output->address_n[2];
     const bool ok = trezor_bitcoin_script_builder_path_from_output(output, &path)
-        && (bitcoin_path_is_p2pkh_change(output->address_n, output->address_n_len, testnet, account)
+        && (bitcoin_path_is_p2pkh_internal(output->address_n, output->address_n_len, testnet, account)
                 ? trezor_bitcoin_script_builder_p2pkh_script_code_from_path(&path, script, script_len, written)
-            : bitcoin_path_is_p2wpkh_change(output->address_n, output->address_n_len, testnet, account)
+            : bitcoin_path_is_p2wpkh_internal(output->address_n, output->address_n_len, testnet, account)
                 ? trezor_bitcoin_script_builder_p2wpkh_script_from_path(&path, script, script_len, written)
-            : bitcoin_path_is_p2sh_p2wpkh_change(output->address_n, output->address_n_len, testnet, account)
+            : bitcoin_path_is_p2sh_p2wpkh_internal(output->address_n, output->address_n_len, testnet, account)
                 ? trezor_bitcoin_script_builder_p2sh_p2wpkh_script_from_path(&path, script, script_len, written)
                 : false);
     wally_bzero(&path, sizeof(path));

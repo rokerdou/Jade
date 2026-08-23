@@ -3,6 +3,7 @@
 
 #include "policy.h"
 #include "script_builder.h"
+#include "../trace.h"
 
 #include <string.h>
 #include <stdio.h>
@@ -35,8 +36,17 @@ static bool trezor_bitcoin_normalizer_copy_address(
 bool trezor_bitcoin_signing_to_confirm_request(
     const trezor_bitcoin_signing_state_t* const state, bitcoin_confirm_request_t* const request)
 {
-    if (!state || !request || !trezor_bitcoin_policy_is_basic(state)
-        || state->inputs[0].address_n_len > CHAIN_CONFIRM_MAX_PATH_LEN) {
+    if (!state || !request) {
+        trezor_trace_set_stage("btcpol:req_null");
+        return false;
+    }
+    if (!trezor_bitcoin_policy_is_basic(state)) {
+        return false;
+    }
+    if (state->inputs[0].address_n_len > CHAIN_CONFIRM_MAX_PATH_LEN) {
+        trezor_trace_set_stage("btcpol:req_path");
+        trezor_trace_set_note("path=%lu max=%lu", (unsigned long)state->inputs[0].address_n_len,
+            (unsigned long)CHAIN_CONFIRM_MAX_PATH_LEN);
         return false;
     }
 
@@ -46,6 +56,7 @@ bool trezor_bitcoin_signing_to_confirm_request(
 
     trezor_bitcoin_coin_t coin = TREZOR_BITCOIN_COIN_MAINNET;
     if (!trezor_bitcoin_policy_signing_coin(state, &coin)) {
+        trezor_trace_set_stage("btcpol:req_coin");
         wally_bzero(request, sizeof(*request));
         return false;
     }
@@ -60,6 +71,10 @@ bool trezor_bitcoin_signing_to_confirm_request(
             output, coin, validated_script, sizeof(validated_script), &validated_script_len);
         wally_bzero(validated_script, sizeof(validated_script));
         if (!valid_output) {
+            trezor_trace_set_stage("btcpol:req_script");
+            trezor_trace_set_note("out=%lu addr=%u path=%lu st=%lu", (unsigned long)i,
+                output->has_address ? 1U : 0U, (unsigned long)output->address_n_len,
+                (unsigned long)output->script_type);
             wally_bzero(request, sizeof(*request));
             return false;
         }
@@ -68,24 +83,57 @@ bool trezor_bitcoin_signing_to_confirm_request(
             if (external_outputs == 1
                 && !trezor_bitcoin_normalizer_copy_address(
                     request->to, sizeof(request->to), output->address, sizeof(output->address))) {
+                trezor_trace_set_stage("btcpol:req_addr");
+                trezor_trace_set_note(
+                    "out=%lu addr_len=%lu", (unsigned long)i, (unsigned long)strnlen(output->address,
+                                                                        sizeof(output->address)));
                 wally_bzero(request, sizeof(*request));
                 return false;
             }
             if (!trezor_bitcoin_normalizer_add_u64(&request->amount, output->amount)) {
+                trezor_trace_set_stage("btcpol:req_amt");
+                trezor_trace_set_note("out=%lu sats=%llu", (unsigned long)i, (unsigned long long)output->amount);
                 wally_bzero(request, sizeof(*request));
                 return false;
             }
-        } else if (!trezor_bitcoin_normalizer_add_u64(&request->change, output->amount)) {
+        } else {
+            const uint32_t branch = output->address_n_len >= 2 ? output->address_n[output->address_n_len - 2U] : UINT32_MAX;
+            uint64_t* const internal_total = branch == 0 ? &request->self : branch == 1 ? &request->change : NULL;
+            if (!internal_total || !trezor_bitcoin_normalizer_add_u64(internal_total, output->amount)) {
+                trezor_trace_set_stage("btcpol:req_internal");
+                trezor_trace_set_note(
+                    "out=%lu branch=%lu sats=%llu", (unsigned long)i, (unsigned long)branch,
+                    (unsigned long long)output->amount);
+                wally_bzero(request, sizeof(*request));
+                return false;
+            }
+        }
+    }
+    if (external_outputs == 0) {
+        if (!trezor_bitcoin_normalizer_add_u64(&request->amount, request->self)
+            || !trezor_bitcoin_normalizer_add_u64(&request->amount, request->change)
+            || !trezor_bitcoin_normalizer_copy_address(
+                request->to, sizeof(request->to), "Own wallet", sizeof("Own wallet"))) {
+            trezor_trace_set_stage("btcpol:req_self");
             wally_bzero(request, sizeof(*request));
             return false;
         }
     }
-    if (external_outputs != 1 || request->amount == 0 || request->to[0] == '\0') {
+    if (external_outputs > 1 || request->amount == 0 || request->to[0] == '\0') {
+        trezor_trace_set_stage("btcpol:req_final");
+        trezor_trace_set_note("ext=%lu amount=%llu to=%u", (unsigned long)external_outputs,
+            (unsigned long long)request->amount, request->to[0] != '\0' ? 1U : 0U);
         wally_bzero(request, sizeof(*request));
         return false;
     }
     request->fee = state->fee;
     request->fee_rate_sats_per_vbyte = state->fee_rate_sats_per_vbyte;
+    request->lock_time = state->request.lock_time;
+    if (!trezor_bitcoin_policy_common_sequence(state, &request->sequence)) {
+        trezor_trace_set_stage("btcpol:req_seq");
+        wally_bzero(request, sizeof(*request));
+        return false;
+    }
     return true;
 }
 
@@ -165,7 +213,49 @@ bool trezor_bitcoin_signing_to_multisig_confirm_request(
     request->change = preview.change_amount;
     request->fee = state->fee;
     request->fee_rate_sats_per_vbyte = state->fee_rate_sats_per_vbyte;
+    request->lock_time = state->request.lock_time;
+    if (!trezor_bitcoin_policy_common_sequence(state, &request->sequence)) {
+        wally_bzero(request, sizeof(*request));
+        wally_bzero(&preview, sizeof(preview));
+        return false;
+    }
     wally_bzero(&preview, sizeof(preview));
     return true;
+}
+
+static bool trezor_bitcoin_confirm_request_equal(
+    const bitcoin_confirm_request_t* const a, const bitcoin_confirm_request_t* const b)
+{
+    if (!a || !b || a->path_len != b->path_len || a->path_len > CHAIN_CONFIRM_MAX_PATH_LEN) {
+        return false;
+    }
+    return memcmp(a->path, b->path, a->path_len * sizeof(a->path[0])) == 0
+        && memcmp(a->policy, b->policy, sizeof(a->policy)) == 0
+        && memcmp(a->to, b->to, sizeof(a->to)) == 0 && a->amount == b->amount && a->self == b->self
+        && a->change == b->change && a->fee == b->fee
+        && a->fee_rate_sats_per_vbyte == b->fee_rate_sats_per_vbyte && a->lock_time == b->lock_time
+        && a->sequence == b->sequence;
+}
+
+bool trezor_bitcoin_confirm_request_matches_state(
+    const trezor_bitcoin_signing_state_t* const state, const bitcoin_confirm_request_t* const request)
+{
+    bitcoin_confirm_request_t expected;
+    wally_bzero(&expected, sizeof(expected));
+    const bool ok = trezor_bitcoin_signing_to_confirm_request(state, &expected)
+        && trezor_bitcoin_confirm_request_equal(&expected, request);
+    wally_bzero(&expected, sizeof(expected));
+    return ok;
+}
+
+bool trezor_bitcoin_multisig_confirm_request_matches_state(
+    const trezor_bitcoin_signing_state_t* const state, const bitcoin_confirm_request_t* const request)
+{
+    bitcoin_confirm_request_t expected;
+    wally_bzero(&expected, sizeof(expected));
+    const bool ok = trezor_bitcoin_signing_to_multisig_confirm_request(state, &expected)
+        && trezor_bitcoin_confirm_request_equal(&expected, request);
+    wally_bzero(&expected, sizeof(expected));
+    return ok;
 }
 #endif /* AMALGAMATED_BUILD */

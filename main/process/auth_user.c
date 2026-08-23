@@ -34,8 +34,35 @@ bool pinclient_set(
 
 // Whether we want to change the PIN on the next unlock
 static bool change_pin_requested = false;
+static portMUX_TYPE local_unlock_mutex = portMUX_INITIALIZER_UNLOCKED;
+static bool local_unlock_in_progress = false;
 
 void set_request_change_pin(const bool change_pin) { change_pin_requested = change_pin; }
+
+static bool try_begin_local_unlock(void)
+{
+    taskENTER_CRITICAL(&local_unlock_mutex);
+    const bool busy = local_unlock_in_progress;
+    if (!busy) {
+        local_unlock_in_progress = true;
+    }
+    taskEXIT_CRITICAL(&local_unlock_mutex);
+
+    if (busy) {
+#ifdef CONFIG_TREZOR_USB_HID
+        trezor_trace_set_stage("auth:busy");
+#endif
+        return false;
+    }
+    return true;
+}
+
+static void end_local_unlock(void)
+{
+    taskENTER_CRITICAL(&local_unlock_mutex);
+    local_unlock_in_progress = false;
+    taskEXIT_CRITICAL(&local_unlock_mutex);
+}
 
 static void check_wallet_erase_pin(jade_process_t* process, const uint8_t* pin_entered, const size_t pin_len)
 {
@@ -281,6 +308,9 @@ bool auth_user_unlock_wallet_with_pin(const jade_msg_source_t source)
 #else
     JADE_ASSERT(!keychain_get());
     JADE_ASSERT(keychain_has_pin());
+    if (!try_begin_local_unlock()) {
+        return false;
+    }
     bool rslt = false;
 #ifdef CONFIG_TREZOR_USB_HID
     trezor_trace_set_stage("auth:pin_start");
@@ -292,17 +322,18 @@ bool auth_user_unlock_wallet_with_pin(const jade_msg_source_t source)
     uint8_t aeskey[AES_KEY_LEN_256];
     SENSITIVE_PUSH(aeskey, sizeof(aeskey));
 
-    if (!get_pin_get_aeskey(NULL, "Unlock Jade", pin, sizeof(pin), aeskey, sizeof(aeskey))) {
+    if (!keychain_requires_passphrase()
+        && !get_pin_get_aeskey(NULL, "Unlock Jade", pin, sizeof(pin), aeskey, sizeof(aeskey))) {
 #ifdef CONFIG_TREZOR_USB_HID
         trezor_trace_set_stage("auth:pin_cancel");
 #endif
         goto cleanup;
     }
 #ifdef CONFIG_TREZOR_USB_HID
-    trezor_trace_set_stage("auth:aes_ready");
+    trezor_trace_set_stage(keychain_requires_passphrase() ? "auth:resume_pass" : "auth:aes_ready");
 #endif
 
-    if (!keychain_load(aeskey, sizeof(aeskey))) {
+    if (!keychain_requires_passphrase() && !keychain_load(aeskey, sizeof(aeskey))) {
         JADE_LOGE("Failed to load keys - Incorrect PIN");
 #ifdef CONFIG_TREZOR_USB_HID
         trezor_trace_set_stage("auth:load_fail");
@@ -352,6 +383,7 @@ bool auth_user_unlock_wallet_with_pin(const jade_msg_source_t source)
 cleanup:
     SENSITIVE_POP(aeskey);
     SENSITIVE_POP(pin);
+    end_local_unlock();
     return rslt;
 #endif
 }
@@ -364,6 +396,10 @@ static bool get_pin_load_keys(jade_process_t* process, const bool suppress_pin_c
     // *NOT* have any keys in-memory.  We need the pinserver data to decrypt.
     JADE_ASSERT(!keychain_get());
     JADE_ASSERT(keychain_has_pin());
+    if (!try_begin_local_unlock()) {
+        jade_process_reject_message(process, CBOR_RPC_USER_CANCELLED, "Local unlock already in progress");
+        return false;
+    }
     bool rslt = false;
 
     uint8_t pin[DIGIT_ENTRY_SIZE];
@@ -459,6 +495,7 @@ static bool get_pin_load_keys(jade_process_t* process, const bool suppress_pin_c
 cleanup:
     SENSITIVE_POP(aeskey);
     SENSITIVE_POP(pin);
+    end_local_unlock();
     return rslt;
 }
 

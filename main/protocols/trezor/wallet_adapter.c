@@ -6,6 +6,7 @@
 #include "auth_bridge.h"
 #include "bitcoin/multisig.h"
 #include "bitcoin/public_node.h"
+#include "misc.h"
 #include "public_key.h"
 #include "trace.h"
 
@@ -18,18 +19,21 @@
 #include "../../chains/ethereum/sign.h"
 #include "../../chains/ethereum/wallet.h"
 #include "../../idletimer.h"
+#include "../../random.h"
 #include "../../storage.h"
+#include "../../ui.h"
 #include "../../ui/chain_confirm.h"
 #include "../../wallet_core/wallet_core.h"
 
 #include <string.h>
+#include <stdio.h>
 #include <wally_address.h>
 #include <wally_core.h>
 #include <wally_crypto.h>
 
 #define TREZOR_WALLET_ADAPTER_INTERACTIVE_TIMEOUT_SECS 600
 
-bool show_confirm_address_activity(const char* address, bool default_selection);
+bool show_confirm_address_activity_ex(const char* address, bool default_selection, bool free_managed_activities);
 
 static bool trezor_wallet_get_eth_address(
     void* ctx, const trezor_ethereum_get_address_t* const request, char* const address, const size_t address_len)
@@ -64,7 +68,7 @@ static bool trezor_wallet_get_eth_address(
     trezor_trace_set_stage("eth:display");
     if (request->has_show_display && request->show_display) {
         idletimer_set_min_timeout_secs(TREZOR_WALLET_ADAPTER_INTERACTIVE_TIMEOUT_SECS);
-        const bool accepted = show_confirm_address_activity(address, false);
+        const bool accepted = show_confirm_address_activity_ex(address, false, true);
         idletimer_set_min_timeout_secs(0);
         if (!accepted) {
             wally_bzero(address, address_len);
@@ -206,7 +210,7 @@ static bool trezor_wallet_get_bitcoin_address(
     }
     if (request->has_show_display && request->show_display) {
         idletimer_set_min_timeout_secs(TREZOR_WALLET_ADAPTER_INTERACTIVE_TIMEOUT_SECS);
-        const bool accepted = show_confirm_address_activity(address, false);
+        const bool accepted = show_confirm_address_activity_ex(address, false, true);
         idletimer_set_min_timeout_secs(0);
         if (!accepted) {
             wally_bzero(address, address_len);
@@ -267,7 +271,7 @@ static bool trezor_wallet_sign_eth_tx(
     }
     trezor_trace_set_stage("ethsign:core");
     idletimer_set_min_timeout_secs(TREZOR_WALLET_ADAPTER_INTERACTIVE_TIMEOUT_SECS);
-    const bool ok = ethereum_sign_tx(request, signature);
+    const bool ok = ethereum_sign_tx_ex(request, signature, true);
     idletimer_set_min_timeout_secs(0);
     trezor_trace_set_stage(ok ? "ethsign:core_ok" : "ethsign:core_fail");
     return ok;
@@ -324,9 +328,15 @@ static bool trezor_wallet_sign_eth_safe_tx(void* ctx, const trezor_ethereum_sign
     if (ok) {
         trezor_trace_set_stage("safesign:display");
         idletimer_set_min_timeout_secs(TREZOR_WALLET_ADAPTER_INTERACTIVE_TIMEOUT_SECS);
-        ok = show_chain_confirm_summary_activity(&summary);
+        ok = show_chain_confirm_summary_activity_ex(&summary, true);
         idletimer_set_min_timeout_secs(0);
         trezor_trace_set_stage(ok ? "safesign:display_ok" : "safesign:display_cancel");
+    }
+    if (ok) {
+        trezor_trace_set_stage("safesign:bind_ui");
+        ok = ethereum_safe_tx_confirm_summary_matches_preflight(
+            typed_hash->address_n, typed_hash->address_n_len, tx, result, signing_hash, &summary);
+        trezor_trace_set_stage(ok ? "safesign:bind_ui_ok" : "safesign:bind_ui_fail");
     }
     if (ok) {
         trezor_trace_set_stage("safesign:wallet_sign");
@@ -372,7 +382,7 @@ static bool trezor_wallet_confirm_btc_tx(void* ctx, const bitcoin_confirm_reques
 
     trezor_trace_set_stage("btcsign:display");
     idletimer_set_min_timeout_secs(TREZOR_WALLET_ADAPTER_INTERACTIVE_TIMEOUT_SECS);
-    const bool ok = show_chain_confirm_summary_activity(&summary);
+    const bool ok = show_chain_confirm_summary_activity_ex(&summary, true);
     idletimer_set_min_timeout_secs(0);
     trezor_trace_set_stage(ok ? "btcsign:display_ok" : "btcsign:display_cancel");
     return ok;
@@ -391,6 +401,37 @@ static bool trezor_wallet_sign_btc_digest(void* ctx, const wallet_core_path_t* c
     const bool ok = wallet_core_sign_digest_ecdsa_recoverable(path, digest, digest_len, signature, signature_len);
     trezor_trace_set_stage(ok ? "btcsign:wallet_ok" : "btcsign:wallet_fail");
     return ok;
+}
+
+static bool trezor_wallet_get_entropy(void* ctx, const uint32_t size, uint8_t* const entropy, const size_t entropy_len)
+{
+    (void)ctx;
+    if (size > TREZOR_GET_ENTROPY_MAX_SIZE || entropy_len != size || (!entropy && size)) {
+        trezor_trace_set_stage("entropy:reject");
+        return false;
+    }
+
+    char size_line[24];
+    const int ret = snprintf(size_line, sizeof(size_line), "%lu random bytes", (unsigned long)size);
+    if (ret <= 0 || ret >= (int)sizeof(size_line)) {
+        trezor_trace_set_stage("entropy:size_fmt");
+        return false;
+    }
+
+    const char* question[] = { "Send device RNG", size_line, "to USB host?" };
+    idletimer_set_min_timeout_secs(TREZOR_WALLET_ADAPTER_INTERACTIVE_TIMEOUT_SECS);
+    const bool accepted = await_yesno_activity_ex("Get Entropy", question, 3, false, NULL, true);
+    idletimer_set_min_timeout_secs(0);
+    if (!accepted) {
+        trezor_trace_set_stage("entropy:user_cancel");
+        return false;
+    }
+
+    if (size) {
+        get_hardware_random(entropy, size);
+    }
+    trezor_trace_set_stage("entropy:rng_ok");
+    return true;
 }
 
 trezor_session_t trezor_wallet_adapter_session(const trezor_wallet_adapter_config_t* const config)
@@ -450,6 +491,8 @@ trezor_session_t trezor_wallet_adapter_session(const trezor_wallet_adapter_confi
         .confirm_btc_tx_ctx = NULL,
         .sign_btc_digest = trezor_wallet_sign_btc_digest,
         .sign_btc_digest_ctx = NULL,
+        .get_entropy = trezor_wallet_get_entropy,
+        .get_entropy_ctx = NULL,
     };
     return session;
 }

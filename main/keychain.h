@@ -26,6 +26,8 @@ typedef enum { PASSPHRASE_NEVER, PASSPHRASE_ONCE, PASSPHRASE_ALWAYS } passphrase
 typedef enum { PASSPHRASE_WORDLIST, PASSPHRASE_FREETEXT } passphrase_type_t;
 
 void keychain_init_cache(void);
+void keychain_lock(void);
+void keychain_unlock(void);
 void keychain_set(const keychain_t* src, uint8_t userdata, bool temporary);
 const struct ext_key* keychain_cached_service(const struct ext_key* service, bool subaccount_root);
 void keychain_clear(void);
@@ -58,6 +60,7 @@ bool keychain_is_network_type_consistent(const network_type_t network_type);
 
 // mnemonic returned should be freed by caller with wally_free_string
 void keychain_get_new_mnemonic(char** mnemonic, size_t nwords);
+bool keychain_get_mnemonic_from_entropy(const uint8_t* entropy, size_t entropy_len, char** mnemonic);
 WARN_UNUSED_RESULT bool keychain_get_new_privatekey(uint8_t* privatekey, size_t size);
 
 bool keychain_has_pin(void);

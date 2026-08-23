@@ -31,12 +31,15 @@ typedef bool (*trezor_session_eth_sign_safe_tx_callback_t)(void* ctx,
 typedef bool (*trezor_session_btc_confirm_tx_callback_t)(void* ctx, const bitcoin_confirm_request_t* request);
 typedef bool (*trezor_session_btc_sign_digest_callback_t)(
     void* ctx, const wallet_core_path_t* path, const uint8_t* digest, size_t digest_len, uint8_t* signature, size_t signature_len);
+typedef bool (*trezor_session_get_entropy_callback_t)(
+    void* ctx, uint32_t size, uint8_t* entropy, size_t entropy_len);
 typedef bool (*trezor_session_bool_callback_t)(void* ctx);
 typedef bool (*trezor_session_initialize_callback_t)(void* ctx, const uint8_t* session_id, size_t session_id_len);
 
 typedef enum {
     TREZOR_SESSION_RESPONSE_EVENT_NONE = 0,
     TREZOR_SESSION_RESPONSE_EVENT_SIGNED_RESULT,
+    TREZOR_SESSION_RESPONSE_EVENT_ENTROPY_RESULT,
 } trezor_session_response_event_t;
 
 typedef struct {
@@ -45,9 +48,11 @@ typedef struct {
     bool has_pending_eth_safe_typed_hash;
     bool has_pending_btc_signing;
     bool has_pending_btc_signed_tx;
+    bool has_pending_get_entropy;
     uint16_t pending_request_type;
     uint8_t pending_request_payload[TREZOR_SESSION_MAX_REQUEST_PAYLOAD_LEN];
     size_t pending_request_payload_len;
+    uint32_t pending_entropy_size;
     trezor_ethereum_signing_state_t pending_eth_signing;
     trezor_ethereum_sign_typed_hash_t pending_eth_safe_typed_hash;
     trezor_bitcoin_signing_state_t pending_btc_signing;
@@ -77,6 +82,8 @@ typedef struct {
     void* confirm_btc_tx_ctx;
     trezor_session_btc_sign_digest_callback_t sign_btc_digest;
     void* sign_btc_digest_ctx;
+    trezor_session_get_entropy_callback_t get_entropy;
+    void* get_entropy_ctx;
 } trezor_session_t;
 
 bool trezor_session_handle_payload(const trezor_session_t* session, uint16_t request_type,

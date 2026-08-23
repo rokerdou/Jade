@@ -20,8 +20,6 @@
 
 #include "process_utils.h"
 
-bool show_confirm_address_activity(const char* address, bool default_selection);
-
 void get_receive_address_process(void* process_ptr)
 {
     JADE_LOGI("Starting: %d", xPortGetFreeHeapSize());
@@ -253,7 +251,7 @@ void get_receive_address_process(void* process_ptr)
 
     // Display to the user to confirm
     const bool default_selection = false;
-    if (!show_confirm_address_activity(address, default_selection)) {
+    if (!show_confirm_address_activity_ex(address, default_selection, true)) {
         JADE_LOGW("User declined to confirm address");
         jade_process_reject_message(process, CBOR_RPC_USER_CANCELLED, "User declined to confirm address");
         goto cleanup;

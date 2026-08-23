@@ -112,6 +112,8 @@ if(HOST_CC)
     set(eth_tron_address_gate_stamp ${CMAKE_BINARY_DIR}/eth_tron_address_gate.stamp)
     set(wallet_core_public_node_gate_bin ${CMAKE_BINARY_DIR}/wallet_core_public_node_gate)
     set(wallet_core_public_node_gate_stamp ${CMAKE_BINARY_DIR}/wallet_core_public_node_gate.stamp)
+    set(trezor_usb_fuzz_gate_bin ${CMAKE_BINARY_DIR}/trezor_usb_fuzz_gate)
+    set(trezor_usb_fuzz_gate_stamp ${CMAKE_BINARY_DIR}/trezor_usb_fuzz_gate.stamp)
     add_custom_command(OUTPUT ${eth_tron_address_gate_stamp}
         COMMAND ${HOST_CC} -std=c11 -Wall -Wextra -Werror -Wno-error=array-parameter -Wno-error=unused-function
             -DTREZOR_ETHEREUM_DEFINITIONS_HOST_TEST
@@ -131,6 +133,8 @@ if(HOST_CC)
             ${COMPONENT_DIR}/chains/bitcoin/confirm.c
             ${COMPONENT_DIR}/chains/bitcoin/path.c
             ${COMPONENT_DIR}/chains/bitcoin/wallet.c
+            ${COMPONENT_DIR}/ui/chain_confirm_format.c
+            ${COMPONENT_DIR}/wallet_entropy.c
             ${COMPONENT_DIR}/chains/ethereum/address.c
             ${COMPONENT_DIR}/chains/ethereum/authorize.c
             ${COMPONENT_DIR}/chains/ethereum/confirm.c
@@ -160,6 +164,7 @@ if(HOST_CC)
             ${COMPONENT_DIR}/protocols/trezor/ethereum/safe_normalizer.c
             ${COMPONENT_DIR}/protocols/trezor/failure.c
             ${COMPONENT_DIR}/protocols/trezor/features.c
+            ${COMPONENT_DIR}/protocols/trezor/misc.c
             ${COMPONENT_DIR}/protocols/trezor/protobuf.c
             ${COMPONENT_DIR}/protocols/trezor/public_key.c
             ${COMPONENT_DIR}/protocols/trezor/session.c
@@ -196,6 +201,10 @@ if(HOST_CC)
             ${COMPONENT_DIR}/chains/bitcoin/path.h
             ${COMPONENT_DIR}/chains/bitcoin/wallet.c
             ${COMPONENT_DIR}/chains/bitcoin/wallet.h
+            ${COMPONENT_DIR}/ui/chain_confirm_format.c
+            ${COMPONENT_DIR}/ui/chain_confirm_format.h
+            ${COMPONENT_DIR}/wallet_entropy.c
+            ${COMPONENT_DIR}/wallet_entropy.h
             ${COMPONENT_DIR}/chains/ethereum/address.c
             ${COMPONENT_DIR}/chains/ethereum/address.h
             ${COMPONENT_DIR}/chains/ethereum/authorize.c
@@ -255,6 +264,8 @@ if(HOST_CC)
             ${COMPONENT_DIR}/protocols/trezor/features.c
             ${COMPONENT_DIR}/protocols/trezor/features.h
             ${COMPONENT_DIR}/protocols/trezor/messages.h
+            ${COMPONENT_DIR}/protocols/trezor/misc.c
+            ${COMPONENT_DIR}/protocols/trezor/misc.h
             ${COMPONENT_DIR}/protocols/trezor/protobuf.c
             ${COMPONENT_DIR}/protocols/trezor/protobuf.h
             ${COMPONENT_DIR}/protocols/trezor/public_key.c
@@ -310,6 +321,31 @@ if(HOST_CC)
         VERBATIM)
     add_custom_target(wallet_core_public_node_gate DEPENDS ${wallet_core_public_node_gate_stamp})
     add_dependencies(${COMPONENT_LIB} wallet_core_public_node_gate)
+    add_custom_command(OUTPUT ${trezor_usb_fuzz_gate_stamp}
+        COMMAND ${HOST_CC} -std=c11 -Wall -Wextra -Werror
+            -I${COMPONENT_DIR}
+            ${COMPONENT_DIR}/test/trezor_usb_fuzz_gate.c
+            ${COMPONENT_DIR}/protocols/trezor/dispatcher.c
+            ${COMPONENT_DIR}/protocols/trezor/misc.c
+            ${COMPONENT_DIR}/protocols/trezor/protobuf.c
+            ${COMPONENT_DIR}/protocols/trezor/wire.c
+            -o ${trezor_usb_fuzz_gate_bin}
+        COMMAND ${trezor_usb_fuzz_gate_bin}
+        COMMAND ${CMAKE_COMMAND} -E touch ${trezor_usb_fuzz_gate_stamp}
+        DEPENDS
+            ${COMPONENT_DIR}/test/trezor_usb_fuzz_gate.c
+            ${COMPONENT_DIR}/protocols/trezor/dispatcher.c
+            ${COMPONENT_DIR}/protocols/trezor/dispatcher.h
+            ${COMPONENT_DIR}/protocols/trezor/messages.h
+            ${COMPONENT_DIR}/protocols/trezor/misc.c
+            ${COMPONENT_DIR}/protocols/trezor/misc.h
+            ${COMPONENT_DIR}/protocols/trezor/protobuf.c
+            ${COMPONENT_DIR}/protocols/trezor/protobuf.h
+            ${COMPONENT_DIR}/protocols/trezor/wire.c
+            ${COMPONENT_DIR}/protocols/trezor/wire.h
+        VERBATIM)
+    add_custom_target(trezor_usb_fuzz_gate DEPENDS ${trezor_usb_fuzz_gate_stamp})
+    add_dependencies(${COMPONENT_LIB} trezor_usb_fuzz_gate)
 else()
     message(FATAL_ERROR "No host C compiler found for ETH/TRON address gate tests")
 endif()

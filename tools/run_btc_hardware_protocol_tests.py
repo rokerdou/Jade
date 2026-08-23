@@ -1162,31 +1162,7 @@ def test_rejections() -> None:
         finally:
             close_session(session)
 
-    def lock_time() -> None:
-        session = get_session("codex-btc-locktime")
-        try:
-            btc.sign_tx(
-                session,
-                "Testnet",
-                [
-                    messages.TxInputType(
-                        address_n=p2wpkh_path(testnet=True),
-                        prev_hash=bytes.fromhex("55" * 32),
-                        prev_index=0,
-                        script_type=P2WPKH_SCRIPT_TYPE,
-                        amount=100_000,
-                        sequence=0xFFFFFFFF,
-                    )
-                ],
-                [messages.TxOutputType(address=output_address, amount=90_000, script_type=PAYTOADDRESS)],
-                version=2,
-                lock_time=1,
-            )
-        finally:
-            close_session(session)
-
     expect_failure("high fee-rate", high_fee)
-    expect_failure("hidden lock_time", lock_time)
 
 
 def main() -> int:

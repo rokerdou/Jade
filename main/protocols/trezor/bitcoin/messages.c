@@ -394,7 +394,7 @@ bool trezor_bitcoin_sign_tx_decode(
         && output->inputs_count <= TREZOR_BITCOIN_TX_INPUTS_MAX && output->outputs_count > 0
         && output->outputs_count <= TREZOR_BITCOIN_TX_OUTPUTS_MAX
         && (!output->has_amount_unit || output->amount_unit == 0) && (output->version == 1 || output->version == 2)
-        && output->lock_time == 0 && output->serialize;
+        && output->serialize;
 }
 
 static bool trezor_bitcoin_tx_input_decode(
@@ -588,7 +588,11 @@ static bool trezor_bitcoin_tx_output_decode(
     const bool address_source_ok = output->has_multisig
         ? (!output->has_address && output->address_n_len > 0 && output->script_type == BITCOIN_PAYTOMULTISIG)
         : ((output->has_address && output->address_n_len == 0) || (!output->has_address && output->address_n_len > 0));
-    return output->has_amount && address_source_ok
+    const bool supported_script = output->has_multisig
+        ? output->script_type == BITCOIN_PAYTOMULTISIG
+        : (output->script_type == BITCOIN_PAYTOADDRESS || output->script_type == BITCOIN_PAYTOP2SHWITNESS
+            || output->script_type == BITCOIN_PAYTOWITNESS);
+    return output->has_amount && address_source_ok && supported_script
         && trezor_bitcoin_normalize_multisig_payload_with_fingerprint(multisig_payload, multisig_payload_len,
             output->has_multisig, BITCOIN_MULTISIG_SPENDMULTISIG, &output->multisig, has_multisig_fingerprint,
             multisig_fingerprint, NULL, NULL, NULL);

@@ -34,6 +34,7 @@ if [[ "${2:-}" == "--no-build" ]]; then
     echo "PASS eth_tron_address_gate"
     "./${build_dir}/wallet_core_public_node_gate"
     echo "PASS wallet_core_public_node_gate"
+    "./${build_dir}/trezor_usb_fuzz_gate"
     run_external_oracle_gates
     exit 0
 fi
@@ -47,11 +48,12 @@ idf.py \
     -B "$build_dir" \
     -D "SDKCONFIG=${build_dir}/sdkconfig" \
     -D SDKCONFIG_DEFAULTS=configs/sdkconfig_display_ttgo_tdisplays3_hardened.defaults \
-    eth_tron_address_gate wallet_core_public_node_gate
+    eth_tron_address_gate wallet_core_public_node_gate trezor_usb_fuzz_gate
 
 run_sensitive_key_boundary_gate
 "./${build_dir}/eth_tron_address_gate"
 echo "PASS eth_tron_address_gate"
 "./${build_dir}/wallet_core_public_node_gate"
 echo "PASS wallet_core_public_node_gate"
+"./${build_dir}/trezor_usb_fuzz_gate"
 run_external_oracle_gates

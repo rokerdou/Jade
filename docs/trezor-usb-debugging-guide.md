@@ -40,9 +40,13 @@ They also include external-oracle checks against mainstream community libraries:
 - BTC `SignTx` is also covered by a trezorlib host-flow oracle that calls
   `trezorlib.btc.sign_tx()` directly. The scripted device side requires the
   official interactive sequence:
-  `SignTx -> TxRequest(TXMETA) -> TxAck(meta) -> TxRequest(TXINPUT) ->
-  TxAck(input) -> TxRequest(TXOUTPUT) -> TxAck(output) ->
+  `SignTx -> TxRequest(TXINPUT) -> TxAck(input) ->
+  TxRequest(TXOUTPUT) -> TxAck(output) ->
   TxRequest(TXFINISHED)`.
+  Current transaction metadata is already carried in `SignTx`; the firmware
+  must not require a no-`tx_hash` current `TXMETA`, because Sparrow/Lark treats
+  that as an unexpected request. Prev-tx verification still uses
+  `TxRequest(TXMETA)` with `details.tx_hash`.
 - BTC protobuf parsing now has host gates for the safe subset needed by that
   flow: `SignTx`, `TxAck(TransactionType.inputs)`,
   `TxAck(TransactionType.outputs)`, `TxAck(TransactionType meta)`, and
@@ -230,6 +234,31 @@ Use explicit lock, idle timeout, reboot, or real hardware power state instead.
 BLE disconnect clearing remains valid because BLE connection state is the chosen
 authenticated channel state.
 
+### Hidden Wallet Unlock Re-enters PIN
+
+Symptom: after a correct PIN, the hidden-wallet/passphrase keyboard flashes and
+the device immediately asks for PIN again. Entering the same correct PIN then
+shows `Incorrect PIN`.
+
+Root cause: a BIP39-passphrase wallet stores encrypted mnemonic entropy. A
+correct PIN can decrypt that entropy and set `mnemonic_entropy_len`, but the
+wallet is not fully unlocked until the passphrase derives the final keychain.
+If USB `ButtonAck` or another local unlock path re-enters unlock during this
+middle state, `keychain_load()` rejects because mnemonic entropy is already
+cached. That rejection was reported as a PIN failure even though the PIN had
+already succeeded.
+
+Rules:
+
+- Dashboard/local unlock must use `SOURCE_INTERNAL`, not `SOURCE_SERIAL`.
+- Only one local PIN/passphrase unlock flow may run at a time.
+- If `keychain_requires_passphrase()` is already true, resume passphrase entry
+  instead of asking for PIN again.
+- `auth:busy` means another local unlock is already in progress; it is not a
+  bad PIN and must not decrement PIN attempts.
+- `auth:resume_pass` means the PIN stage has already succeeded and the device
+  is continuing the hidden-wallet passphrase stage.
+
 ### EthereumGetAddress Causes Locked Screen Then Reboot
 
 Symptom:
@@ -387,21 +416,22 @@ To: ...9ee7R
 Amount: 0x01 7030069857d2e4169ee7R
 ```
 
-Root cause: this is a display/UI rendering issue, not a transaction parsing or
-signing issue. The affected firmware split long hex fields into multiple dialog
-line nodes. On the T-Display-S3 path, switching from a longer multi-line value
-to a shorter value could leave stale glyphs visible. The host-side signature was
-already valid, so the fix must stay in the UI layer and must not change digest
-or signing code.
+Root cause: this is a display/UI pagination issue, not a transaction parsing or
+signing issue. `show_text_value()` and `show_hex_value()` advanced the source
+offset by a fixed line width even when the copied line stopped at the string's
+NUL terminator. Short values such as `1 wei` or `0x01` could therefore skip past
+the terminator and read uninitialized tail bytes as a second line. The
+host-side signature was already valid, so the fix belongs in the UI formatter
+and must not change digest or signing code.
 
 Fix:
 
-- Format each paginated hex field as one newline-delimited text node before
-  calling `await_continueback_activity()`.
-- Wrap the dialog message area in an explicit black fill container. This forces
-  the value area to be cleared before rendering the next field, which matters on
-  the T-Display-S3 display path when moving from a long address to a short
-  amount.
+- Advance paginated text and hex fields by the number of characters actually
+  copied, not by the maximum line width.
+- Stop the outer page loop exactly at the source NUL terminator; never inspect
+  bytes after it.
+- Keep four fixed line nodes per page so the T-Display-S3 value area is fully
+  repainted before rendering the next field.
 - Keep the manual integer and hex formatting helpers; avoid relying on
   printf-length modifiers for money-critical on-device display text.
 - Do not call `display_processing_message_activity()` after a successful
@@ -424,9 +454,11 @@ together triggers `gui_front_click()` to activate the currently selected button.
 
 Gate:
 
-- Native ETH transfer summaries now assert that the `Amount` field copied into
-  the confirmation summary is exactly one byte for the `1 wei` test vector. This
-  catches accidental reuse of adjacent address bytes before flashing hardware.
+- Native ETH transfer summaries assert that the `Amount` field copied into the
+  confirmation summary is exactly one byte for the `1 wei` test vector.
+- The host gate now also exercises the real UI line-copy formatter with buffers
+  whose unused tail is filled with `R`, proving that short text/hex values stop
+  at NUL and do not render a garbage follow-up line.
 
 Expected screen fields for the ETH native-transfer test:
 
@@ -450,10 +482,11 @@ Follow-up root-cause boundary for the Amount artifact:
   `703006985...9ee7`, that substring matches the previous `To` address field
   and should be treated as a UI rendering/state-clearing bug unless a summary
   gate fails.
-- The UI now renders paginated hex fields with exactly four fixed line nodes.
-  Short fields such as `Amount: 0x01` still occupy and clear the remaining
-  lines, so switching from a two-line address field cannot leave old address
-  glyphs in the value area.
+- The UI now renders paginated values with exactly four fixed line nodes per
+  page, and each copied line reports its actual consumed length. Short fields
+  such as `Amount: 0x01` stop at their real terminator, so switching from a
+  two-line address field cannot append old address bytes or other stack tail
+  data to the value area.
 
 ### Final Confirm Does Not Return Signature
 
@@ -581,6 +614,50 @@ Audit findings for this incident:
   signatures, full raw transaction payloads, or signing digests while being
   diagnosed.
 
+### Host-Triggered UI Activity Lifetime Audit
+
+Symptom:
+
+```text
+The visible dialog can still move selection between buttons, but pressing the
+confirm gesture does nothing. Repeating the same host request makes the failure
+appear more often.
+```
+
+Root cause class: external USB/protocol requests can create many managed
+activities, wait semaphores, and event-handler links without returning through
+the dashboard cleanup point. Once enough stale activities accumulate, event
+handler registration or the activity event chain can fail in a way that leaves a
+visible page selectable but without a working `GUI_BUTTON_EVENT` handler for
+the waiting caller.
+
+Audit result:
+
+- High risk: Trezor-compatible USB flows that a host can trigger repeatedly:
+  `GetEntropy`, address display confirmations, ETH/BTC/Safe transaction review
+  pages, and future TRON confirmations.
+- Medium risk: Jade native RPC confirmation screens such as xpub/address/key
+  export confirmations. They are normally serialized by the Jade process loop,
+  but they are still host-triggered and should use an explicit cleanup variant
+  when touched.
+- Lower risk: dashboard menus, setup, PIN, mnemonic, and local settings flows.
+  These are human-paced local navigation paths and already converge back to the
+  dashboard cleanup point. Do not churn them unless a real lifecycle bug is
+  observed.
+
+Fix pattern:
+
+- For host-triggered confirmation flows, call an `_ex(..., true)` UI helper that
+  uses `gui_set_current_activity_ex(activity, true)` before waiting for input.
+- For multi-page address flows, first switch to a temporary blank activity with
+  `free_managed_activities=true`, then create and show the address pages. This
+  avoids freeing the second address page before it is displayed.
+- Check `esp_event_handler_instance_register()` return values. A failed event
+  registration must assert or return a controlled error; it must not leave an
+  apparent confirmation screen with no handler.
+- Do not log payloads, private keys, mnemonics, PINs, xprivs, signatures, full
+  addresses, or raw transactions while diagnosing this class.
+
 ### HID Task Stack Exhaustion Audit
 
 Bug class: Trezor/WebUSB requests run inside the `trezor_hid` FreeRTOS task.
@@ -654,6 +731,11 @@ Periodic review checklist:
 - A successful fix should be validated by host gates, ESP-IDF build, and a real
   hardware signing run where `reset_hwm` has meaningful headroom after the USB
   signed response is sent.
+- BTC UI review is tiered: destination, amount, change, fee, fee rate, path, and
+  multisig policy are critical review fields. Non-default transaction behavior
+  such as Sparrow-style RBF/locktime is displayed as one compact `Tx Flags`
+  field and must be bound to the serialized signed transaction by an external
+  oracle. Pure protocol bookkeeping should not be promoted to UI noise.
 
 ### C String And Buffer Bounds Audit
 
@@ -725,7 +807,9 @@ unlock:perform
 unlock:pin_ui
 auth:pin_start
 auth:aes_ready
+auth:resume_pass
 auth:load_ok / auth:load_fail
+auth:busy
 auth:done
 unlock:pin_ok / unlock:pin_fail
 unlock:replay
@@ -871,9 +955,9 @@ belong in retained diagnostics only, and diagnostics must never contain secrets.
 The BTC SignTx gate must cover the full protocol chain:
 
 ```text
-SignTx -> TxRequest(TXMETA) -> TxAck(meta)
-       -> TxRequest(TXINPUT) -> TxAck(input)
+SignTx -> TxRequest(TXINPUT) -> TxAck(input)
        -> TxRequest(TXOUTPUT) -> TxAck(output)
+       -> optional prev_tx TxRequest(TXMETA with tx_hash)
        -> local UI confirm
        -> build sighash with libwally
        -> sign_digest(path, digest)
@@ -883,3 +967,61 @@ SignTx -> TxRequest(TXMETA) -> TxAck(meta)
 Do not treat "UI confirmation was shown" as a signing test. A gate must verify
 the final `TxRequest(TXFINISHED)` shape and must keep P2PKH state-probe paths
 separate from P2WPKH signing paths.
+
+### BTC Policy Reject Trace
+
+Symptom:
+
+```text
+Bitcoin signing unsupported
+```
+
+The BTC policy layer records a safe diagnostic stage before rejecting a signing
+request. These diagnostics intentionally do not include seed, private keys, PIN,
+xpriv, xpub, full addresses, raw scripts, or full transaction bytes.
+
+Useful stages:
+
+- `btcpol:not_ready`: the host has not provided all requested inputs/outputs yet.
+- `btcpol:input_bad`: an input does not match the supported script policy, or
+  required prevout verification is missing for legacy/nested-segwit inputs.
+- `btcpol:input_path`: input derivation path is too short to bind to an account.
+- `btcpol:input_acct`: inputs are from different accounts.
+- `btcpol:out_shape`: output is missing amount, uses an unsupported script type,
+  or contains multisig data on the basic single-sig path.
+- `btcpol:out_addr_path`: output contains both a host address and change path.
+- `btcpol:change_bad`: host supplied an internal output path, but it does not
+  match the input account and script policy.
+- `btcpol:change_len`: change path is not a 5-element BIP44/BIP49/BIP84 path.
+- `btcpol:change_purpose`: change path purpose does not match the input script
+  policy, for example BIP84 input with BIP49 change.
+- `btcpol:change_coin`: change path coin type does not match `coin_name`, for
+  example testnet path `m/.../1'/...` under a mainnet `Bitcoin` signing request.
+- `btcpol:change_acct`: change output account does not match the signed input
+  account.
+- `btcpol:change_branch`: internal output is not on branch `0` or `1`.
+  Branch `0` is allowed only after account/script binding and is shown as
+  `Self`; branch `1` is shown as `Change`.
+- `btcpol:change_index`: internal output address index exceeds the wallet policy
+  limit.
+- `btcpol:change_script`: host supplied an internal output path with an output script
+  type that does not match the input script policy. For example, BIP84 native
+  SegWit inputs require a `PAYTOWITNESS` internal output, while BIP49 nested
+  SegWit inputs require `PAYTOP2SHWITNESS`.
+- `btcpol:out_ext_many`: more than one output was supplied as a plain host
+  address. This is the expected diagnosis if a coordinator sends both recipient
+  and change/self outputs as plain addresses instead of marking wallet-owned
+  outputs with `address_n`.
+- `btcpol:out_ext_none`: no plain host address output was supplied, and the
+  internal output total is zero. A self-transfer/consolidation is allowed only
+  when every output is a non-zero wallet-owned `address_n` output.
+- `btcpol:insufficient`: total outputs exceed total inputs.
+- `btcpol:req_*`: policy passed, but the internal confirmation request could
+  not be built. These cover path length, scriptPubKey validation, address-copy
+  bounds, amount overflow, or sequence extraction failures.
+
+The note attached to `btcpol:change_bad`/`btcpol:out_shape` records only
+structure: output index, whether `address` was present, `address_n` length,
+script type, amount-present flag, sats amount, and change branch. This is enough
+to distinguish coordinator-shape errors from firmware policy errors without
+logging the user's full address.

@@ -4,6 +4,7 @@
 #include "../chains/path.h"
 #include "../jade_assert.h"
 #include "../ui.h"
+#include "chain_confirm_format.h"
 #ifdef CONFIG_TREZOR_USB_HID
 #include "../protocols/trezor/trace.h"
 #endif
@@ -60,6 +61,8 @@ static const char* field_name(const chain_confirm_field_kind_t kind)
         return "To";
     case CHAIN_CONFIRM_FIELD_AMOUNT:
         return "Amount";
+    case CHAIN_CONFIRM_FIELD_SELF:
+        return "Self";
     case CHAIN_CONFIRM_FIELD_CHANGE:
         return "Change";
     case CHAIN_CONFIRM_FIELD_TOKEN_CONTRACT:
@@ -80,6 +83,8 @@ static const char* field_name(const chain_confirm_field_kind_t kind)
         return "Fee";
     case CHAIN_CONFIRM_FIELD_FEE_RATE:
         return "Fee Rate";
+    case CHAIN_CONFIRM_FIELD_TX_FLAGS:
+        return "Tx Flags";
     case CHAIN_CONFIRM_FIELD_FEE_LIMIT:
         return "Fee Limit";
     case CHAIN_CONFIRM_FIELD_CALLDATA_HASH:
@@ -128,6 +133,8 @@ static const char* field_trace_stage(const chain_confirm_field_kind_t kind, cons
         return done ? "ui:to_ok" : "ui:to";
     case CHAIN_CONFIRM_FIELD_AMOUNT:
         return done ? "ui:amount_ok" : "ui:amount";
+    case CHAIN_CONFIRM_FIELD_SELF:
+        return done ? "ui:self_ok" : "ui:self";
     case CHAIN_CONFIRM_FIELD_CHANGE:
         return done ? "ui:change_ok" : "ui:change";
     case CHAIN_CONFIRM_FIELD_TOKEN_CONTRACT:
@@ -148,6 +155,8 @@ static const char* field_trace_stage(const chain_confirm_field_kind_t kind, cons
         return done ? "ui:fee_ok" : "ui:fee";
     case CHAIN_CONFIRM_FIELD_FEE_RATE:
         return done ? "ui:feerate_ok" : "ui:feerate";
+    case CHAIN_CONFIRM_FIELD_TX_FLAGS:
+        return done ? "ui:txflags_ok" : "ui:txflags";
     case CHAIN_CONFIRM_FIELD_FEE_LIMIT:
         return done ? "ui:feelimit_ok" : "ui:feelimit";
     case CHAIN_CONFIRM_FIELD_CALLDATA_HASH:
@@ -206,39 +215,6 @@ static bool format_u64_dec(const uint64_t value, char* const output, const size_
     output[0] = '\0';
     size_t pos = 0;
     return append_u64_dec(output, output_len, &pos, value);
-}
-
-static bool copy_hex_line(char* const output, const size_t output_len, const char* const hex, const size_t offset)
-{
-    if (!output || output_len == 0 || !hex) {
-        return false;
-    }
-
-    size_t pos = 0;
-    while (hex[offset + pos] != '\0' && pos < CHAIN_CONFIRM_UI_HEX_LINE_CHARS) {
-        if (pos + 1 >= output_len) {
-            return false;
-        }
-        output[pos] = hex[offset + pos];
-        ++pos;
-    }
-    output[pos] = '\0';
-    return true;
-}
-
-static bool copy_text_line(char* const output, const size_t output_len, const char* const text, const size_t offset)
-{
-    if (!output || output_len == 0 || !text) {
-        return false;
-    }
-
-    size_t pos = 0;
-    while (text[offset + pos] != '\0' && pos < CHAIN_CONFIRM_UI_DISPLAY_LINE_MAX - 1U) {
-        output[pos] = text[offset + pos];
-        ++pos;
-    }
-    output[pos] = '\0';
-    return true;
 }
 
 static void init_blank_message_lines(
@@ -327,7 +303,7 @@ static bool format_path(const chain_confirm_path_t* const path, char* const outp
     return true;
 }
 
-static bool show_text_value(const char* const title, const char* const value)
+static bool show_text_value(const char* const title, const char* const value, const bool free_managed_activities)
 {
     JADE_ASSERT(title);
     JADE_ASSERT(value);
@@ -335,19 +311,26 @@ static bool show_text_value(const char* const title, const char* const value)
 #ifdef CONFIG_TREZOR_USB_HID
     trace_text_value(title, value);
 #endif
+    const size_t value_len = strnlen(value, CHAIN_CONFIRM_MAX_TEXT);
+    if (value_len >= CHAIN_CONFIRM_MAX_TEXT) {
+        return false;
+    }
     size_t offset = 0;
     unsigned int page = 1;
-    while (value[offset] != '\0') {
+    while (offset < value_len) {
         char lines[CHAIN_CONFIRM_UI_MAX_MESSAGE_LINES][CHAIN_CONFIRM_UI_DISPLAY_LINE_MAX] = { { 0 } };
         init_blank_message_lines(lines);
         const char* message[CHAIN_CONFIRM_UI_MAX_MESSAGE_LINES] = { lines[0], lines[1], lines[2], lines[3] };
         size_t num_lines = 0;
-        while (value[offset] != '\0' && num_lines < CHAIN_CONFIRM_UI_MAX_MESSAGE_LINES) {
-            if (!copy_text_line(lines[num_lines], sizeof(lines[num_lines]), value, offset)) {
+        while (offset < value_len && num_lines < CHAIN_CONFIRM_UI_MAX_MESSAGE_LINES) {
+            size_t consumed = 0;
+            if (!chain_confirm_ui_copy_text_line(
+                    lines[num_lines], sizeof(lines[num_lines]), value, value_len, offset, &consumed)
+                || consumed == 0) {
                 return false;
             }
             ++num_lines;
-            offset += CHAIN_CONFIRM_UI_DISPLAY_LINE_MAX - 1U;
+            offset += consumed;
         }
         if (num_lines == 0 || num_lines > CHAIN_CONFIRM_UI_MAX_MESSAGE_LINES) {
             return false;
@@ -355,14 +338,16 @@ static bool show_text_value(const char* const title, const char* const value)
 
         char page_title[32];
         const char* display_title = title;
-        if (page > 1 || value[offset] != '\0') {
+        if (page > 1 || offset < value_len) {
             const int ret = snprintf(page_title, sizeof(page_title), "%s %u", title, page);
             if (ret <= 0 || (size_t)ret >= sizeof(page_title)) {
                 return false;
             }
             display_title = page_title;
         }
-        if (!await_continueback_activity(display_title, message, CHAIN_CONFIRM_UI_MAX_MESSAGE_LINES, true, NULL)) {
+        if (!await_continueback_activity_with_continue_text_ex(
+                display_title, message, CHAIN_CONFIRM_UI_MAX_MESSAGE_LINES, true, NULL, "Continue",
+                free_managed_activities)) {
             return false;
         }
         ++page;
@@ -370,7 +355,8 @@ static bool show_text_value(const char* const title, const char* const value)
     return true;
 }
 
-static bool show_hex_value(const char* const title, const uint8_t* const bytes, const size_t bytes_len)
+static bool show_hex_value(
+    const char* const title, const uint8_t* const bytes, const size_t bytes_len, const bool free_managed_activities)
 {
     char hex[(2 * CHAIN_CONFIRM_MAX_BYTES) + 3];
     if (!format_bytes_hex(bytes, bytes_len, hex, sizeof(hex))) {
@@ -380,19 +366,25 @@ static bool show_hex_value(const char* const title, const uint8_t* const bytes, 
     trace_hex_value(title, bytes_len, hex);
 #endif
 
+    const size_t hex_len = strnlen(hex, sizeof(hex));
+    if (hex_len >= sizeof(hex)) {
+        return false;
+    }
     size_t offset = 0;
     unsigned int page = 1;
-    while (hex[offset] != '\0') {
+    while (offset < hex_len) {
         char lines[CHAIN_CONFIRM_UI_MAX_MESSAGE_LINES][CHAIN_CONFIRM_UI_DISPLAY_LINE_MAX] = { { 0 } };
         init_blank_message_lines(lines);
         const char* message[CHAIN_CONFIRM_UI_MAX_MESSAGE_LINES] = { lines[0], lines[1], lines[2], lines[3] };
         size_t num_lines = 0;
-        while (hex[offset] != '\0' && num_lines < CHAIN_CONFIRM_UI_MAX_MESSAGE_LINES) {
-            if (!copy_hex_line(lines[num_lines], sizeof(lines[num_lines]), hex, offset)) {
+        while (offset < hex_len && num_lines < CHAIN_CONFIRM_UI_MAX_MESSAGE_LINES) {
+            size_t consumed = 0;
+            if (!chain_confirm_ui_copy_hex_line(lines[num_lines], sizeof(lines[num_lines]), hex, hex_len, offset, &consumed)
+                || consumed == 0) {
                 return false;
             }
             ++num_lines;
-            offset += CHAIN_CONFIRM_UI_HEX_LINE_CHARS;
+            offset += consumed;
         }
         if (num_lines == 0 || num_lines > CHAIN_CONFIRM_UI_MAX_MESSAGE_LINES) {
             return false;
@@ -403,14 +395,16 @@ static bool show_hex_value(const char* const title, const uint8_t* const bytes, 
 
         char page_title[32];
         const char* display_title = title;
-        if (page > 1 || hex[offset] != '\0') {
+        if (page > 1 || offset < hex_len) {
             const int ret = snprintf(page_title, sizeof(page_title), "%s %u", title, page);
             if (ret <= 0 || (size_t)ret >= sizeof(page_title)) {
                 return false;
             }
             display_title = page_title;
         }
-        if (!await_continueback_activity(display_title, message, CHAIN_CONFIRM_UI_MAX_MESSAGE_LINES, true, NULL)) {
+        if (!await_continueback_activity_with_continue_text_ex(
+                display_title, message, CHAIN_CONFIRM_UI_MAX_MESSAGE_LINES, true, NULL, "Continue",
+                free_managed_activities)) {
             return false;
         }
         ++page;
@@ -418,7 +412,9 @@ static bool show_hex_value(const char* const title, const uint8_t* const bytes, 
     return true;
 }
 
-static bool show_field(const chain_confirm_summary_t* const summary, const chain_confirm_field_t* const field)
+static bool show_field(
+    const chain_confirm_summary_t* const summary, const chain_confirm_field_t* const field,
+    const bool free_managed_activities)
 {
     if (!field) {
         return false;
@@ -430,21 +426,23 @@ static bool show_field(const chain_confirm_summary_t* const summary, const chain
 #endif
     char value[96];
     if (field->value_type == CHAIN_CONFIRM_VALUE_U64) {
-        return format_u64_dec(field->value.u64, value, sizeof(value)) && show_text_value(title, value);
+        return format_u64_dec(field->value.u64, value, sizeof(value))
+            && show_text_value(title, value, free_managed_activities);
     }
     if (field->value_type == CHAIN_CONFIRM_VALUE_PATH) {
-        return format_path(&field->value.path, value, sizeof(value)) && show_text_value(title, value);
+        return format_path(&field->value.path, value, sizeof(value))
+            && show_text_value(title, value, free_managed_activities);
     }
     if (field->value_type == CHAIN_CONFIRM_VALUE_TEXT) {
-        return show_text_value(title, field->value.text);
+        return show_text_value(title, field->value.text, free_managed_activities);
     }
     if (field->value_type == CHAIN_CONFIRM_VALUE_BYTES) {
-        return show_hex_value(title, field->value.bytes.bytes, field->value.bytes.len);
+        return show_hex_value(title, field->value.bytes.bytes, field->value.bytes.len, free_managed_activities);
     }
     return false;
 }
 
-static bool show_extra_risk_confirmation(const chain_confirm_summary_t* const summary)
+static bool show_extra_risk_confirmation(const chain_confirm_summary_t* const summary, const bool free_managed_activities)
 {
     if ((summary->flags & CHAIN_CONFIRM_FLAG_EXTRA_CONFIRM) == 0) {
         return true;
@@ -452,17 +450,18 @@ static bool show_extra_risk_confirmation(const chain_confirm_summary_t* const su
 
     if ((summary->flags & CHAIN_CONFIRM_FLAG_APPROVAL) != 0) {
         const char* message[] = { "Token approval", "can spend funds.", "Review carefully." };
-        return await_yesno_activity("High Risk", message, 3, false, NULL);
+        return await_yesno_activity_ex("High Risk", message, 3, false, NULL, free_managed_activities);
     }
     if ((summary->flags & CHAIN_CONFIRM_FLAG_UNKNOWN_CONTRACT) != 0) {
         const char* message[] = { "Unknown contract", "Only calldata hash", "can be verified." };
-        return await_yesno_activity("High Risk", message, 3, false, NULL);
+        return await_yesno_activity_ex("High Risk", message, 3, false, NULL, free_managed_activities);
     }
     const char* message[] = { "Extra review", "required." };
-    return await_yesno_activity("High Risk", message, 2, false, NULL);
+    return await_yesno_activity_ex("High Risk", message, 2, false, NULL, free_managed_activities);
 }
 
-bool show_chain_confirm_summary_activity(const chain_confirm_summary_t* const summary)
+bool show_chain_confirm_summary_activity_ex(
+    const chain_confirm_summary_t* const summary, const bool free_managed_activities)
 {
     if (!summary || (summary->flags & CHAIN_CONFIRM_FLAG_USER_CONFIRM) == 0 || summary->num_fields == 0
         || summary->num_fields > CHAIN_CONFIRM_MAX_FIELDS) {
@@ -473,7 +472,8 @@ bool show_chain_confirm_summary_activity(const chain_confirm_summary_t* const su
     trezor_trace_set_stage("ui:overview");
 #endif
     const char* overview[] = { chain_name(summary->chain), operation_name(summary->operation), "Review on device." };
-    if (!await_continueback_activity("Confirm Tx", overview, 3, true, NULL)) {
+    if (!await_continueback_activity_with_continue_text_ex(
+            "Confirm Tx", overview, 3, true, NULL, "Continue", free_managed_activities)) {
 #ifdef CONFIG_TREZOR_USB_HID
         trezor_trace_set_stage("ui:overview_cancel");
 #endif
@@ -486,7 +486,7 @@ bool show_chain_confirm_summary_activity(const chain_confirm_summary_t* const su
 #ifdef CONFIG_TREZOR_USB_HID
     trezor_trace_set_stage("ui:risk");
 #endif
-    if (!show_extra_risk_confirmation(summary)) {
+    if (!show_extra_risk_confirmation(summary, free_managed_activities)) {
 #ifdef CONFIG_TREZOR_USB_HID
         trezor_trace_set_stage("ui:risk_cancel");
 #endif
@@ -501,7 +501,7 @@ bool show_chain_confirm_summary_activity(const chain_confirm_summary_t* const su
 #ifdef CONFIG_TREZOR_USB_HID
         trezor_trace_set_stage(field_trace_stage(summary->fields[field_index].kind, false));
 #endif
-        if (!show_field(summary, &summary->fields[field_index])) {
+        if (!show_field(summary, &summary->fields[field_index], free_managed_activities)) {
 #ifdef CONFIG_TREZOR_USB_HID
             trezor_trace_set_stage("ui:field_back");
 #endif
@@ -525,10 +525,16 @@ bool show_chain_confirm_summary_activity(const chain_confirm_summary_t* const su
 #endif
     const char* final_message[]
         = { chain_name(summary->chain), operation_name(summary->operation), "Sign transaction?" };
-    const bool accepted = await_signcancel_activity("Final Confirm", final_message, 3, true, NULL);
+    const bool accepted
+        = await_signcancel_activity_ex("Final Confirm", final_message, 3, true, NULL, free_managed_activities);
 #ifdef CONFIG_TREZOR_USB_HID
     trezor_trace_checkpoint(accepted ? "ui:final_ok" : "ui:final_cancel", "accepted=%u", accepted ? 1U : 0U);
 #endif
     return accepted;
+}
+
+bool show_chain_confirm_summary_activity(const chain_confirm_summary_t* const summary)
+{
+    return show_chain_confirm_summary_activity_ex(summary, false);
 }
 #endif /* AMALGAMATED_BUILD */
