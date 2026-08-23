@@ -597,7 +597,7 @@ static void enable_relevant_chars(const bool is_mnemonic, const char* word, cons
     JADE_ASSERT(backspace->activity == act);
     JADE_ASSERT(enter->activity == act);
 
-    JADE_LOGD("word = %s, word_len = %u", word, word_len);
+    JADE_LOGD("word_len = %u", word_len);
 
     // Enable enter if a) not entering a mnemonic, and b) not part-way through entering a word
     // Enable backspace in all cases.
@@ -1108,7 +1108,7 @@ static bool expand_words(const uint8_t* bytes, const size_t bytes_len, char* buf
         bool exact_match = false;
         const size_t nmatches = valid_words(read_ptr, (end_ptr - read_ptr), NULL, 0, &possible_match, 1, &exact_match);
         if (nmatches != 1 && !exact_match) {
-            JADE_LOGW("%d matches for prefix: %.*s", nmatches, (end_ptr - read_ptr), read_ptr);
+            JADE_LOGW("%d matches for mnemonic prefix of length %u", nmatches, (unsigned)(end_ptr - read_ptr));
             return false;
         }
 
