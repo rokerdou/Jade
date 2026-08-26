@@ -8,6 +8,8 @@
 #include <esp_adc/adc_oneshot.h>
 #include <esp_sleep.h>
 
+#include "random.h"
+
 #define BATTERY_ADC_CHANNEL ADC_CHANNEL_6
 #define BATTERY_ADC_ATTEN ADC_ATTEN_DB_12
 #define BATTERY_EMA_ALPHA 0.3f // estimated moving average smoothing factor
@@ -109,7 +111,10 @@ uint16_t power_get_vbat(void)
 {
     JADE_ASSERT(adc1_handle);
     int raw_adc, voltage;
-    ESP_ERROR_CHECK(adc_oneshot_read(adc1_handle, BATTERY_ADC_CHANNEL, &raw_adc));
+    random_adc_lock();
+    const esp_err_t adc_err = adc_oneshot_read(adc1_handle, BATTERY_ADC_CHANNEL, &raw_adc);
+    random_adc_unlock();
+    ESP_ERROR_CHECK(adc_err);
     if (adc1_cali_chan0_handle) {
         ESP_ERROR_CHECK(adc_cali_raw_to_voltage(adc1_cali_chan0_handle, raw_adc, &voltage));
     } else {

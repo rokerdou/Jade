@@ -49,6 +49,7 @@
 static uint8_t entropy_state[SHA256_LEN];
 static uint32_t rnd_counter = 0;
 static SemaphoreHandle_t rnd_mutex = NULL;
+static SemaphoreHandle_t adc_mutex = NULL;
 
 #ifdef CONFIG_IDF_TARGET_ESP32
 static uint16_t esp32_get_temperature(void)
@@ -73,11 +74,13 @@ static void fill_random_entropy(uint8_t* const buf, const size_t len, const bool
     JADE_ASSERT(len);
 
     if (force_hardware_entropy) {
+        random_adc_lock();
         bootloader_random_enable();
     }
     esp_fill_random(buf, len);
     if (force_hardware_entropy) {
         bootloader_random_disable();
+        random_adc_unlock();
     }
 }
 
@@ -184,6 +187,18 @@ void get_hardware_random(void* bytes_out, const size_t len)
     JADE_SEMAPHORE_TAKE(rnd_mutex);
     fill_random_entropy(bytes_out, len, true);
     JADE_SEMAPHORE_GIVE(rnd_mutex);
+}
+
+void random_adc_lock(void)
+{
+    JADE_ASSERT(adc_mutex);
+    JADE_SEMAPHORE_TAKE(adc_mutex);
+}
+
+void random_adc_unlock(void)
+{
+    JADE_ASSERT(adc_mutex);
+    JADE_SEMAPHORE_GIVE(adc_mutex);
 }
 
 uint8_t get_uniform_random_byte(const uint8_t upper_bound)
@@ -303,13 +318,14 @@ void random_start_collecting(void)
     // Note: we need to call bootloader_random_disable() afterwards if we want
     // BLE or I2S peripherals (camera?) working later.
 
-    bootloader_random_enable();
-    fill_random_entropy(entropy_state, sizeof(entropy_state), false);
-    bootloader_random_disable();
-
     JADE_ASSERT(!rnd_mutex);
     rnd_mutex = xSemaphoreCreateMutex();
     JADE_ASSERT(rnd_mutex);
+    JADE_ASSERT(!adc_mutex);
+    adc_mutex = xSemaphoreCreateMutex();
+    JADE_ASSERT(adc_mutex);
+
+    fill_random_entropy(entropy_state, sizeof(entropy_state), true);
 }
 
 void random_full_initialization(void)

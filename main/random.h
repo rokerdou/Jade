@@ -10,6 +10,11 @@ void get_strong_random(void* bytes_out, size_t len);
 void get_hardware_random(void* bytes_out, size_t len);
 uint8_t get_uniform_random_byte(uint8_t upper_bound);
 
+// Serializes board ADC users with bootloader_random_enable(), which temporarily
+// takes over the SAR ADC entropy source on ESP32-class chips.
+void random_adc_lock(void);
+void random_adc_unlock(void);
+
 // Adapter between 'get_random()' and the mbedtls RNG function interface
 int random_mbedtls_cb(void* ctx, uint8_t* buf, size_t len);
 

@@ -4,6 +4,8 @@
 #include <driver/ledc.h>
 #include <esp_adc/adc_oneshot.h>
 
+#include "random.h"
+
 #define POWER_HOLD_GPIO 4
 #define BATTERY_ADC_CHANNEL ADC_CHANNEL_2
 
@@ -113,7 +115,10 @@ uint16_t power_get_vbat(void)
     JADE_ASSERT(adc1_handle);
 
     int vbat = 0;
-    ESP_ERROR_CHECK(adc_oneshot_read(adc1_handle, BATTERY_ADC_CHANNEL, &vbat));
+    random_adc_lock();
+    const esp_err_t adc_err = adc_oneshot_read(adc1_handle, BATTERY_ADC_CHANNEL, &vbat);
+    random_adc_unlock();
+    ESP_ERROR_CHECK(adc_err);
     return (uint16_t)(vbat * 1.7);
 }
 
