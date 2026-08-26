@@ -19,6 +19,11 @@ void debug_clean_reset_process(void* process_ptr)
     // We expect a current message to be present
     ASSERT_CURRENT_MESSAGE(process, "debug_clean_reset");
 
+    if (keychain_has_pin() && !KEYCHAIN_UNLOCKED_BY_MESSAGE_SOURCE(process)) {
+        jade_process_reject_message(process, CBOR_RPC_HW_LOCKED, "Unlock wallet before debug reset");
+        return;
+    }
+
     // Pop up a notification that the wallet is being wiped
     await_message("Warning: debug wipe");
     vTaskDelay(250 / portTICK_PERIOD_MS);

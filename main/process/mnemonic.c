@@ -1355,6 +1355,7 @@ static void get_freetext_passphrase(char* passphrase, const size_t passphrase_le
 
     make_keyboard_entry_activity(&kb_entry, "Enter Passphrase");
     JADE_ASSERT(kb_entry.activity);
+    SENSITIVE_PUSH(kb_entry.strdata, sizeof(kb_entry.strdata));
 
     bool done = false;
     while (!done) {
@@ -1370,6 +1371,7 @@ static void get_freetext_passphrase(char* passphrase, const size_t passphrase_le
 
     JADE_ASSERT(kb_entry.len < passphrase_len);
     strcpy(passphrase, kb_entry.strdata);
+    SENSITIVE_POP(kb_entry.strdata);
 }
 
 void get_passphrase(char* passphrase, const size_t passphrase_len)

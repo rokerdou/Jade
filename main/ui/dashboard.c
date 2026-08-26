@@ -353,16 +353,21 @@ gui_activity_t* make_usbstorage_settings_activity(const bool unlocked)
 
 #endif
 
-gui_activity_t* make_device_settings_activity(void)
+gui_activity_t* make_device_settings_activity(const bool allow_factory_reset)
 {
     btn_data_t hdrbtns[] = { { .txt = "=", .font = JADE_SYMBOLS_16x16_FONT, .ev_id = BTN_SETTINGS_DEVICE_EXIT },
         { .txt = NULL, .font = GUI_DEFAULT_FONT, .ev_id = GUI_BUTTON_EVENT_NONE } };
 
-    btn_data_t menubtns[] = { { .txt = "Settings", .font = GUI_DEFAULT_FONT, .ev_id = BTN_SETTINGS_PREFS },
-        { .txt = "Factory Reset", .font = GUI_DEFAULT_FONT, .ev_id = BTN_SETTINGS_RESET },
-        { .txt = "Info", .font = GUI_DEFAULT_FONT, .ev_id = BTN_SETTINGS_INFO } };
+    btn_data_t menubtns[3];
+    size_t num_menubtns = 0;
+    menubtns[num_menubtns++] = (btn_data_t){ .txt = "Settings", .font = GUI_DEFAULT_FONT, .ev_id = BTN_SETTINGS_PREFS };
+    if (allow_factory_reset) {
+        menubtns[num_menubtns++]
+            = (btn_data_t){ .txt = "Factory Reset", .font = GUI_DEFAULT_FONT, .ev_id = BTN_SETTINGS_RESET };
+    }
+    menubtns[num_menubtns++] = (btn_data_t){ .txt = "Info", .font = GUI_DEFAULT_FONT, .ev_id = BTN_SETTINGS_INFO };
 
-    return make_menu_activity("Device", hdrbtns, 2, menubtns, 3);
+    return make_menu_activity("Device", hdrbtns, 2, menubtns, num_menubtns);
 }
 
 gui_activity_t* make_prefs_settings_activity(const bool initialised_and_locked, gui_view_node_t** network_type_item,

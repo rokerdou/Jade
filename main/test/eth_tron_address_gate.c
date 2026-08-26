@@ -3589,6 +3589,40 @@ static int dump_oracle_vectors(void)
     }
     printf("btc_mainnet_p2sh_p2wpkh_address=%s\n", btc_address);
 
+    uint8_t system_entropy[WALLET_ENTROPY_256_LEN];
+    uint8_t dice_rolls[WALLET_ENTROPY_DICE_MAX_ROLLS];
+    uint8_t user_entropy[WALLET_ENTROPY_256_LEN];
+    uint8_t final_entropy[WALLET_ENTROPY_256_LEN];
+    for (size_t i = 0; i < sizeof(system_entropy); ++i) {
+        system_entropy[i] = (uint8_t)(0xa0U + i);
+    }
+    for (size_t i = 0; i < sizeof(dice_rolls); ++i) {
+        dice_rolls[i] = (uint8_t)(i % 6U);
+    }
+    const bool previous_real_hashes = g_host_real_multisig_hashes;
+    g_host_real_multisig_hashes = true;
+    if (!wallet_entropy_standard(final_entropy, system_entropy)
+        || !wallet_entropy_dice_hash(user_entropy, dice_rolls, WALLET_ENTROPY_DICE_RECOMMENDED_ROLLS)
+        || !wallet_entropy_enhanced(
+            final_entropy, system_entropy, dice_rolls, WALLET_ENTROPY_DICE_RECOMMENDED_ROLLS)) {
+        g_host_real_multisig_hashes = previous_real_hashes;
+        return 1;
+    }
+    print_hex_value("wallet_entropy_dice_50_hash", user_entropy, sizeof(user_entropy));
+    print_hex_value("wallet_entropy_final_50", final_entropy, sizeof(final_entropy));
+    if (!wallet_entropy_dice_hash(user_entropy, dice_rolls, WALLET_ENTROPY_DICE_MAX_ROLLS)
+        || !wallet_entropy_enhanced(final_entropy, system_entropy, dice_rolls, WALLET_ENTROPY_DICE_MAX_ROLLS)) {
+        g_host_real_multisig_hashes = previous_real_hashes;
+        return 1;
+    }
+    print_hex_value("wallet_entropy_dice_99_hash", user_entropy, sizeof(user_entropy));
+    print_hex_value("wallet_entropy_final_99", final_entropy, sizeof(final_entropy));
+    g_host_real_multisig_hashes = previous_real_hashes;
+    wally_bzero(system_entropy, sizeof(system_entropy));
+    wally_bzero(dice_rolls, sizeof(dice_rolls));
+    wally_bzero(user_entropy, sizeof(user_entropy));
+    wally_bzero(final_entropy, sizeof(final_entropy));
+
     uint8_t signing_payload[ETHEREUM_TX_MAX_SIGNING_PAYLOAD_LEN];
     size_t signing_payload_len = 0;
     uint8_t signing_hash[ETHEREUM_TX_SIGNING_HASH_LEN];

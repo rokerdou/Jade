@@ -198,7 +198,7 @@ gui_activity_t* make_locked_settings_activity(void);
 gui_activity_t* make_unlocked_settings_activity(void);
 
 gui_activity_t* make_wallet_settings_activity(void);
-gui_activity_t* make_device_settings_activity(void);
+gui_activity_t* make_device_settings_activity(bool allow_factory_reset);
 gui_activity_t* make_usbstorage_settings_activity(bool unlocked);
 gui_activity_t* make_authentication_activity(bool initialised_and_pin_unlocked);
 gui_activity_t* make_prefs_settings_activity(
@@ -683,6 +683,12 @@ static void dispatch_message(jade_process_t* process)
 // Function to get user confirmation, then erase all flash memory.
 static void offer_jade_reset(void)
 {
+    if (keychain_has_pin() && !keychain_get()) {
+        JADE_LOGW("Factory reset rejected: wallet is locked");
+        await_error_2("Unlock wallet before", "factory reset");
+        return;
+    }
+
     // Run 'Reset Jade?'  confirmation screen and wait for yes/no response
     const char* question[] = { "Reset Jade and erase all", "PIN and wallet data?", "This cannot be undone!" };
     if (!await_yesno_activity("Factory Reset", question, 3, false, "blkstrm.com/reset")) {
@@ -2296,12 +2302,13 @@ static void handle_settings(const bool startup_menu)
         case BTN_SETTINGS_DEVICE:
         case BTN_SETTINGS_INFO_EXIT:
             // Change to 'Device' menu
-            act = make_device_settings_activity();
+            act = make_device_settings_activity(!hw_locked_initialised);
             break;
 
         case BTN_SETTINGS_PREFS_EXIT:
             // Change to 'Device' menu (or 'uninitialised options' menu)
-            act = hw_locked_uninitialised ? make_uninitialised_settings_activity() : make_device_settings_activity();
+            act = hw_locked_uninitialised ? make_uninitialised_settings_activity()
+                                          : make_device_settings_activity(!hw_locked_initialised);
             break;
 
         case BTN_SETTINGS_INFO:

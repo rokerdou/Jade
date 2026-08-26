@@ -246,6 +246,13 @@ def expected_vectors() -> dict[str, str]:
         raise AssertionError("safe-eth-py and eth-account SafeTx signing hashes differ")
     safe_calldata = bytes.fromhex(str(safe_typed_data["message"]["data"])[2:])
 
+    system_entropy = bytes((0xA0 + index) & 0xFF for index in range(32))
+    dice_rolls = bytes(index % 6 for index in range(99))
+    dice_50_hash = hashlib.sha256(b"WALLET_DICE_V1" + bytes([50]) + dice_rolls[:50]).digest()
+    dice_99_hash = hashlib.sha256(b"WALLET_DICE_V1" + bytes([99]) + dice_rolls[:99]).digest()
+    final_50 = bytes(system ^ user for system, user in zip(system_entropy, dice_50_hash))
+    final_99 = bytes(system ^ user for system, user in zip(system_entropy, dice_99_hash))
+
     return {
         "eth_checksum_address": eth_checksum,
         "tron_base58_address": base58.b58encode_check(b"\x41" + eth_address_bytes).decode(),
@@ -266,6 +273,10 @@ def expected_vectors() -> dict[str, str]:
         "safe_message_hash": safe_message_hash.hex(),
         "safe_signing_hash": safe_signing_hash.hex(),
         "safe_usdt_transfer_call": safe_calldata.hex(),
+        "wallet_entropy_dice_50_hash": dice_50_hash.hex(),
+        "wallet_entropy_final_50": final_50.hex(),
+        "wallet_entropy_dice_99_hash": dice_99_hash.hex(),
+        "wallet_entropy_final_99": final_99.hex(),
     }
 
 
