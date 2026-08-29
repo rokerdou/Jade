@@ -8,7 +8,9 @@
 #include <wally_crypto.h>
 
 #define ETHEREUM_UINT256_DECIMAL_MAX_LEN 78
-#define ETHEREUM_AMOUNT_TEXT_MAX_LEN (ETHEREUM_UINT256_DECIMAL_MAX_LEN + 5)
+#define ETHEREUM_AMOUNT_TEXT_MAX_LEN (ETHEREUM_UINT256_DECIMAL_MAX_LEN + 6)
+#define ETHEREUM_TOKEN_AMOUNT_TEXT_MAX_LEN CHAIN_CONFIRM_MAX_TEXT
+#define ETHEREUM_NATIVE_DECIMALS 18
 
 static bool fee_product(const ethereum_tx_preflight_request_t* const request, uint64_t* const output)
 {
@@ -34,6 +36,26 @@ static chain_confirm_operation_t ethereum_confirm_operation_from_result(
         return CHAIN_CONFIRM_OPERATION_CONTRACT_CALL;
     }
     return CHAIN_CONFIRM_OPERATION_NATIVE_TRANSFER;
+}
+
+static bool ethereum_token_definition_matches_result(
+    const ethereum_tx_preflight_request_t* const request, const ethereum_tx_preflight_result_t* const result)
+{
+    if (!request || !result || !request->has_token_definition) {
+        return false;
+    }
+    if (result->type != ETHEREUM_TX_SUMMARY_ERC20_TRANSFER && result->type != ETHEREUM_TX_SUMMARY_ERC20_APPROVE) {
+        return false;
+    }
+    return request->token_definition.chain_id == request->chain_id
+        && request->token_definition.decimals <= ETHEREUM_TOKEN_DECIMALS_MAX
+        && request->token_definition.symbol[0] != '\0'
+        && strnlen(request->token_definition.symbol, sizeof(request->token_definition.symbol))
+        < sizeof(request->token_definition.symbol)
+        && request->token_definition.name[0] != '\0'
+        && strnlen(request->token_definition.name, sizeof(request->token_definition.name))
+        < sizeof(request->token_definition.name)
+        && memcmp(request->token_definition.address, result->token_contract, ETHEREUM_ADDRESS_LEN) == 0;
 }
 
 static bool ethereum_format_uint_be_decimal(
@@ -82,16 +104,79 @@ static bool ethereum_format_uint_be_decimal(
     return true;
 }
 
-static bool ethereum_format_wei_amount(
-    const uint8_t* const value, const size_t value_len, char* const output, const size_t output_len)
+static bool ethereum_format_decimal_amount(const uint8_t* const value, const size_t value_len, const uint32_t decimals,
+    const char* const symbol, char* const output, const size_t output_len)
 {
-    char decimal[ETHEREUM_UINT256_DECIMAL_MAX_LEN + 1];
-    if (!ethereum_format_uint_be_decimal(value, value_len, decimal, sizeof(decimal))) {
+    if ((!value && value_len) || value_len > EVM_ABI_WORD_LEN || !symbol || symbol[0] == '\0'
+        || decimals > ETHEREUM_TOKEN_DECIMALS_MAX || !output || output_len == 0) {
         return false;
     }
 
-    const int ret = snprintf(output, output_len, "%s wei", decimal);
+    const size_t symbol_len = strnlen(symbol, ETHEREUM_TOKEN_SYMBOL_MAX_LEN);
+    if (symbol_len == 0 || symbol_len >= ETHEREUM_TOKEN_SYMBOL_MAX_LEN) {
+        return false;
+    }
+
+    char digits[ETHEREUM_UINT256_DECIMAL_MAX_LEN + 1];
+    if (!ethereum_format_uint_be_decimal(value, value_len, digits, sizeof(digits))) {
+        return false;
+    }
+
+    char amount[ETHEREUM_UINT256_DECIMAL_MAX_LEN + 2];
+    const size_t digits_len = strlen(digits);
+    size_t amount_len = 0;
+    if (decimals == 0) {
+        if (digits_len >= sizeof(amount)) {
+            return false;
+        }
+        memcpy(amount, digits, digits_len + 1U);
+        amount_len = digits_len;
+    } else if (digits_len > decimals) {
+        const size_t whole_len = digits_len - decimals;
+        if (digits_len + 2U > sizeof(amount)) {
+            return false;
+        }
+        memcpy(amount, digits, whole_len);
+        amount[whole_len] = '.';
+        memcpy(amount + whole_len + 1U, digits + whole_len, decimals);
+        amount_len = whole_len + 1U + decimals;
+        amount[amount_len] = '\0';
+    } else {
+        const size_t leading_zeros = decimals - digits_len;
+        if (2U + leading_zeros + digits_len + 1U > sizeof(amount)) {
+            return false;
+        }
+        amount[0] = '0';
+        amount[1] = '.';
+        memset(amount + 2U, '0', leading_zeros);
+        memcpy(amount + 2U + leading_zeros, digits, digits_len);
+        amount_len = 2U + leading_zeros + digits_len;
+        amount[amount_len] = '\0';
+    }
+
+    if (decimals != 0) {
+        while (amount_len > 0 && amount[amount_len - 1U] == '0') {
+            amount[--amount_len] = '\0';
+        }
+        if (amount_len > 0 && amount[amount_len - 1U] == '.') {
+            amount[--amount_len] = '\0';
+        }
+    }
+
+    const int ret = snprintf(output, output_len, "%s %s", amount, symbol);
     return ret > 0 && (size_t)ret < output_len;
+}
+
+static bool ethereum_format_wei_amount(
+    const uint8_t* const value, const size_t value_len, char* const output, const size_t output_len)
+{
+    return ethereum_format_decimal_amount(value, value_len, ETHEREUM_NATIVE_DECIMALS, "ETH", output, output_len);
+}
+
+static bool ethereum_format_token_amount(const uint8_t value[EVM_ABI_WORD_LEN], const uint32_t decimals,
+    const char* const symbol, char* const output, const size_t output_len)
+{
+    return ethereum_format_decimal_amount(value, EVM_ABI_WORD_LEN, decimals, symbol, output, output_len);
 }
 
 bool ethereum_confirm_summary_from_preflight(const ethereum_tx_preflight_request_t* const request,
@@ -103,6 +188,13 @@ bool ethereum_confirm_summary_from_preflight(const ethereum_tx_preflight_request
 
     uint64_t max_fee = 0;
     if (!fee_product(request, &max_fee)) {
+        return false;
+    }
+    const uint8_t max_fee_bytes[]
+        = { (uint8_t)(max_fee >> 56), (uint8_t)(max_fee >> 48), (uint8_t)(max_fee >> 40), (uint8_t)(max_fee >> 32),
+              (uint8_t)(max_fee >> 24), (uint8_t)(max_fee >> 16), (uint8_t)(max_fee >> 8), (uint8_t)max_fee };
+    char max_fee_text[ETHEREUM_AMOUNT_TEXT_MAX_LEN];
+    if (!ethereum_format_wei_amount(max_fee_bytes, sizeof(max_fee_bytes), max_fee_text, sizeof(max_fee_text))) {
         return false;
     }
 
@@ -120,7 +212,7 @@ bool ethereum_confirm_summary_from_preflight(const ethereum_tx_preflight_request
         || !chain_confirm_summary_add_u64(summary, CHAIN_CONFIRM_FIELD_CHAIN_ID, request->chain_id)
         || !chain_confirm_summary_add_u64(summary, CHAIN_CONFIRM_FIELD_NONCE, request->nonce)
         || !chain_confirm_summary_add_bytes(summary, CHAIN_CONFIRM_FIELD_FROM, result->sender, sizeof(result->sender))
-        || !chain_confirm_summary_add_u64(summary, CHAIN_CONFIRM_FIELD_MAX_FEE, max_fee)) {
+        || !chain_confirm_summary_add_text(summary, CHAIN_CONFIRM_FIELD_MAX_FEE, max_fee_text)) {
         return false;
     }
 
@@ -138,18 +230,27 @@ bool ethereum_confirm_summary_from_preflight(const ethereum_tx_preflight_request
     }
 
     if (result->type == ETHEREUM_TX_SUMMARY_ERC20_TRANSFER || result->type == ETHEREUM_TX_SUMMARY_ERC20_APPROVE) {
-        bool ok = chain_confirm_summary_add_bytes(
-                      summary, CHAIN_CONFIRM_FIELD_TOKEN_CONTRACT, result->token_contract, sizeof(result->token_contract))
+        bool ok = chain_confirm_summary_add_bytes(summary, CHAIN_CONFIRM_FIELD_TOKEN_CONTRACT, result->token_contract,
+                      sizeof(result->token_contract))
             && chain_confirm_summary_add_bytes(
-                summary, CHAIN_CONFIRM_FIELD_TOKEN_RECIPIENT, result->token_recipient, sizeof(result->token_recipient))
-            && chain_confirm_summary_add_bytes(
-                summary, CHAIN_CONFIRM_FIELD_TOKEN_AMOUNT, result->token_amount, sizeof(result->token_amount));
+                summary, CHAIN_CONFIRM_FIELD_TOKEN_RECIPIENT, result->token_recipient, sizeof(result->token_recipient));
         if (ok && request->has_token_definition) {
-            ok = chain_confirm_summary_add_text(
-                     summary, CHAIN_CONFIRM_FIELD_TOKEN_SYMBOL, request->token_definition.symbol)
+            if (!ethereum_token_definition_matches_result(request, result)) {
+                return false;
+            }
+            char token_amount[ETHEREUM_TOKEN_AMOUNT_TEXT_MAX_LEN];
+            ok = ethereum_format_token_amount(result->token_amount, request->token_definition.decimals,
+                     request->token_definition.symbol, token_amount, sizeof(token_amount))
+                && chain_confirm_summary_add_text(summary, CHAIN_CONFIRM_FIELD_TOKEN_AMOUNT, token_amount)
+                && chain_confirm_summary_add_text(
+                    summary, CHAIN_CONFIRM_FIELD_TOKEN_SYMBOL, request->token_definition.symbol)
                 && chain_confirm_summary_add_u64(
                     summary, CHAIN_CONFIRM_FIELD_TOKEN_DECIMALS, request->token_definition.decimals)
-                && chain_confirm_summary_add_text(summary, CHAIN_CONFIRM_FIELD_TOKEN_NAME, request->token_definition.name);
+                && chain_confirm_summary_add_text(
+                    summary, CHAIN_CONFIRM_FIELD_TOKEN_NAME, request->token_definition.name);
+        } else if (ok) {
+            ok = chain_confirm_summary_add_bytes(
+                summary, CHAIN_CONFIRM_FIELD_TOKEN_AMOUNT, result->token_amount, sizeof(result->token_amount));
         }
         return ok;
     }

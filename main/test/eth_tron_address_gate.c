@@ -4279,8 +4279,11 @@ int main(int argc, char** argv)
     CHECK(chain_confirm_summary_has_field(&confirm_summary, CHAIN_CONFIRM_FIELD_TO));
     const chain_confirm_field_t* const native_amount = find_confirm_field(&confirm_summary, CHAIN_CONFIRM_FIELD_AMOUNT);
     CHECK(native_amount && native_amount->value_type == CHAIN_CONFIRM_VALUE_TEXT);
-    CHECK(strcmp(native_amount->value.text, "1 wei") == 0);
-    CHECK(chain_confirm_summary_has_field(&confirm_summary, CHAIN_CONFIRM_FIELD_MAX_FEE));
+    CHECK(strcmp(native_amount->value.text, "0.000000000000000001 ETH") == 0);
+    const chain_confirm_field_t* const native_max_fee
+        = find_confirm_field(&confirm_summary, CHAIN_CONFIRM_FIELD_MAX_FEE);
+    CHECK(native_max_fee && native_max_fee->value_type == CHAIN_CONFIRM_VALUE_TEXT);
+    CHECK(strcmp(native_max_fee->value.text, "0.000042 ETH") == 0);
 
     uint8_t wrong_sender[ETHEREUM_ADDRESS_LEN];
     memcpy(wrong_sender, EXPECTED_ETH_ADDRESS, sizeof(wrong_sender));
@@ -4470,6 +4473,11 @@ int main(int argc, char** argv)
     CHECK(chain_confirm_summary_has_field(&confirm_summary, CHAIN_CONFIRM_FIELD_TOKEN_CONTRACT));
     CHECK(chain_confirm_summary_has_field(&confirm_summary, CHAIN_CONFIRM_FIELD_TOKEN_RECIPIENT));
     CHECK(chain_confirm_summary_has_field(&confirm_summary, CHAIN_CONFIRM_FIELD_TOKEN_AMOUNT));
+    const chain_confirm_field_t* token_amount_field
+        = find_confirm_field(&confirm_summary, CHAIN_CONFIRM_FIELD_TOKEN_AMOUNT);
+    CHECK(token_amount_field && token_amount_field->value_type == CHAIN_CONFIRM_VALUE_BYTES);
+    CHECK(token_amount_field->value.bytes.len == EVM_ABI_WORD_LEN);
+    CHECK(memcmp(token_amount_field->value.bytes.bytes, token_amount, sizeof(token_amount)) == 0);
 
     ethereum_token_metadata_t usdt_metadata = { 0 };
     memcpy(usdt_metadata.address, token_contract, sizeof(token_contract));
@@ -4486,6 +4494,9 @@ int main(int argc, char** argv)
     CHECK(chain_confirm_summary_has_field(&confirm_summary, CHAIN_CONFIRM_FIELD_TOKEN_SYMBOL));
     CHECK(chain_confirm_summary_has_field(&confirm_summary, CHAIN_CONFIRM_FIELD_TOKEN_DECIMALS));
     CHECK(chain_confirm_summary_has_field(&confirm_summary, CHAIN_CONFIRM_FIELD_TOKEN_NAME));
+    token_amount_field = find_confirm_field(&confirm_summary, CHAIN_CONFIRM_FIELD_TOKEN_AMOUNT);
+    CHECK(token_amount_field && token_amount_field->value_type == CHAIN_CONFIRM_VALUE_TEXT);
+    CHECK(strcmp(token_amount_field->value.text, "0.00005 USDT") == 0);
     const chain_confirm_field_t* const token_symbol
         = find_confirm_field(&confirm_summary, CHAIN_CONFIRM_FIELD_TOKEN_SYMBOL);
     CHECK(token_symbol && token_symbol->value_type == CHAIN_CONFIRM_VALUE_TEXT);
@@ -4514,11 +4525,30 @@ int main(int argc, char** argv)
     CHECK(changed_token_text);
     CHECK(!chain_authorized_digest_matches_authorization(&token_authorization, &token_authorized_digest));
     eth_req.token_definition.chain_id = 2;
+    CHECK(!ethereum_confirm_summary_from_preflight(&eth_req, &eth_res, &confirm_summary));
     CHECK(!ethereum_tx_preflight(&eth_req, &eth_res));
     eth_req.token_definition.chain_id = 1;
     eth_req.token_definition.address[0] ^= 0x01;
+    CHECK(!ethereum_confirm_summary_from_preflight(&eth_req, &eth_res, &confirm_summary));
     CHECK(!ethereum_tx_preflight(&eth_req, &eth_res));
     eth_req.token_definition.address[0] ^= 0x01;
+    uint8_t usdt_197_token_amount[EVM_ABI_WORD_LEN] = { 0 };
+    usdt_197_token_amount[EVM_ABI_WORD_LEN - 4] = 0x01;
+    usdt_197_token_amount[EVM_ABI_WORD_LEN - 3] = 0x2c;
+    usdt_197_token_amount[EVM_ABI_WORD_LEN - 2] = 0x99;
+    usdt_197_token_amount[EVM_ABI_WORD_LEN - 1] = 0x20;
+    uint8_t usdt_197_transfer_data[EVM_ABI_ADDRESS_UINT256_CALL_LEN];
+    make_erc20_address_uint256_call(
+        0xa9, 0x05, 0x9c, 0xbb, EXPECTED_ETH_ADDRESS, usdt_197_token_amount, usdt_197_transfer_data);
+    eth_req.data = usdt_197_transfer_data;
+    eth_req.data_len = sizeof(usdt_197_transfer_data);
+    CHECK(ethereum_tx_preflight(&eth_req, &eth_res));
+    CHECK(ethereum_confirm_summary_from_preflight(&eth_req, &eth_res, &confirm_summary));
+    token_amount_field = find_confirm_field(&confirm_summary, CHAIN_CONFIRM_FIELD_TOKEN_AMOUNT);
+    CHECK(token_amount_field && token_amount_field->value_type == CHAIN_CONFIRM_VALUE_TEXT);
+    CHECK(strcmp(token_amount_field->value.text, "19.7 USDT") == 0);
+    eth_req.data = erc20_transfer_data;
+    eth_req.data_len = sizeof(erc20_transfer_data);
     eth_req.data = NULL;
     eth_req.data_len = 0;
     CHECK(!ethereum_tx_preflight(&eth_req, &eth_res));
@@ -6283,13 +6313,13 @@ int main(int argc, char** argv)
     CHECK(strcmp(btc_to->value.text, "tb1qw508d6qejxtdg4y5r3zarvary0c5xw7kxpjzsx") == 0);
     const chain_confirm_field_t* const btc_amount = find_confirm_field(&g_last_ui_summary, CHAIN_CONFIRM_FIELD_AMOUNT);
     CHECK(btc_amount && btc_amount->value_type == CHAIN_CONFIRM_VALUE_TEXT);
-    CHECK(strcmp(btc_amount->value.text, "90000 sats") == 0);
+    CHECK(strcmp(btc_amount->value.text, "0.0009 BTC") == 0);
     const chain_confirm_field_t* const btc_change = find_confirm_field(&g_last_ui_summary, CHAIN_CONFIRM_FIELD_CHANGE);
     CHECK(btc_change && btc_change->value_type == CHAIN_CONFIRM_VALUE_TEXT);
-    CHECK(strcmp(btc_change->value.text, "0 sats") == 0);
+    CHECK(strcmp(btc_change->value.text, "0 BTC") == 0);
     const chain_confirm_field_t* const btc_fee = find_confirm_field(&g_last_ui_summary, CHAIN_CONFIRM_FIELD_FEE);
     CHECK(btc_fee && btc_fee->value_type == CHAIN_CONFIRM_VALUE_TEXT);
-    CHECK(strcmp(btc_fee->value.text, "10000 sats") == 0);
+    CHECK(strcmp(btc_fee->value.text, "0.0001 BTC") == 0);
     const chain_confirm_field_t* const btc_fee_rate
         = find_confirm_field(&g_last_ui_summary, CHAIN_CONFIRM_FIELD_FEE_RATE);
     CHECK(btc_fee_rate && btc_fee_rate->value_type == CHAIN_CONFIRM_VALUE_TEXT);
@@ -6441,15 +6471,15 @@ int main(int argc, char** argv)
     const chain_confirm_field_t* const btc_change_case_amount
         = find_confirm_field(&g_last_ui_summary, CHAIN_CONFIRM_FIELD_AMOUNT);
     CHECK(btc_change_case_amount && btc_change_case_amount->value_type == CHAIN_CONFIRM_VALUE_TEXT);
-    CHECK(strcmp(btc_change_case_amount->value.text, "90000 sats") == 0);
+    CHECK(strcmp(btc_change_case_amount->value.text, "0.0009 BTC") == 0);
     const chain_confirm_field_t* const btc_change_case_change
         = find_confirm_field(&g_last_ui_summary, CHAIN_CONFIRM_FIELD_CHANGE);
     CHECK(btc_change_case_change && btc_change_case_change->value_type == CHAIN_CONFIRM_VALUE_TEXT);
-    CHECK(strcmp(btc_change_case_change->value.text, "5000 sats") == 0);
+    CHECK(strcmp(btc_change_case_change->value.text, "0.00005 BTC") == 0);
     const chain_confirm_field_t* const btc_change_case_fee
         = find_confirm_field(&g_last_ui_summary, CHAIN_CONFIRM_FIELD_FEE);
     CHECK(btc_change_case_fee && btc_change_case_fee->value_type == CHAIN_CONFIRM_VALUE_TEXT);
-    CHECK(strcmp(btc_change_case_fee->value.text, "5000 sats") == 0);
+    CHECK(strcmp(btc_change_case_fee->value.text, "0.00005 BTC") == 0);
     const chain_confirm_field_t* const btc_change_case_fee_rate
         = find_confirm_field(&g_last_ui_summary, CHAIN_CONFIRM_FIELD_FEE_RATE);
     CHECK(btc_change_case_fee_rate && btc_change_case_fee_rate->value_type == CHAIN_CONFIRM_VALUE_TEXT);
@@ -6495,11 +6525,11 @@ int main(int argc, char** argv)
     const chain_confirm_field_t* const btc_self_case_self
         = find_confirm_field(&g_last_ui_summary, CHAIN_CONFIRM_FIELD_SELF);
     CHECK(btc_self_case_self && btc_self_case_self->value_type == CHAIN_CONFIRM_VALUE_TEXT);
-    CHECK(strcmp(btc_self_case_self->value.text, "5000 sats") == 0);
+    CHECK(strcmp(btc_self_case_self->value.text, "0.00005 BTC") == 0);
     const chain_confirm_field_t* const btc_self_case_change
         = find_confirm_field(&g_last_ui_summary, CHAIN_CONFIRM_FIELD_CHANGE);
     CHECK(btc_self_case_change && btc_self_case_change->value_type == CHAIN_CONFIRM_VALUE_TEXT);
-    CHECK(strcmp(btc_self_case_change->value.text, "0 sats") == 0);
+    CHECK(strcmp(btc_self_case_change->value.text, "0 BTC") == 0);
     CHECK(test_confirm_summary_fits_tdisplay_s3(&g_last_ui_summary));
     CHECK(trezor_btc_tx_request_has_signed_payload(session_response_payload, session_response_payload_len,
         TREZOR_BITCOIN_REQUEST_TXFINISHED, 0, true, 1, 2));
@@ -6542,15 +6572,15 @@ int main(int argc, char** argv)
     const chain_confirm_field_t* const btc_self_only_amount
         = find_confirm_field(&g_last_ui_summary, CHAIN_CONFIRM_FIELD_AMOUNT);
     CHECK(btc_self_only_amount && btc_self_only_amount->value_type == CHAIN_CONFIRM_VALUE_TEXT);
-    CHECK(strcmp(btc_self_only_amount->value.text, "95000 sats") == 0);
+    CHECK(strcmp(btc_self_only_amount->value.text, "0.00095 BTC") == 0);
     const chain_confirm_field_t* const btc_self_only_self
         = find_confirm_field(&g_last_ui_summary, CHAIN_CONFIRM_FIELD_SELF);
     CHECK(btc_self_only_self && btc_self_only_self->value_type == CHAIN_CONFIRM_VALUE_TEXT);
-    CHECK(strcmp(btc_self_only_self->value.text, "90000 sats") == 0);
+    CHECK(strcmp(btc_self_only_self->value.text, "0.0009 BTC") == 0);
     const chain_confirm_field_t* const btc_self_only_change
         = find_confirm_field(&g_last_ui_summary, CHAIN_CONFIRM_FIELD_CHANGE);
     CHECK(btc_self_only_change && btc_self_only_change->value_type == CHAIN_CONFIRM_VALUE_TEXT);
-    CHECK(strcmp(btc_self_only_change->value.text, "5000 sats") == 0);
+    CHECK(strcmp(btc_self_only_change->value.text, "0.00005 BTC") == 0);
     CHECK(test_confirm_summary_fits_tdisplay_s3(&g_last_ui_summary));
     CHECK(trezor_btc_tx_request_has_signed_payload(session_response_payload, session_response_payload_len,
         TREZOR_BITCOIN_REQUEST_TXFINISHED, 0, true, 1, 2));
